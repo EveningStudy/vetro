@@ -31,11 +31,18 @@ export const composerControlClass =
 
 type Choice = ConfigOption["choices"][number] & { label: string; section: string };
 
+/** Some agents report a choice only by its id ("acceptEdits", "xhigh"). Show that id as words; the value is untouched. */
+function readable(choice: ConfigOption["choices"][number]): string {
+  if (choice.name !== choice.value || !/^[A-Za-z][A-Za-z0-9_-]*$/.test(choice.name)) return choice.name;
+  const words = choice.name.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ").toLowerCase();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
 /** Agents report choices with their own labels. A shared " · Provider" suffix becomes a group. */
 export function prepare(option: ConfigOption): Choice[] {
   const suffixed = option.choices.length > 1 && option.choices.every((choice) => / · [^·]+$/.test(choice.name));
   return option.choices.map((choice) => {
-    if (choice.group || !suffixed) return { ...choice, label: choice.name, section: choice.group ?? "" };
+    if (choice.group || !suffixed) return { ...choice, label: readable(choice), section: choice.group ?? "" };
     const index = choice.name.lastIndexOf(" · ");
     return { ...choice, label: choice.name.slice(0, index), section: choice.name.slice(index + 3) };
   });
