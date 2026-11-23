@@ -34,7 +34,6 @@ const REMOTE_COOKIE: &str = "__Host-vetro_session";
 const PAIR_TTL: i64 = 10 * 60 * 1000;
 
 pub(super) struct Auth {
-    local_cookie: String,
     tailscale: Option<Tailscale>,
     serve: AsyncMutex<Option<Serve>>,
     remote: RwLock<Remote>,
@@ -48,6 +47,7 @@ struct Remote {
     attempts: VecDeque<Instant>,
 }
 
+#[derive(Clone)]
 pub(super) enum Client {
     Local,
     Remote { id: String, token_hash: String },
@@ -89,10 +89,9 @@ impl Client {
 }
 
 impl Auth {
-    pub(super) fn new(local_cookie: String) -> Self {
+    pub(super) fn new() -> Self {
         let tailscale = Tailscale::find();
         Self {
-            local_cookie,
             remote: RwLock::new(Remote {
                 enabled: false,
                 tailscale: TailscaleStatus {
@@ -213,7 +212,11 @@ impl Auth {
             .filter_map(|part| part.trim().split_once('='))
             .find_map(|(key, value)| (key == name).then_some(value))?;
         if host == RequestHost::Local {
-            return equal(token, &self.local_cookie).then_some(Client::Local);
+            return state
+                .core
+                .home
+                .check_local_session(token)
+                .then_some(Client::Local);
         }
         let (id, token) = token.split_once('.')?;
         let client = Client::Remote {
@@ -312,7 +315,13 @@ pub(super) async fn local(
     if !state.core.home.check_token(&request.token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    cookie(&state.auth.local_cookie, false)
+    if let Some(Client::Local) = state.auth.client(&state, &headers, host) {
+        return StatusCode::NO_CONTENT.into_response();
+    }
+    match state.core.home.new_local_session() {
+        Ok(token) => cookie(&token, false),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
 }
 
 #[derive(Deserialize)]

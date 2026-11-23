@@ -13,6 +13,35 @@ pub(crate) fn string(value: &Value, key: &str) -> Option<String> {
     value[key].as_str().map(str::to_owned)
 }
 
+pub(crate) fn display_path(path: &str) -> String {
+    if let Some(unc) = path.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{unc}")
+    } else {
+        path.strip_prefix(r"\\?\").unwrap_or(path).to_owned()
+    }
+}
+
+pub(crate) fn command_text(command: &str) -> String {
+    let Some((program, args)) = command
+        .strip_prefix('"')
+        .and_then(|text| text.split_once('"'))
+    else {
+        return command.to_owned();
+    };
+    if program.as_bytes().get(1) == Some(&b':')
+        || program.starts_with(r"\\\\")
+        || program.starts_with(r"\\?\")
+    {
+        let program = if program.starts_with(r"\\?\") {
+            program.to_owned()
+        } else {
+            program.replace(r"\\", r"\")
+        };
+        return format!("\"{}\"{args}", display_path(&program));
+    }
+    command.to_owned()
+}
+
 pub(crate) fn array(value: &Value) -> &[Value] {
     value.as_array().map_or(&[], Vec::as_slice)
 }
@@ -84,7 +113,7 @@ fn user_content(input: &Value) -> Option<ContentBlock> {
             uri: string(input, "path"),
         },
         "mention" | "skill" => ContentBlock::File {
-            path: string(input, "path")?,
+            path: display_path(input["path"].as_str()?),
             name: string(input, "name"),
         },
         _ => return None,
@@ -121,7 +150,7 @@ pub(crate) fn record(thread: &Value) -> Option<SessionRecord> {
             .or_else(|| preview.clone())
             .unwrap_or_else(|| "Codex thread".into()),
         preview,
-        cwd: string(thread, "cwd").map(PathBuf::from),
+        cwd: thread["cwd"].as_str().map(display_path).map(PathBuf::from),
         created_at: millis(&thread["createdAt"]),
         updated_at: millis(&thread["updatedAt"]).unwrap_or_default(),
         source: source_kind,
@@ -161,7 +190,7 @@ pub(crate) fn item(raw: &Value, turn_id: Option<&str>, streaming: bool) -> Optio
                 .collect(),
         },
         "agentMessage" => ItemKind::AgentMessage {
-            text: string(raw, "text").unwrap_or_default(),
+            text: string(raw, "text").filter(|text| !text.is_empty())?,
             streaming,
         },
         "reasoning" => ItemKind::Reasoning {
@@ -244,11 +273,13 @@ fn tool(item_type: &str, id: &str, raw: &Value, streaming: bool) -> Option<ToolC
     match item_type {
         "commandExecution" => {
             tool.kind = ToolKind::Execute;
-            tool.title = string(raw, "command").unwrap_or_else(|| "Run command".into());
-            tool.input = Some(json!({"command": raw["command"], "cwd": raw["cwd"]}));
+            let command = raw["command"].as_str().map(command_text);
+            let cwd = raw["cwd"].as_str().map(display_path);
+            tool.title = command.clone().unwrap_or_else(|| "Run command".into());
+            tool.input = Some(json!({"command": command, "cwd": cwd}));
             tool.content.push(ToolContent::Terminal {
-                command: string(raw, "command"),
-                cwd: string(raw, "cwd"),
+                command,
+                cwd,
                 output: string(raw, "aggregatedOutput").unwrap_or_default(),
                 exit_code: raw["exitCode"]
                     .as_i64()
@@ -334,11 +365,40 @@ pub(crate) fn diffs(raw: &Value) -> Vec<ToolContent> {
     array(raw)
         .iter()
         .filter_map(|change| {
+            let diff = string(change, "diff");
+            let (old_text, new_text, unified) =
+                match change["kind"]["type"].as_str().or(change["kind"].as_str()) {
+                    Some("add") => (None, diff, None),
+                    Some("delete") => (diff, None, None),
+                    _ if change["oldText"].is_string() || change["newText"].is_string() => {
+                        (string(change, "oldText"), string(change, "newText"), None)
+                    }
+                    _ if diff
+                        .as_ref()
+                        .is_some_and(|text| text.lines().any(|line| line.starts_with("@@ "))) =>
+                    {
+                        (None, None, diff)
+                    }
+                    _ => {
+                        let (mut previous, mut next) = (String::new(), String::new());
+                        for line in diff.as_deref().unwrap_or_default().split_inclusive('\n') {
+                            if let Some(removed) = line.strip_prefix('-') {
+                                previous.push_str(removed);
+                            } else if let Some(added) = line.strip_prefix('+') {
+                                next.push_str(added);
+                            } else {
+                                previous.push_str(line);
+                                next.push_str(line);
+                            }
+                        }
+                        (Some(previous), Some(next), None)
+                    }
+                };
             Some(ToolContent::Diff {
-                path: string(change, "path")?,
-                old_text: None,
-                new_text: None,
-                unified: string(change, "diff"),
+                path: display_path(change["path"].as_str()?),
+                old_text,
+                new_text,
+                unified,
             })
         })
         .collect()
@@ -349,7 +409,7 @@ pub(crate) fn locations(raw: &Value) -> Vec<ToolLocation> {
         .iter()
         .filter_map(|change| {
             Some(ToolLocation {
-                path: string(change, "path")?,
+                path: display_path(change["path"].as_str()?),
                 line: None,
             })
         })

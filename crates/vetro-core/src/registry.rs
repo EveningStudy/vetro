@@ -142,18 +142,25 @@ impl Registry {
     pub(crate) async fn release_idle(
         &self,
         has_live_thread: impl Fn(&str) -> bool,
+        idle: Option<Duration>,
         released: impl Fn(&str),
     ) {
         for (id, entry) in &self.agents {
             let Ok(_access) = entry.access.try_write() else {
                 continue;
             };
+            entry.agent.maintain().await;
+            let authenticated = entry.agent.process_auth() == Some(AuthState::Ok);
             let release = {
                 let activity = entry.activity.lock().unwrap();
                 activity.in_use
-                    && (activity.release_requested
-                        || activity.last_release.is_some()
-                        || activity.warm_since.elapsed() >= WARM_IDLE)
+                    && if authenticated {
+                        idle.is_some_and(|idle| activity.warm_since.elapsed() >= idle)
+                    } else {
+                        activity.release_requested
+                            || activity.last_release.is_some()
+                            || activity.warm_since.elapsed() >= WARM_IDLE
+                    }
             };
             if release
                 && !has_live_thread(id)
@@ -165,7 +172,9 @@ impl Registry {
                 activity.in_use = false;
                 activity.release_requested = false;
                 activity.last_release = Some(Instant::now());
-                released(id);
+                if entry.agent.process_auth().is_some() {
+                    released(id);
+                }
             }
         }
     }
@@ -221,13 +230,7 @@ fn built_ins(_settings: &Settings) -> Vec<Arc<dyn Agent>> {
                 .or_else(|| detection::acp(command))
                 .unwrap_or_else(|| command.into());
             let mut spec = launch_spec(binary, config);
-            let defaults: &[&str] = if id == "devin" {
-                &["acp", "--process-model", "in-process"]
-            } else {
-                &["acp"]
-            };
-            spec.args
-                .splice(..0, defaults.iter().map(|arg| (*arg).into()));
+            acp_defaults(id, &mut spec);
             let agent = AcpAgent::new(id, name, spec);
             #[cfg(feature = "antigravity-store")]
             if id == "antigravity" {
@@ -256,6 +259,39 @@ fn built_ins(_settings: &Settings) -> Vec<Arc<dyn Agent>> {
         }
     }
     agents
+}
+
+#[cfg(feature = "acp")]
+fn acp_defaults(id: &str, spec: &mut vetro_agent_api::process::SpawnSpec) {
+    if id == "devin"
+        && !spec.args.iter().any(|arg| {
+            arg == "--process-model" || arg.to_string_lossy().starts_with("--process-model=")
+        })
+    {
+        spec.args
+            .splice(..0, ["--process-model".into(), "in-process".into()]);
+    }
+    spec.args.insert(0, "acp".into());
+}
+
+#[cfg(all(test, feature = "acp"))]
+#[test]
+fn devin_respects_explicit_process_model() {
+    use vetro_agent_api::process::SpawnSpec;
+
+    for args in [
+        vec!["--process-model", "in-process"],
+        vec!["--process-model=in-process"],
+    ] {
+        let mut spec = SpawnSpec::new("devin");
+        spec.args.extend(args.iter().map(|arg| (*arg).into()));
+        acp_defaults("devin", &mut spec);
+        assert_eq!(spec.args[0], "acp");
+        assert_eq!(spec.args.len(), args.len() + 1);
+    }
+    let mut spec = SpawnSpec::new("devin");
+    acp_defaults("devin", &mut spec);
+    assert_eq!(spec.args, ["acp", "--process-model", "in-process"]);
 }
 
 #[cfg(feature = "claude")]

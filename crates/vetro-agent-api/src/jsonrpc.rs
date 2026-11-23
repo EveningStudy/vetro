@@ -125,6 +125,10 @@ impl Peer {
         self.process.wire_log()
     }
 
+    pub async fn exit_detail(&self) -> String {
+        self.process.exit_detail().await
+    }
+
     pub async fn wait(&self) -> io::Result<ExitStatus> {
         self.process.wait().await
     }

@@ -126,6 +126,7 @@ async fn exercise(path: &Path, cwd: &Path, fake_bin: &Path, marker_port: u16) {
         authenticated: Default::default(),
         history_path: path.join(".claude/fake-transcript"),
         reads: Default::default(),
+        option_reads: Default::default(),
     });
     let home = Home::discover().unwrap();
     assert_eq!(home.root(), path.join(".vetro"));
@@ -414,12 +415,19 @@ async fn exercise(path: &Path, cwd: &Path, fake_bin: &Path, marker_port: u16) {
         "auth_required"
     );
     first.until_agent_auth("required").await;
-    first
-        .call(
+    let auth_id = first
+        .send_request(
             "agents.authenticate",
             json!({"agentId": "fake", "methodId": "fake-login"}),
         )
         .await;
+    first.call("projects.list", json!({})).await;
+    assert!(!fake.authenticated.load(Ordering::Relaxed));
+    second.call("projects.add", json!({"path": fake_bin})).await;
+    let updated = first.recv().await;
+    assert_eq!(updated["event"], "projects.updated");
+    let auth = first.recv_response(auth_id).await;
+    assert!(auth["error"].is_null());
     first.until_agent_auth("ok").await;
     let started = first.call("threads.start", start).await;
     let id = started["thread"]["id"].as_str().unwrap();
@@ -504,6 +512,8 @@ async fn exercise(path: &Path, cwd: &Path, fake_bin: &Path, marker_port: u16) {
         .until_event(id, |event| event["thread"]["live"] == false)
         .await;
     assert_eq!(detached["thread"]["live"], false);
+    let dormant = second.call("threads.open", json!({"threadId": id})).await;
+    assert_eq!(dormant["options"][0]["currentValue"], "updated");
     tokio::time::timeout(Duration::from_secs(8), async {
         while fake.shutdowns.load(Ordering::Relaxed) == 0 {
             tokio::time::sleep(Duration::from_millis(25)).await;
@@ -526,6 +536,8 @@ async fn exercise(path: &Path, cwd: &Path, fake_bin: &Path, marker_port: u16) {
         .iter()
         .all(|event| event["event"] != "thread.event"));
     assert_eq!(fake.attaches.load(Ordering::Relaxed), 1);
+    let resumed = second.call("threads.open", json!({"threadId": id})).await;
+    assert_eq!(resumed["options"][0]["currentValue"], "updated");
     assert_eq!(fake.detaches.load(Ordering::Relaxed), 1);
     fake.authenticated.store(false, Ordering::Relaxed);
     let send = json!({"threadId": id, "content": [{"type": "text", "text": "Retry after login"}]});
@@ -579,6 +591,8 @@ async fn exercise(path: &Path, cwd: &Path, fake_bin: &Path, marker_port: u16) {
             json!({"threadId": "fake:history", "limit": 2}),
         )
         .await;
+    assert_eq!(history["options"][0]["currentValue"], "native");
+    assert_eq!(history["commands"][0]["name"], "help");
     assert_eq!(history["hasMore"], true);
     assert_eq!(history["items"][0]["ordinal"], 4);
     let older = first
@@ -649,7 +663,24 @@ async fn exercise(path: &Path, cwd: &Path, fake_bin: &Path, marker_port: u16) {
         .await;
     assert_eq!(archived["threads"].as_array().unwrap().len(), 2);
     let projects = first.call("projects.list", json!({})).await;
-    assert_eq!(projects["projects"][0]["threadCount"], 3);
+    assert!(projects["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|project| { project["path"] == json!(cwd) && project["threadCount"] == 3 }));
+    assert_eq!(
+        first.request("projects.remove", json!({"path": cwd})).await["error"]["code"],
+        "bad_request"
+    );
+    first
+        .call("projects.remove", json!({"path": fake_bin}))
+        .await;
+    let projects = first.call("projects.list", json!({})).await;
+    assert!(projects["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|project| project["path"] != json!(fake_bin)));
     first.call("projects.add", json!({"path": cwd})).await;
     let project = first
         .call(
@@ -706,6 +737,30 @@ async fn exercise(path: &Path, cwd: &Path, fake_bin: &Path, marker_port: u16) {
     let home = Home::discover().unwrap();
     assert_eq!(home.settings().idle_release_minutes, 0);
     assert_eq!(home.local_token(), local_token);
+    assert_eq!(fake.option_reads.load(Ordering::Relaxed), 1);
+    let state = fs::read_to_string(home.root().join("state.json")).unwrap();
+    assert!(!state.contains(cookie.split_once('=').unwrap().1));
+    assert_eq!(
+        serde_json::from_str::<Value>(&state).unwrap()["threads"][id]["options"]["model"],
+        "updated"
+    );
+    let restarted = Server::bind(Core::new(home, registry()), Some(0))
+        .await
+        .unwrap();
+    let restarted_addr = restarted.address();
+    let (stop, shutdown) = oneshot::channel();
+    let serving = tokio::spawn(restarted.serve(async {
+        let _ = shutdown.await;
+    }));
+    let mut resumed =
+        Client::connect(restarted_addr, &cookie, &format!("http://{restarted_addr}")).await;
+    resumed.call("app.hello", hello()).await;
+    resumed
+        .call("agents.options", json!({"agentId": "fake", "cwd": cwd}))
+        .await;
+    assert_eq!(fake.option_reads.load(Ordering::Relaxed), 1);
+    stop.send(()).unwrap();
+    serving.await.unwrap().unwrap();
 }
 
 fn hello() -> Value {
@@ -748,6 +803,11 @@ impl Client {
     }
 
     async fn request(&mut self, method: &str, params: Value) -> Value {
+        let id = self.send_request(method, params).await;
+        self.recv_response(id).await
+    }
+
+    async fn send_request(&mut self, method: &str, params: Value) -> u64 {
         self.next_id += 1;
         let id = self.next_id;
         self.socket
@@ -758,6 +818,10 @@ impl Client {
             ))
             .await
             .unwrap();
+        id
+    }
+
+    async fn recv_response(&mut self, id: u64) -> Value {
         loop {
             let frame = self.recv().await;
             if frame["id"] == id {

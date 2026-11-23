@@ -174,4 +174,8 @@ impl Agent for Antigravity {
     async fn shutdown(&self) {
         self.acp.shutdown().await;
     }
+
+    async fn maintain(&self) {
+        self.acp.maintain().await;
+    }
 }

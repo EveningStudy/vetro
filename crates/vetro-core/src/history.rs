@@ -8,7 +8,7 @@ use std::{
 
 use notify::{EventKind, RecursiveMode, Watcher};
 use tokio::{sync::mpsc, task::JoinSet, time};
-use vetro_agent_api::{Agent, AgentError, Result, SessionRecord, Transcript};
+use vetro_agent_api::{Agent, Result, SessionRecord, Transcript};
 use vetro_proto::{
     rpc::{ErrorCode, ServerEvent},
     ThreadSummary,
@@ -261,7 +261,7 @@ impl Core {
             changes.removed.extend(removed.removed);
         }
         self.publish_history(changes);
-        let may_read = id != "devin" || self.history_authenticated.read().unwrap().contains(id);
+        let may_read = id != "devin" || agent.process_auth() == Some(vetro_proto::AuthState::Ok);
         if may_read {
             if !pending.is_empty() {
                 self.progress(id, scanned, total, false);
@@ -320,7 +320,8 @@ impl Core {
                     }
                     Ok(Ok(None)) => {}
                     Ok(Err(error)) if id == "devin" && error.code == ErrorCode::AuthRequired => {
-                        self.history_authenticated.write().unwrap().remove(id);
+                        self.set_agent_auth(id, vetro_proto::AuthState::Required)
+                            .await;
                         break;
                     }
                     Ok(Err(error)) => {
@@ -349,6 +350,9 @@ impl Core {
         summary: &ThreadSummary,
         allow_protocol: bool,
     ) -> Result<Option<Transcript>> {
+        if agent.id() == "devin" && agent.process_auth() != Some(vetro_proto::AuthState::Ok) {
+            return Ok(None);
+        }
         if allow_protocol || agent.id() == "claude" {
             return self.read_history_items(agent, summary).await.map(Some);
         }
@@ -386,12 +390,6 @@ impl Core {
         agent: &Arc<dyn Agent>,
         summary: &ThreadSummary,
     ) -> Result<Transcript> {
-        if agent.id() == "devin" && !self.history_authenticated.read().unwrap().contains("devin") {
-            return Err(AgentError::new(
-                ErrorCode::AuthRequired,
-                "Sign in to Devin to read its history",
-            ));
-        }
         if agent.id() == "codex"
             && summary
                 .origin

@@ -96,7 +96,10 @@ fn app_server() {
             "model/list" => {
                 json!({"data": [fake_model("fixture", true, "low")], "nextCursor": "next-model"})
             }
-            "collaborationMode/list" => json!({"data": [{"mode": "plan", "name": "Plan"}]}),
+            "collaborationMode/list" => {
+                json!({"data": [{"mode": "plan", "name": "Plan"}, {"mode": "default", "name": "Default"}]})
+            }
+            "config/read" => json!({"config": {"sandbox_mode": "read-only"}}),
             "permissionProfile/list" => json!({"data": [
                 {"id": ":read-only", "allowed": true}, {"id": ":blocked", "allowed": false},
             ]}),
@@ -221,18 +224,31 @@ fn app_server() {
                         "createdAt": 10, "updatedAt": 20, "preview": "Saved thread"}], "nextCursor": "next-page"})
                 }
             }
-            "thread/read" => {
-                assert_eq!(params, &json!({"threadId": "saved", "includeTurns": true}));
-                json!({"thread": {"id": "saved", "turns": [{"id": "history-turn", "status": "completed", "items": [
-                    {"type": "userMessage", "id": "history-user", "content": [{"type": "text", "text": "saved"}]},
-                    {"type": "fileChange", "id": "history-edit", "status": "completed",
-                        "changes": [{"path": "foo.rs", "diff": "-old\n+new"}]},
-                    {"type": "collabAgentToolCall", "id": "history-agent", "status": "completed",
-                        "tool": "spawnAgent", "receiverThreadIds": ["child"]},
-                ]}]}})
+            "thread/turns/list" => {
+                assert_eq!(params["itemsView"], "notLoaded");
+                json!({"data": [{"id": "history-turn", "status": "completed"}]})
+            }
+            "thread/items/list" => {
+                assert_eq!(params["turnId"], "history-turn");
+                assert_eq!(params["sortDirection"], "asc");
+                if params["cursor"] == "items-next" {
+                    json!({"data": [
+                        {"item": {"type": "fileChange", "id": "history-edit", "status": "completed",
+                            "changes": [{"path": "foo.rs", "kind": {"type": "add"}, "diff": "added"}]}},
+                        {"item": {"type": "collabAgentToolCall", "id": "history-agent", "status": "completed",
+                            "tool": "spawnAgent", "receiverThreadIds": ["child"]}},
+                    ]})
+                } else {
+                    json!({"data": [
+                        {"item": {"type": "userMessage", "id": "history-user", "content": [{"type": "text", "text": "saved"}]}},
+                        {"item": {"type": "agentMessage", "id": "empty", "text": ""}}
+                    ], "nextCursor": "items-next"})
+                }
             }
             "thread/resume" => {
-                assert_eq!(params, &json!({"threadId": "saved"}));
+                assert_eq!(params["threadId"], "saved");
+                assert_eq!(params["excludeTurns"], true);
+                assert_eq!(params["initialTurnsPage"]["limit"], 1);
                 json!({"thread": {"id": "saved", "name": "Renamed", "status": {"type": "idle"}}})
             }
             "thread/settings/update" => {
@@ -284,9 +300,13 @@ async fn test_adapter() {
     assert!(options
         .iter()
         .any(|option| option.id == "model" && option.choices.len() == 2));
+    assert!(options.iter().any(|option| option.id == "permissions"
+        && option.current_value == ":read-only"
+        && option.choices.len() == 1
+        && option.choices[0].name == "Read only"));
     assert!(options
         .iter()
-        .any(|option| option.id == "permissions" && option.choices.len() == 1));
+        .any(|option| option.id == "mode" && option.current_value == "default"));
     let cwd = PathBuf::from("scratch");
     let (sink, mut events) = mpsc::unbounded_channel();
     let first = agent
@@ -324,7 +344,17 @@ async fn test_adapter() {
         )
         .await
         .unwrap();
-    assert!(Arc::ptr_eq(&first.wire_log(), &second.wire_log()));
+    assert!(!Arc::ptr_eq(&first.wire_log(), &second.wire_log()));
+    let raw = first.wire_log().snapshot();
+    assert_eq!(raw[0].direction, vetro_proto::RawDirection::Spawn);
+    for method in ["initialize", "thread/start", "turn/start"] {
+        assert!(raw
+            .iter()
+            .any(|entry| entry.text.contains(&format!("\"method\":\"{method}\""))));
+    }
+    assert!(raw
+        .iter()
+        .all(|entry| !entry.text.contains("thread-2") && !entry.text.contains("model/list")));
     assert!(first.wire_log().snapshot().iter().all(|entry| {
         !entry.text.contains("fake-code") && !entry.text.contains("https://example.test/device")
     }));
@@ -351,6 +381,14 @@ async fn test_adapter() {
         match recv(&mut events).await {
             SessionEvent::TextDelta { delta, .. } => deltas.push(delta),
             SessionEvent::Item(item) => {
+                if let ItemKind::AgentMessage {
+                    text,
+                    streaming: true,
+                } = &item.kind
+                {
+                    assert!(!text.is_empty());
+                    deltas.push(text.clone());
+                }
                 if let ItemKind::Request(request) = item.kind {
                     break request;
                 }
@@ -436,7 +474,8 @@ async fn test_adapter() {
     let history = agent.read("saved", None).await.unwrap();
     assert_eq!(history.items[0].id, "history-user");
     assert!(
-        matches!(&history.items[1].kind, ItemKind::ToolCall(tool) if tool.kind == ToolKind::Edit)
+        matches!(&history.items[1].kind, ItemKind::ToolCall(tool) if tool.kind == ToolKind::Edit
+            && matches!(&tool.content[0], ToolContent::Diff { new_text: Some(text), unified: None, .. } if text == "added"))
     );
     assert!(
         matches!(&history.items[2].kind, ItemKind::ToolCall(tool) if tool.child_thread_ids == ["codex:child"])

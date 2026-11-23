@@ -29,6 +29,7 @@ pub struct Home {
 #[serde(default, rename_all = "camelCase")]
 pub(crate) struct State {
     pub local_token: String,
+    pub local_session_hashes: Vec<String>,
     pub devices: BTreeMap<String, Device>,
     pub threads: BTreeMap<String, ThreadOverlay>,
     pub projects: BTreeMap<String, ProjectOverlay>,
@@ -46,6 +47,8 @@ pub(crate) struct Device {
 pub(crate) struct ThreadOverlay {
     pub title: Option<String>,
     pub archived: Option<bool>,
+    #[serde(default)]
+    pub options: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Default, Deserialize, Serialize)]
@@ -136,6 +139,27 @@ impl Home {
 
     pub(crate) fn check_token(&self, token: &str) -> bool {
         equal(&self.state.lock().unwrap().local_token, token)
+    }
+
+    pub(crate) fn new_local_session(&self) -> Result<String> {
+        let token = secret(32)?;
+        self.change_state(|state| {
+            if state.local_session_hashes.len() >= 64 {
+                state.local_session_hashes.remove(0);
+            }
+            state.local_session_hashes.push(device_token_hash(&token));
+        })?;
+        Ok(token)
+    }
+
+    pub(crate) fn check_local_session(&self, token: &str) -> bool {
+        let hash = device_token_hash(token);
+        self.read_state(|state| {
+            state
+                .local_session_hashes
+                .iter()
+                .any(|stored| equal(stored, &hash))
+        })
     }
 
     pub(crate) fn read_state<T>(&self, action: impl FnOnce(&State) -> T) -> T {

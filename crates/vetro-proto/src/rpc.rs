@@ -182,6 +182,7 @@ pub struct ProjectsResult {
     pub projects: Vec<Project>,
 }
 
+/// Parameters for `projects.add` and `projects.remove`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]

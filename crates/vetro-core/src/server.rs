@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     future::Future,
     io,
     net::{Ipv4Addr, SocketAddr},
@@ -27,7 +28,7 @@ use tokio::{
 use vetro_agent_api::Result;
 use vetro_proto::rpc::RpcRequest;
 
-use crate::{home::secret, internal, Core};
+use crate::{internal, Core};
 
 mod auth;
 mod rpc;
@@ -70,7 +71,7 @@ impl Server {
         let (stop, stopping) = watch::channel(false);
         let state = Arc::new(HttpState {
             core,
-            auth: auth::Auth::new(secret(32)?),
+            auth: auth::Auth::new(),
             address,
             web_dir: std::env::var_os("VETRO_WEB_DIR").map(PathBuf::from),
             stopping,
@@ -224,8 +225,12 @@ async fn upgrade(
 }
 
 async fn websocket(mut socket: WebSocket, state: Arc<HttpState>, client: auth::Client) {
+    const MAX_REQUESTS: usize = 32;
+    const RESYNC: &str = r#"{"event":"app.resync","data":{}}"#;
     let mut connection = rpc::Connection::default();
     let mut events = state.core.events.subscribe();
+    let mut requests = tokio::task::JoinSet::new();
+    let mut pending_opens = HashMap::new();
     let mut stopping = state.stopping.clone();
     let invalidated = client.invalidated(&state, state.auth.changes());
     tokio::pin!(invalidated);
@@ -233,6 +238,7 @@ async fn websocket(mut socket: WebSocket, state: Arc<HttpState>, client: auth::C
         return;
     }
     loop {
+        let mut completed = None;
         let message = tokio::select! {
             _ = &mut invalidated => break,
             _ = stopping.changed() => break,
@@ -246,45 +252,98 @@ async fn websocket(mut socket: WebSocket, state: Arc<HttpState>, client: auth::C
                         if !client.valid(&state) {
                             break;
                         }
-                        let response = tokio::select! {
-                            _ = &mut invalidated => break,
-                            _ = stopping.changed() => break,
-                            response = rpc::dispatch(&state, &client, &mut connection, request) => response,
-                        };
-                        serde_json::to_string(&response)
+                        let thread_id = request.params["threadId"].as_str().map(str::to_owned);
+                        if !connection.hello || matches!(request.method.as_str(), "app.hello" | "threads.close") {
+                            if request.method == "threads.close" {
+                                if let Some(id) = thread_id {
+                                    pending_opens.remove(&id);
+                                }
+                            }
+                            serde_json::to_string(&rpc::dispatch(&state, &client, &mut connection, request).await)
+                        } else if requests.len() >= MAX_REQUESTS {
+                            serde_json::to_string(&json!({
+                                "id": request.id,
+                                "error": {"code": "busy", "message": "Too many concurrent requests"}
+                            }))
+                        } else {
+                            let opened = if request.method == "threads.open" {
+                                thread_id.inspect(|id| {
+                                    pending_opens.insert(id.clone(), request.id);
+                                })
+                            } else {
+                                None
+                            };
+                            let state = state.clone();
+                            let client = client.clone();
+                            requests.spawn(async move {
+                                let mut request_connection = rpc::Connection::default();
+                                request_connection.hello = true;
+                                let response = rpc::dispatch(&state, &client, &mut request_connection, request).await;
+                                (response, request_connection, opened)
+                            });
+                            continue;
+                        }
                     }
                     Message::Close(_) => break,
                     _ => continue,
                 }
             }
+            Some(result) = requests.join_next(), if !requests.is_empty() => {
+                let Ok((response, request_connection, opened)) = result else { continue };
+                if opened.is_none_or(|id| {
+                    if pending_opens.get(&id) != Some(&response.id) {
+                        return false;
+                    }
+                    pending_opens.remove(&id);
+                    true
+                }) {
+                    completed = Some(request_connection);
+                }
+                serde_json::to_string(&response)
+            }
             event = events.recv() => {
-                let event = match event {
-                    Ok(event) => event,
-                    Err(broadcast::error::RecvError::Lagged(_) | broadcast::error::RecvError::Closed) => break,
-                };
                 if !client.valid(&state) {
                     break;
                 }
-                if !connection.accepts(&event) {
-                    continue;
-                }
-                if matches!(&*event, vetro_proto::rpc::ServerEvent::RemoteUpdated { .. }) {
-                    serde_json::to_string(&vetro_proto::rpc::ServerEvent::RemoteUpdated {
+                match event {
+                    Ok(event) if !connection.accepts(&event) => continue,
+                    Ok(event) if matches!(&*event, vetro_proto::rpc::ServerEvent::RemoteUpdated { .. }) => {
+                        serde_json::to_string(&vetro_proto::rpc::ServerEvent::RemoteUpdated {
                         status: auth::status(&state, &client),
-                    })
-                } else {
-                    serde_json::to_string(&*event)
+                        })
+                    }
+                    Ok(event) => serde_json::to_string(&*event),
+                    Err(broadcast::error::RecvError::Lagged(_)) if connection.hello => Ok(RESYNC.into()),
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => break,
                 }
             }
         };
         let Ok(message) = message else { break };
-        let sent = tokio::select! {
-            _ = &mut invalidated => break,
-            _ = stopping.changed() => break,
-            sent = tokio::time::timeout(Duration::from_secs(10), socket.send(Message::Text(message.into()))) => sent,
-        };
-        if !matches!(sent, Ok(Ok(()))) {
-            break;
+        let mut outgoing = vec![message];
+        if let Some(completed) = completed {
+            match connection.merge(completed) {
+                Some(events) => {
+                    for event in events {
+                        if connection.accepts(&event) {
+                            if let Ok(message) = serde_json::to_string(&*event) {
+                                outgoing.push(message);
+                            }
+                        }
+                    }
+                }
+                None => outgoing.push(RESYNC.into()),
+            }
+        }
+        for message in outgoing {
+            let sent = tokio::select! {
+                _ = &mut invalidated => return,
+                _ = stopping.changed() => return,
+                sent = tokio::time::timeout(Duration::from_secs(10), socket.send(Message::Text(message.into()))) => sent,
+            };
+            if !matches!(sent, Ok(Ok(()))) {
+                return;
+            }
         }
     }
 }
@@ -365,5 +424,73 @@ mod port_tests {
         let first_port = first.local_addr().unwrap().port();
         assert!(first_port >= DEFAULT_PORT);
         assert!(second.local_addr().unwrap().port() > first_port);
+    }
+
+    #[tokio::test]
+    async fn lagging_websocket_requests_resynchronization_without_closing() {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::{connect_async, tungstenite};
+        use tungstenite::client::IntoClientRequest;
+        use vetro_proto::rpc::ServerEvent;
+
+        let root = tempfile::tempdir().unwrap();
+        let home = crate::home::Home::open(root.path().join(".vetro"), root.path().into()).unwrap();
+        let cookie = format!("vetro_session={}", home.new_local_session().unwrap());
+        let core = Core::new(home, crate::registry::Registry::default());
+        let server = Server::bind(core.clone(), Some(0)).await.unwrap();
+        let mut request = format!("ws://{}/api/ws", server.address())
+            .into_client_request()
+            .unwrap();
+        request
+            .headers_mut()
+            .insert(header::COOKIE, cookie.parse().unwrap());
+        let (stop, stopping) = tokio::sync::oneshot::channel();
+        let serving = tokio::spawn(server.serve(async {
+            let _ = stopping.await;
+        }));
+        let (mut socket, _) = connect_async(request).await.unwrap();
+        socket.send(tungstenite::Message::Text(json!({
+            "id": 1, "method": "app.hello", "params": {"protocolVersion": 1, "clientName": "test"},
+        }).to_string().into())).await.unwrap();
+        let frame = socket.next().await.unwrap().unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(frame.to_text().unwrap()).unwrap()["id"],
+            1
+        );
+        for _ in 0..2048 {
+            core.publish(ServerEvent::ProjectsUpdated {
+                projects: Vec::new(),
+            });
+        }
+        let frame = socket.next().await.unwrap().unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(frame.to_text().unwrap()).unwrap()["event"],
+            "app.resync"
+        );
+        socket
+            .send(tungstenite::Message::Text(
+                json!({
+                    "id": 2, "method": "projects.list", "params": {},
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let frame = socket.next().await.unwrap().unwrap();
+                let value: serde_json::Value =
+                    serde_json::from_str(frame.to_text().unwrap()).unwrap();
+                if value["id"] == 2 {
+                    assert_eq!(value["result"]["projects"], json!([]));
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        stop.send(()).unwrap();
+        serving.await.unwrap().unwrap();
     }
 }

@@ -113,7 +113,7 @@ impl Agent for CodexAgent {
             path: self
                 .spec
                 .as_ref()
-                .map(|spec| spec.program.to_string_lossy().into_owned()),
+                .map(|spec| mapping::display_path(&spec.program.to_string_lossy())),
             version: None,
             auth: AgentAuth {
                 state: AuthState::Unknown,
@@ -230,15 +230,19 @@ impl Agent for CodexAgent {
     }
 
     async fn read(&self, native_id: &str, _cwd: Option<&Path>) -> Result<Transcript> {
-        let response = self
-            .app()
-            .await?
-            .call(
-                "thread/read",
-                json!({ "threadId": native_id, "includeTurns": true }),
-            )
-            .await?;
-        Ok(mapping::transcript(&response["thread"]))
+        let app = self.app().await?;
+        match app.transcript(native_id).await {
+            Err(error) if error.code == ErrorCode::NotResumable => {
+                let response = app
+                    .call(
+                        "thread/read",
+                        json!({ "threadId": native_id, "includeTurns": true }),
+                    )
+                    .await?;
+                Ok(mapping::transcript(&response["thread"]))
+            }
+            result => result,
+        }
     }
 
     async fn start(&self, req: StartRequest, sink: EventSink) -> Result<Arc<dyn Session>> {
@@ -275,7 +279,14 @@ impl Agent for CodexAgent {
         let catalog = catalog::Catalog::load(&app, cwd).await?;
         let live = Live::register(Arc::clone(&app), native_id.to_owned(), sink, catalog)?;
         match app
-            .call("thread/resume", json!({ "threadId": native_id }))
+            .call(
+                "thread/resume",
+                json!({
+                    "threadId": native_id,
+                    "excludeTurns": true,
+                    "initialTurnsPage": {"limit": 1, "itemsView": "notLoaded"}
+                }),
+            )
             .await
         {
             Ok(response) => {
@@ -336,7 +347,7 @@ struct App {
 impl App {
     async fn start(mut spawn: SpawnSpec) -> Result<Arc<Self>> {
         spawn.args.insert(0, "app-server".into());
-        let log = WireLog::default().with_filter(|text| {
+        let log = WireLog::default().multiplexed().with_filter(|text| {
             if !text.contains("\"userCode\"") && !text.contains("\"authUrl\"") {
                 return true;
             }
@@ -354,10 +365,19 @@ impl App {
         let result = call(&peer, "initialize", json!({
             "clientInfo": {"name": "vetro", "title": "Vetro", "version": env!("CARGO_PKG_VERSION")},
             "capabilities": {"experimentalApi": true},
-        })).await?;
-        peer.notify("initialized", None)
-            .await
-            .map_err(transport_error)?;
+        })).await;
+        let result = match result {
+            Ok(result) => result,
+            Err(mut error) => {
+                error.message.push_str(&peer.exit_detail().await);
+                return Err(error);
+            }
+        };
+        if let Err(error) = peer.notify("initialized", None).await {
+            let mut error = transport_error(error);
+            error.message.push_str(&peer.exit_detail().await);
+            return Err(error);
+        }
         let version = result["userAgent"]
             .as_str()
             .and_then(|agent| agent.split_whitespace().next()?.split_once('/'))
@@ -373,6 +393,39 @@ impl App {
 
     async fn call(&self, method: &str, params: Value) -> Result<Value> {
         call(&self.peer, method, params).await
+    }
+
+    async fn transcript(&self, thread_id: &str) -> Result<Transcript> {
+        let turns = catalog::pages(self, "thread/turns/list", json!({
+            "threadId": thread_id, "itemsView": "notLoaded", "sortDirection": "asc", "limit": 64,
+        })).await?;
+        let mut transcript = Transcript::default();
+        for turn in turns {
+            let Some(turn_id) = turn["id"].as_str() else {
+                continue;
+            };
+            let entries = catalog::pages(
+                self,
+                "thread/items/list",
+                json!({
+                    "threadId": thread_id, "turnId": turn_id, "sortDirection": "asc", "limit": 100,
+                }),
+            )
+            .await?;
+            for entry in entries {
+                if let Some(mut item) = mapping::item(&entry["item"], Some(turn_id), false) {
+                    item.ts = entry["startedAtMs"]
+                        .as_i64()
+                        .or_else(|| entry["completedAtMs"].as_i64())
+                        .or(item.ts);
+                    transcript.items.push(item);
+                }
+            }
+            if let Some(end) = mapping::turn_end(&turn, None) {
+                transcript.items.push(end);
+            }
+        }
+        Ok(transcript)
     }
 
     async fn requirements(&self) -> Value {
@@ -514,6 +567,7 @@ fn transport_error(error: jsonrpc::Error) -> AgentError {
             let code = match remote.code {
                 401 => ErrorCode::AuthRequired,
                 -32602 => ErrorCode::BadRequest,
+                -32601 => ErrorCode::NotResumable,
                 _ => ErrorCode::Internal,
             };
             AgentError::new(code, error.to_string())

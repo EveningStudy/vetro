@@ -15,6 +15,76 @@ use vetro_proto::{
 use crate::{catalog::Catalog, CodexAgent};
 
 #[tokio::test]
+#[ignore = "uses one short provider prompt on the installed Codex"]
+async fn installed_per_thread_raw_log() {
+    let agent = CodexAgent::default();
+    agent.list(None).await.unwrap();
+    let cwd = scratch();
+    let catalog = agent.options(Some(&cwd), &BTreeMap::new()).await.unwrap();
+    let mut options = BTreeMap::from([("model".into(), cheap_model(&catalog.options))]);
+    let dependent = agent.options(Some(&cwd), &options).await.unwrap();
+    if let Some(effort) = lowest_effort(&dependent.options) {
+        options.insert("effort".into(), effort);
+    }
+    let (sink, mut events) = mpsc::unbounded_channel();
+    let session = agent
+        .start(
+            StartRequest {
+                cwd,
+                content: text("Reply OK."),
+                options,
+            },
+            sink,
+        )
+        .await
+        .unwrap();
+    let methods: Vec<_> = session
+        .wire_log()
+        .snapshot()
+        .into_iter()
+        .filter_map(|entry| {
+            if entry.direction == RawDirection::Spawn {
+                return Some("spawn".to_owned());
+            }
+            if entry.direction != RawDirection::Sent {
+                return None;
+            }
+            let value: Value = serde_json::from_str(&entry.text).ok()?;
+            if let Some(id) = value["params"]["threadId"].as_str() {
+                assert_eq!(id, session.native_id());
+            }
+            value["method"].as_str().map(str::to_owned)
+        })
+        .collect();
+    assert_eq!(
+        methods,
+        [
+            "spawn",
+            "initialize",
+            "initialized",
+            "thread/start",
+            "turn/start"
+        ]
+    );
+    println!("Scoped Codex raw log contains {}", methods.join(", "));
+    tokio::time::timeout(Duration::from_secs(45), async {
+        while let Some(event) = events.recv().await {
+            if let SessionEvent::Item(item) = event {
+                if let ItemKind::TurnEnd { stop_reason, .. } = item.kind {
+                    assert_eq!(stop_reason, StopReason::EndTurn);
+                    return;
+                }
+            }
+        }
+        panic!("Codex closed before answering");
+    })
+    .await
+    .unwrap();
+    session.detach().await;
+    agent.shutdown().await;
+}
+
+#[tokio::test]
 #[ignore = "uses the installed Codex and two short provider prompts"]
 async fn installed_app_server() {
     let cwd = scratch();
@@ -72,7 +142,6 @@ async fn installed_app_server() {
         )
         .await
         .unwrap();
-    let log = session.wire_log();
     let mut answer = String::new();
     let end = tokio::time::timeout(Duration::from_secs(90), async {
         loop {
@@ -116,6 +185,7 @@ async fn installed_app_server() {
         content: text("Run `Set-Content -LiteralPath ./approval-marker.txt -Value VETRO_APPROVAL` once, then say OK."),
         options: model_options,
     }, sink).await.unwrap();
+    let log = session.wire_log();
     let mut approved = false;
     let mut command_completed = false;
     let end = tokio::time::timeout(Duration::from_secs(90), async {

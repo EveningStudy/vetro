@@ -2,8 +2,8 @@ use std::{
     collections::{BTreeMap, HashMap},
     env,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
-    time::Duration,
+    sync::{Arc, Mutex, Weak},
+    time::{Duration, Instant},
 };
 
 use serde_json::{json, Value};
@@ -36,13 +36,18 @@ pub struct AcpAgent {
     version: OnceCell<Option<String>>,
     runtime: AsyncMutex<Option<Arc<Runtime>>>,
     directories: Mutex<HashMap<String, PathBuf>>,
+    connection: Mutex<Weak<Connection>>,
+    previous_method: Option<Arc<Mutex<Option<String>>>>,
 }
 
 struct Runtime {
     connection: Arc<Connection>,
     capabilities: Capabilities,
     methods: Vec<AuthMethod>,
+    prepared: Mutex<Option<(Instant, Arc<AcpSession>)>>,
 }
+
+const PREPARED_TTL: Duration = Duration::from_secs(60);
 
 #[derive(Default)]
 pub(crate) struct Capabilities {
@@ -60,12 +65,14 @@ impl AcpAgent {
         let id = id.into();
         Self {
             steering: id == "antigravity",
+            previous_method: (id == "devin").then(|| Arc::new(Mutex::new(None))),
             id,
             name: name.into(),
             spec,
             version: OnceCell::new(),
             runtime: AsyncMutex::new(None),
             directories: Mutex::new(HashMap::new()),
+            connection: Mutex::new(Weak::new()),
         }
     }
 
@@ -106,7 +113,7 @@ impl AcpAgent {
         if spec.cwd.is_none() {
             spec.cwd = cwd.map(Path::to_owned);
         }
-        let connection = Connection::spawn(spec)?;
+        let connection = Connection::spawn(spec, self.previous_method.clone())?;
         let initial = connection
             .call(
                 "initialize",
@@ -120,8 +127,11 @@ impl AcpAgent {
                     "clientInfo": { "name": "vetro", "version": env!("CARGO_PKG_VERSION") }
                 }),
             )
-            .await
-            .map_err(agent_error)?;
+            .await;
+        let initial = match initial {
+            Ok(initial) => initial,
+            Err(error) => return Err(connection.startup_error(error).await),
+        };
         if initial["protocolVersion"].as_u64() != Some(1) {
             return Err(AgentError::new(
                 ErrorCode::AgentUnavailable,
@@ -133,6 +143,7 @@ impl AcpAgent {
         let supports = |key: &str| session[key].is_object() || session[key].as_bool() == Some(true);
         let runtime = Arc::new(Runtime {
             connection,
+            prepared: Mutex::new(None),
             capabilities: Capabilities {
                 image: agent["promptCapabilities"]["image"]
                     .as_bool()
@@ -158,15 +169,11 @@ impl AcpAgent {
                 })
                 .collect(),
         });
-        if self.id == "devin"
-            && runtime
-                .methods
-                .iter()
-                .any(|method| method.id == "devin-browser")
-        {
+        if self.id == "devin" {
             *runtime.connection.auth.lock().unwrap() = AuthState::Required;
         }
         *current = Some(Arc::clone(&runtime));
+        *self.connection.lock().unwrap() = Arc::downgrade(&runtime.connection);
         Ok(runtime)
     }
 
@@ -234,7 +241,16 @@ impl AcpAgent {
         }
         let params = cursor.map_or_else(|| json!({}), |cursor| json!({ "cursor": cursor }));
         let result = runtime.call("session/list", params).await?;
+        let prepared = runtime
+            .prepared
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|(_, session)| session.id.clone());
         let sessions = array(&result["sessions"])
+            .filter(|session| {
+                session["sessionId"].as_str() != prepared.as_deref() || prepared.is_none()
+            })
             .filter_map(|session| {
                 mapping::record(
                     session,
@@ -293,6 +309,26 @@ impl Runtime {
         }
         self.connection.unregister(id);
     }
+
+    async fn discard_prepared(&self, session: Arc<AcpSession>) {
+        self.close_session(&session.id).await;
+        if self.capabilities.delete {
+            let _ = self
+                .call("session/delete", json!({ "sessionId": session.id }))
+                .await;
+        }
+    }
+
+    fn take_expired_prepared(&self) -> Option<Arc<AcpSession>> {
+        let mut prepared = self.prepared.lock().unwrap();
+        if prepared
+            .as_ref()
+            .is_some_and(|(created, _)| created.elapsed() >= PREPARED_TTL)
+        {
+            return prepared.take().map(|(_, session)| session);
+        }
+        None
+    }
 }
 
 #[async_trait]
@@ -348,9 +384,32 @@ impl Agent for AcpAgent {
     async fn authenticate(&self, method_id: &str) -> Result<AuthenticateResult> {
         self.runtime(None)
             .await?
-            .call("authenticate", json!({ "methodId": method_id }))
+            .connection
+            .authenticate(method_id)
             .await?;
         Ok(AuthenticateResult::default())
+    }
+
+    fn process_auth(&self) -> Option<AuthState> {
+        self.previous_method.as_ref()?;
+        Some(
+            self.connection
+                .lock()
+                .unwrap()
+                .upgrade()
+                .filter(|connection| connection.alive())
+                .map_or(AuthState::Required, |connection| {
+                    *connection.auth.lock().unwrap()
+                }),
+        )
+    }
+
+    async fn recover_auth(&self) -> Result<bool> {
+        let connection = self.connection.lock().unwrap().upgrade();
+        match connection {
+            Some(connection) if self.previous_method.is_some() => connection.recover_auth().await,
+            _ => Ok(false),
+        }
     }
 
     async fn options(
@@ -361,20 +420,21 @@ impl Agent for AcpAgent {
         let cwd = self.cwd(cwd)?;
         let runtime = self.runtime(Some(&cwd)).await?;
         let _lifecycle = runtime.connection.lifecycle.lock().await;
-        let mut cache = runtime.connection.options.lock().await;
-        if let Some(cached) = &*cache {
-            return Ok(cached.clone());
+        let previous = {
+            let mut prepared = runtime.prepared.lock().unwrap();
+            if let Some((created, session)) = &*prepared {
+                if session.cwd == cwd && created.elapsed() < PREPARED_TTL {
+                    return Ok(session.options());
+                }
+            }
+            prepared.take()
+        };
+        if let Some((_, session)) = previous {
+            runtime.discard_prepared(session).await;
         }
         let session = self.new_session(&runtime, cwd, None).await?;
-        let mut options = session.options();
-        runtime.close_session(&session.id).await;
-        options.commands = session.options().commands;
-        if runtime.capabilities.delete {
-            let _ = runtime
-                .call("session/delete", json!({ "sessionId": session.id }))
-                .await;
-        }
-        *cache = Some(options.clone());
+        let options = session.options();
+        *runtime.prepared.lock().unwrap() = Some((Instant::now(), session));
         Ok(options)
     }
 
@@ -436,8 +496,23 @@ impl Agent for AcpAgent {
         mapping::prompt(&req.content, &cwd, runtime.capabilities.image)?;
         let session = {
             let _lifecycle = runtime.connection.lifecycle.lock().await;
-            self.new_session(&runtime, cwd.clone(), Some(sink)).await?
+            let previous = runtime.prepared.lock().unwrap().take();
+            match previous {
+                Some((created, session))
+                    if session.cwd == cwd && created.elapsed() < PREPARED_TTL =>
+                {
+                    session.activate(&Value::Null, sink);
+                    session
+                }
+                previous => {
+                    if let Some((_, session)) = previous {
+                        runtime.discard_prepared(session).await;
+                    }
+                    self.new_session(&runtime, cwd.clone(), Some(sink)).await?
+                }
+            }
         };
+        session.capture_initial_options();
         self.remember(&session.id, &cwd);
         let result = async {
             for (id, value) in req.options {
@@ -502,7 +577,25 @@ impl Agent for AcpAgent {
     async fn shutdown(&self) {
         let mut current = self.runtime.lock().await;
         if let Some(runtime) = current.take() {
+            let prepared = runtime.prepared.lock().unwrap().take();
+            if let Some((_, session)) = prepared {
+                let _ =
+                    tokio::time::timeout(Duration::from_secs(2), runtime.discard_prepared(session))
+                        .await;
+            }
             runtime.connection.stop().await;
+        }
+    }
+
+    async fn maintain(&self) {
+        let runtime = self.runtime.lock().await.clone();
+        if let Some(runtime) = runtime {
+            let _lifecycle = runtime.connection.lifecycle.lock().await;
+            if let Some(session) = runtime.take_expired_prepared() {
+                let _ =
+                    tokio::time::timeout(Duration::from_secs(2), runtime.discard_prepared(session))
+                        .await;
+            }
         }
     }
 }

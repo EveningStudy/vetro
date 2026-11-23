@@ -22,6 +22,7 @@ pub(crate) struct Fake {
     pub authenticated: Arc<AtomicBool>,
     pub history_path: PathBuf,
     pub reads: AtomicUsize,
+    pub option_reads: AtomicUsize,
 }
 
 #[async_trait]
@@ -58,6 +59,7 @@ impl Agent for Fake {
 
     async fn authenticate(&self, method_id: &str) -> Result<AuthenticateResult> {
         assert_eq!(method_id, "fake-login");
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         self.authenticated.store(true, Ordering::Relaxed);
         Ok(AuthenticateResult::default())
     }
@@ -67,9 +69,14 @@ impl Agent for Fake {
         _: Option<&Path>,
         _: &BTreeMap<String, String>,
     ) -> Result<AgentOptions> {
+        self.option_reads.fetch_add(1, Ordering::Relaxed);
         Ok(AgentOptions {
             options: vec![model("native")],
-            commands: Vec::new(),
+            commands: vec![SlashCommand {
+                name: "help".into(),
+                description: None,
+                input_hint: None,
+            }],
         })
     }
 

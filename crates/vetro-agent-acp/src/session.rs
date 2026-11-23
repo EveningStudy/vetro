@@ -3,7 +3,7 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
     },
     time::Instant,
 };
@@ -33,12 +33,14 @@ static NEXT_LIVE_INSTANCE: AtomicU64 = AtomicU64::new(1);
 pub(crate) struct AcpSession {
     pub connection: Arc<Connection>,
     pub id: String,
-    cwd: PathBuf,
+    pub cwd: PathBuf,
     image: bool,
     steering: bool,
     pub can_close: bool,
     outbound: AsyncMutex<()>,
     state: Mutex<State>,
+    initial_options: OnceLock<AgentOptions>,
+    log: Arc<WireLog>,
 }
 
 #[derive(Default)]
@@ -103,6 +105,11 @@ impl AcpSession {
         sink: Option<EventSink>,
         capture_replay: bool,
     ) -> Arc<Self> {
+        let log = if capture_replay {
+            Arc::new(WireLog::default())
+        } else {
+            connection.log().session(&id)
+        };
         Arc::new(Self {
             connection,
             id,
@@ -111,6 +118,8 @@ impl AcpSession {
             steering: capabilities.steering,
             can_close: capabilities.close,
             outbound: AsyncMutex::new(()),
+            initial_options: OnceLock::new(),
+            log,
             state: Mutex::new(State {
                 sink,
                 replay: capture_replay.then(Replay::default),
@@ -140,6 +149,48 @@ impl AcpSession {
             options: state.config.options(),
             commands: state.commands.clone(),
         }
+    }
+
+    pub fn capture_initial_options(&self) {
+        self.initial_options.get_or_init(|| self.options());
+    }
+
+    async fn submit_prompt(self: &Arc<Self>, params: Value, retry: bool) -> Result<()> {
+        let session = Arc::downgrade(self);
+        let retry_params = retry.then(|| params.clone());
+        self.connection
+            .submit("session/prompt", params, move |reply| {
+                let Some(session) = session.upgrade() else {
+                    return;
+                };
+                if let (Some(params), Err(Error::Remote(error))) = (retry_params, &reply) {
+                    if error.code == -32000 {
+                        session.connection.observe_auth("session/prompt", &reply);
+                        tokio::spawn(async move {
+                            if matches!(session.connection.recover_auth().await, Ok(true))
+                                && session.submit_prompt_once(params).await.is_ok()
+                            {
+                                return;
+                            }
+                            session.complete_prompt(reply);
+                        });
+                        return;
+                    }
+                }
+                session.complete_prompt(reply);
+            })
+            .await
+    }
+
+    async fn submit_prompt_once(self: &Arc<Self>, params: Value) -> Result<()> {
+        let session = Arc::downgrade(self);
+        self.connection
+            .submit("session/prompt", params, move |reply| {
+                if let Some(session) = session.upgrade() {
+                    session.complete_prompt(reply);
+                }
+            })
+            .await
     }
 
     pub fn activate(&self, value: &Value, sink: EventSink) {
@@ -350,10 +401,16 @@ impl Session for AcpSession {
         &self.id
     }
 
+    fn initial_options(&self) -> Option<AgentOptions> {
+        self.initial_options.get().cloned()
+    }
+
     async fn send(&self, content: Vec<ContentBlock>) -> Result<()> {
         let prompt = mapping::prompt(&content, &self.cwd, self.image)?;
         let _outbound = self.outbound.lock().await;
-        if *self.connection.auth.lock().unwrap() == vetro_proto::AuthState::Required {
+        let requires_auth =
+            *self.connection.auth.lock().unwrap() == vetro_proto::AuthState::Required;
+        if requires_auth && !self.connection.recover_auth().await? {
             return Err(AgentError::new(
                 ErrorCode::AuthRequired,
                 "Sign in to the agent first",
@@ -388,17 +445,8 @@ impl Session for AcpSession {
             }
             state.status_after_input(false);
         }
-        let session = Arc::downgrade(&session);
-        self.connection
-            .submit(
-                "session/prompt",
-                json!({ "sessionId": self.id, "prompt": prompt }),
-                move |reply| {
-                    if let Some(session) = session.upgrade() {
-                        session.complete_prompt(reply);
-                    }
-                },
-            )
+        session
+            .submit_prompt(json!({ "sessionId": self.id, "prompt": prompt }), true)
             .await
     }
 
@@ -494,7 +542,7 @@ impl Session for AcpSession {
     }
 
     fn wire_log(&self) -> Arc<WireLog> {
-        self.connection.log()
+        self.log.clone()
     }
 }
 

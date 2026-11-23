@@ -17,12 +17,12 @@ use crate::{bad_request, files, internal, sessions::Thread};
 
 #[derive(Default)]
 pub(super) struct Connection {
-    hello: bool,
+    pub(super) hello: bool,
     subscriptions: HashMap<String, Subscription>,
 }
 
 struct Subscription {
-    _thread: Arc<Thread>,
+    thread: Arc<Thread>,
     seq: u64,
 }
 
@@ -44,13 +44,23 @@ impl Connection {
     }
 
     fn subscribe(&mut self, id: String, thread: Arc<Thread>, seq: u64) {
-        self.subscriptions.insert(
-            id,
-            Subscription {
-                _thread: thread,
-                seq,
-            },
-        );
+        self.subscriptions.insert(id, Subscription { thread, seq });
+    }
+
+    pub(super) fn merge(&mut self, completed: Self) -> Option<Vec<Arc<ServerEvent>>> {
+        let mut replay = Some(Vec::new());
+        for (id, subscription) in completed.subscriptions {
+            match subscription.thread.events_after(subscription.seq) {
+                Some(events) => {
+                    if let Some(replay) = &mut replay {
+                        replay.extend(events);
+                    }
+                }
+                None => replay = None,
+            }
+            self.subscriptions.insert(id, subscription);
+        }
+        replay
     }
 }
 
@@ -114,6 +124,11 @@ async fn call(
         "projects.add" => {
             client.desktop()?;
             output(core.add_project(parse(params)?)?)
+        }
+        "projects.remove" => {
+            client.desktop()?;
+            core.remove_project(parse(params)?)?;
+            empty()
         }
         "projects.update" => output(core.update_project(parse(params)?)?),
         "threads.list" => output(core.threads(parse(params)?)?),

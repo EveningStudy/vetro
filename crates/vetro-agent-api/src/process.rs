@@ -58,6 +58,8 @@ pub struct Process {
     tree: Arc<platform::Tree>,
     stdin: Mutex<Option<mpsc::Sender<WriteLine>>>,
     exited: watch::Receiver<Option<std::result::Result<ExitStatus, Arc<io::Error>>>>,
+    stderr: Arc<WireLog>,
+    stderr_drained: watch::Receiver<bool>,
     log: Arc<WireLog>,
 }
 
@@ -89,12 +91,14 @@ impl Process {
             Arc::clone(&log),
             RawDirection::Received,
         ));
-        tokio::spawn(read_lines(
-            child.stderr,
-            None,
-            Arc::clone(&log),
-            RawDirection::Stderr,
-        ));
+        let stderr = Arc::new(WireLog::new(16 * 1024));
+        let tail = stderr.clone();
+        let stderr_log = log.clone();
+        let (drained, stderr_drained) = watch::channel(false);
+        tokio::spawn(async move {
+            read_stderr(child.stderr, stderr_log, tail).await;
+            drained.send_replace(true);
+        });
 
         let live_tree = Arc::clone(&tree);
         tokio::spawn(async move {
@@ -109,6 +113,8 @@ impl Process {
                 tree,
                 stdin: Mutex::new(Some(stdin)),
                 exited,
+                stderr,
+                stderr_drained,
                 log,
             },
             lines,
@@ -125,6 +131,24 @@ impl Process {
 
     pub fn wire_log(&self) -> Arc<WireLog> {
         Arc::clone(&self.log)
+    }
+
+    pub async fn exit_detail(&self) -> String {
+        let Ok(Ok(status)) = tokio::time::timeout(GRACE_PERIOD, self.wait()).await else {
+            return String::new();
+        };
+        let mut drained = self.stderr_drained.clone();
+        let _ = tokio::time::timeout(GRACE_PERIOD, drained.wait_for(|done| *done)).await;
+        let mut entries = self.stderr.snapshot();
+        if entries.len() > 8 {
+            entries.drain(..entries.len() - 8);
+        }
+        let mut result = format!(" ({status})");
+        for entry in entries {
+            result.push('\n');
+            result.push_str(&entry.text);
+        }
+        result
     }
 
     /// Enqueues a line without its terminator and waits for the write to complete.
@@ -255,4 +279,20 @@ async fn read_lines(
             log.record(direction, text);
         }
     }
+}
+
+async fn read_stderr(reader: impl AsyncRead + Unpin, log: Arc<WireLog>, tail: Arc<WireLog>) {
+    let (sender, mut lines) = mpsc::channel(32);
+    let read = read_lines(reader, Some(sender), log, RawDirection::Stderr);
+    let collect = async {
+        while let Some(Ok(mut line)) = lines.recv().await {
+            let mut start = line.len().saturating_sub(2048);
+            while !line.is_char_boundary(start) {
+                start += 1;
+            }
+            line.drain(..start);
+            tail.record(RawDirection::Stderr, line);
+        }
+    };
+    tokio::join!(read, collect);
 }

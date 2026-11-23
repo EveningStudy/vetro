@@ -52,6 +52,11 @@ fn chunk(id: &Value, kind: &str, text: &str) {
 }
 
 fn fake(scenario: &str) {
+    if scenario == "startup-failure" {
+        eprintln!("duplicate --process-model");
+        eprintln!("failed before initialize");
+        std::process::exit(71);
+    }
     if scenario == "env" {
         assert_eq!(
             env::var("VETRO_FAKE_ACP_VALUE").as_deref(),
@@ -79,14 +84,22 @@ fn fake(scenario: &str) {
                         "clientInfo": {"name":"vetro","version":env!("CARGO_PKG_VERSION")}
                     })
                 );
-                json!({ "protocolVersion":1, "agentCapabilities":{"loadSession":true, "sessionCapabilities":{"list":{},"close":{},"delete":{},"resume":{}}, "promptCapabilities":{"image":true}}, "authMethods":[{"id":"test","name":"Test"}], "_meta":{"ignored":true} })
+                let method = if scenario == "devin" {
+                    "devin-browser"
+                } else {
+                    "test"
+                };
+                json!({ "protocolVersion":1, "agentCapabilities":{"loadSession":true, "sessionCapabilities":{"list":{},"close":{},"delete":{},"resume":{}}, "promptCapabilities":{"image":true}}, "authMethods":[{"id":method,"name":"Test"}], "_meta":{"ignored":true} })
             }
             Some("authenticate") => {
-                assert_eq!(params, &json!({"methodId":"test"}));
+                assert_eq!(
+                    params,
+                    &json!({"methodId": if scenario == "devin" { "devin-browser" } else { "test" }})
+                );
                 authenticated = true;
                 json!({})
             }
-            Some("session/new") if scenario == "auth" && !authenticated => {
+            Some("session/new") if matches!(scenario, "auth" | "devin") && !authenticated => {
                 output(
                     json!({"id":id,"error":{"code":-32000,"message":"Authentication required"}}),
                 );
@@ -110,6 +123,12 @@ fn fake(scenario: &str) {
                 json!({"sessions":[{"sessionId":"stored","cwd":cwd,"title":"Saved","updatedAt":"2026-11-23T00:00:00.250Z"}]})
             }
             Some("session/load" | "session/resume") => {
+                if scenario == "devin" && !authenticated {
+                    output(
+                        json!({"id":id,"error":{"code":-32000,"message":"Authentication required"}}),
+                    );
+                    continue;
+                }
                 assert_eq!(params.as_object().unwrap().len(), 3);
                 assert_eq!(params["sessionId"], "stored");
                 assert_eq!(params["mcpServers"], json!([]));
@@ -279,6 +298,31 @@ async fn until_end(
 }
 
 async fn suites() {
+    let failure = agent("startup-failure").info().await.error.unwrap();
+    assert!(
+        failure.contains("71")
+            && failure.contains("duplicate --process-model")
+            && failure.contains("failed before initialize"),
+        "{failure}"
+    );
+    let mut spec = SpawnSpec::new(env::current_exe().unwrap());
+    spec.args = vec!["--agent".into(), "devin".into()];
+    let devin = AcpAgent::new("devin", "Devin", spec);
+    assert_eq!(devin.info().await.auth.state, AuthState::Required);
+    assert!(!devin.recover_auth().await.unwrap());
+    devin.authenticate("devin-browser").await.unwrap();
+    assert_eq!(devin.process_auth(), Some(AuthState::Ok));
+    devin.shutdown().await;
+    assert_eq!(devin.process_auth(), Some(AuthState::Required));
+    let (sink, _) = mpsc::unbounded_channel();
+    assert!(
+        matches!(devin.attach("stored", None, sink.clone()).await, Err(error) if error.code == ErrorCode::AuthRequired)
+    );
+    assert!(devin.recover_auth().await.unwrap());
+    let recovered = devin.attach("stored", None, sink).await.unwrap();
+    recovered.detach().await;
+    devin.shutdown().await;
+
     let agent = Arc::new(agent("auth"));
     let info = agent.info().await;
     assert_eq!(info.version.as_deref(), Some("fake-acp 1.0"));
@@ -324,7 +368,11 @@ async fn suites() {
         )
         .await
         .unwrap();
-    assert_eq!(session.native_id(), "new-2");
+    assert_eq!(session.native_id(), "new-1");
+    assert_eq!(
+        session.initial_options().unwrap().options[0].current_value,
+        "cheap"
+    );
     let (reason, seen) = until_end(&mut events).await;
     assert_eq!(reason, StopReason::EndTurn);
     assert!(seen
@@ -399,7 +447,18 @@ async fn suites() {
     );
     let (other_sink, mut other_events) = mpsc::unbounded_channel();
     let attached = agent.attach("stored", None, other_sink).await.unwrap();
-    assert!(Arc::ptr_eq(&session.wire_log(), &attached.wire_log()));
+    assert!(!Arc::ptr_eq(&session.wire_log(), &attached.wire_log()));
+    let log = attached.wire_log().snapshot();
+    assert_eq!(log[0].direction, vetro_proto::RawDirection::Spawn);
+    assert!(log
+        .iter()
+        .any(|entry| entry.text.contains("\"initialize\"")));
+    assert!(log
+        .iter()
+        .any(|entry| entry.text.contains("\"session/resume\"")));
+    assert!(log.iter().all(|entry| !entry.text.contains("new-1")
+        && !entry.text.contains("\"session/list\"")
+        && !entry.text.contains("old prompt")));
     assert!(std::iter::from_fn(|| other_events.try_recv().ok())
         .all(|event| !matches!(event, SessionEvent::Item(_))));
     attached.send(vec![text("cancel")]).await.unwrap();

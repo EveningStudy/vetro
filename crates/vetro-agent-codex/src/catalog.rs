@@ -17,6 +17,7 @@ pub(crate) struct Catalog {
     permissions: Vec<Value>,
     approvals: Vec<Value>,
     sandboxes: Vec<Value>,
+    default_permissions: Option<String>,
 }
 
 impl Catalog {
@@ -32,6 +33,18 @@ impl Catalog {
         catalog.permissions = pages(app, "permissionProfile/list", params)
             .await
             .unwrap_or_default();
+        let params = cwd.map_or_else(|| json!({}), |cwd| json!({"cwd": cwd}));
+        if let Ok(response) = app.call("config/read", params).await {
+            let config = &response["config"];
+            catalog.default_permissions = string(config, "default_permissions").or_else(|| {
+                match config["sandbox_mode"].as_str()? {
+                    "read-only" => Some(":read-only".into()),
+                    "workspace-write" => Some(":workspace".into()),
+                    "danger-full-access" => Some(":danger-full-access".into()),
+                    _ => None,
+                }
+            });
+        }
         let requirements = app.requirements().await;
         catalog.approvals = array(&requirements["allowedApprovalPolicies"]).to_vec();
         catalog.sandboxes = array(&requirements["allowedSandboxModes"]).to_vec();
@@ -75,7 +88,13 @@ impl Catalog {
             .filter(|profile| profile["allowed"] != false)
             .filter_map(|profile| {
                 let id = profile["id"].as_str()?;
-                Some(choice(id, id, string(profile, "description")))
+                let name = match id {
+                    ":read-only" => "Read only",
+                    ":workspace" => "Workspace",
+                    ":danger-full-access" => "Full access",
+                    other => profile["name"].as_str().unwrap_or(other),
+                };
+                Some(choice(id, name, string(profile, "description")))
             });
         let approvals = self.approvals.iter().filter_map(|entry| {
             let id = choice_id(entry)?;
@@ -108,7 +127,10 @@ impl Catalog {
                 "Collaboration mode",
                 ConfigCategory::Mode,
                 selected,
-                None,
+                self.modes
+                    .iter()
+                    .find(|mode| mode["mode"] == "default")
+                    .and_then(|mode| mode["mode"].as_str()),
                 modes,
             ),
             option(
@@ -116,7 +138,7 @@ impl Catalog {
                 "Permission profile",
                 ConfigCategory::Mode,
                 selected,
-                None,
+                self.default_permissions.as_deref(),
                 permissions,
             ),
             option(
@@ -278,7 +300,7 @@ pub(crate) fn approval_value(value: &str) -> Value {
     }
 }
 
-async fn pages(app: &App, method: &str, mut params: Value) -> Result<Vec<Value>> {
+pub(crate) async fn pages(app: &App, method: &str, mut params: Value) -> Result<Vec<Value>> {
     let mut entries = Vec::new();
     loop {
         let mut page = app.call(method, params.clone()).await?;

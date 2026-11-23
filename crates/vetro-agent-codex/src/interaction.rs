@@ -44,9 +44,10 @@ impl Pending {
         let (title, body, response) = match method {
             "item/commandExecution/requestApproval" => {
                 if let Some(command) = params["command"].as_str() {
+                    let command = crate::mapping::command_text(command);
                     detail = Some(match detail {
                         Some(reason) => format!("{reason}\n\n{command}"),
-                        None => command.into(),
+                        None => command,
                     });
                 }
                 let (body, response) = approvals(

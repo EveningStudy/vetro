@@ -12,7 +12,7 @@ use tokio::sync::{oneshot, Mutex as AsyncMutex};
 use vetro_agent_api::{
     jsonrpc::{Error, Id, RemoteError},
     process::{Process, SpawnSpec, Stdout},
-    AgentError, AgentOptions, Result, WireLog,
+    AgentError, Result, WireLog,
 };
 use vetro_proto::{rpc::ErrorCode, AuthState};
 
@@ -34,13 +34,18 @@ pub(crate) struct Connection {
     dead: AtomicBool,
     dispatch: Mutex<Dispatch>,
     pub lifecycle: AsyncMutex<()>,
-    pub options: AsyncMutex<Option<AgentOptions>>,
     pub auth: Mutex<AuthState>,
+    previous_method: Option<Arc<Mutex<Option<String>>>>,
+    attempted_auth: AsyncMutex<bool>,
+    signed_in: AtomicBool,
 }
 
 impl Connection {
-    pub fn spawn(spec: SpawnSpec) -> Result<Arc<Self>> {
-        let (process, stdout) = Process::spawn(spec, Arc::new(WireLog::default()))
+    pub fn spawn(
+        spec: SpawnSpec,
+        previous_method: Option<Arc<Mutex<Option<String>>>>,
+    ) -> Result<Arc<Self>> {
+        let (process, stdout) = Process::spawn(spec, Arc::new(WireLog::default().multiplexed()))
             .map_err(|error| AgentError::new(ErrorCode::AgentUnavailable, error.to_string()))?;
         let connection = Arc::new(Self {
             process,
@@ -48,19 +53,27 @@ impl Connection {
             dead: AtomicBool::new(false),
             dispatch: Mutex::new(Dispatch::default()),
             lifecycle: AsyncMutex::new(()),
-            options: AsyncMutex::new(None),
             auth: Mutex::new(AuthState::Unknown),
+            previous_method,
+            attempted_auth: AsyncMutex::new(false),
+            signed_in: AtomicBool::new(false),
         });
         tokio::spawn(drain(Arc::downgrade(&connection), stdout));
         Ok(connection)
     }
 
     pub fn alive(&self) -> bool {
-        !self.dead.load(Ordering::Acquire)
+        !self.dead.load(Ordering::Acquire) && !self.process.has_exited()
     }
 
     pub fn log(&self) -> Arc<WireLog> {
         self.process.wire_log()
+    }
+
+    pub async fn startup_error(&self, error: Error) -> AgentError {
+        let mut error = agent_error(error);
+        error.message.push_str(&self.process.exit_detail().await);
+        error
     }
 
     pub async fn stop(&self) {
@@ -149,7 +162,6 @@ impl Connection {
         envelope["jsonrpc"] = json!("2.0");
         if let Err(error) = self.process.send_line(envelope.to_string()).await {
             self.close(Some(format!("ACP stdin: {error}")));
-            let _ = self.process.kill().await;
             return Err(Error::Io(error));
         }
         Ok(())
@@ -230,12 +242,53 @@ impl Connection {
     pub fn observe_auth(&self, method: &str, reply: &Reply) {
         let state = match reply {
             Err(Error::Remote(error)) if error.code == -32000 => AuthState::Required,
-            Ok(_) if matches!(method, "authenticate" | "session/new" | "session/prompt") => {
+            Ok(_)
+                if method == "authenticate"
+                    || (self.previous_method.is_none()
+                        && matches!(method, "session/new" | "session/prompt")) =>
+            {
                 AuthState::Ok
             }
             _ => return,
         };
         *self.auth.lock().unwrap() = state;
+    }
+
+    pub async fn authenticate(&self, method: &str) -> Result<()> {
+        let _attempt = self.attempted_auth.lock().await;
+        self.sign_in(method).await?;
+        if let Some(previous) = &self.previous_method {
+            *previous.lock().unwrap() = Some(method.to_owned());
+        }
+        Ok(())
+    }
+
+    pub async fn recover_auth(&self) -> Result<bool> {
+        let mut attempted = self.attempted_auth.lock().await;
+        if *self.auth.lock().unwrap() == AuthState::Ok {
+            return Ok(self.signed_in.load(Ordering::Acquire));
+        }
+        if *attempted || self.signed_in.load(Ordering::Acquire) || !self.alive() {
+            return Ok(false);
+        }
+        let method = self
+            .previous_method
+            .as_ref()
+            .and_then(|method| method.lock().unwrap().clone());
+        let Some(method) = method else {
+            return Ok(false);
+        };
+        *attempted = true;
+        self.sign_in(&method).await?;
+        Ok(true)
+    }
+
+    async fn sign_in(&self, method: &str) -> Result<()> {
+        let reply = self.call("authenticate", json!({"methodId": method})).await;
+        self.observe_auth("authenticate", &reply);
+        reply.map_err(agent_error)?;
+        self.signed_in.store(true, Ordering::Release);
+        Ok(())
     }
 }
 
@@ -318,7 +371,6 @@ async fn drain(connection: Weak<Connection>, mut stdout: Stdout) {
         connection.close(Some(
             failure.unwrap_or_else(|| "ACP agent closed its output".into()),
         ));
-        let _ = connection.process.kill().await;
     }
 }
 

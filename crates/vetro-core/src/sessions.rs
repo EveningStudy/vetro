@@ -121,7 +121,17 @@ impl Core {
         limit: Option<u32>,
     ) -> Result<(ThreadOpenResult, Arc<Thread>)> {
         let thread = self.thread(id).await?;
-        Ok((thread.snapshot(limit), thread))
+        let mut snapshot = thread.snapshot(limit);
+        if !snapshot.thread.live {
+            let cached = self.cached_thread_options(&snapshot.thread);
+            if !cached.options.is_empty() {
+                snapshot.options = cached.options;
+            }
+            if !cached.commands.is_empty() {
+                snapshot.commands = cached.commands;
+            }
+        }
+        Ok((snapshot, thread))
     }
 
     pub(crate) async fn thread(self: &Arc<Self>, id: &str) -> Result<Arc<Thread>> {
@@ -137,12 +147,13 @@ impl Core {
             summary.source = ThreadSource::Unknown;
             summary
         });
-        let transcript = {
-            let _guard = self.registry.enter(agent_id, true).await;
-            self.read_history_items(&agent, &summary).await
-        };
-        let transcript = self.auth_result(agent_id, transcript).await?;
+        let transcript = self
+            .user_agent_call(agent_id, || self.read_history_items(&agent, &summary))
+            .await?;
+        let cached = self.cached_thread_options(&summary);
         let mut state = Timeline::new(summary);
+        state.options = cached.options;
+        state.commands = cached.commands;
         state.set_children(self.store.children(id)?);
         if unknown {
             state.summary.resumable = self.agent_info(agent_id).await?.capabilities.resume;
@@ -161,7 +172,6 @@ impl Core {
     ) -> Result<(ThreadSummary, Arc<Thread>)> {
         self.check_agent_enabled(&params.agent_id)?;
         let agent = self.registry.get(&params.agent_id)?;
-        let guard = self.registry.enter(&params.agent_id, true).await;
         let cwd = crate::files::directory(Path::new(&params.cwd))?;
         let title = params
             .content
@@ -180,23 +190,19 @@ impl Core {
             })
             .unwrap_or_else(|| "New thread".into());
         let (sink, events) = mpsc::unbounded_channel();
-        let session = agent
-            .start(
-                StartRequest {
-                    cwd: cwd.clone(),
-                    content: params.content,
-                    options: params.options,
-                },
-                sink,
-            )
-            .await;
-        let session = match session {
-            Ok(session) => session,
-            Err(error) => {
-                drop(guard);
-                return self.auth_result(&params.agent_id, Err(error)).await;
-            }
-        };
+        let session = self
+            .user_agent_call(&params.agent_id, || {
+                agent.start(
+                    StartRequest {
+                        cwd: cwd.clone(),
+                        content: params.content.clone(),
+                        options: params.options.clone(),
+                    },
+                    sink.clone(),
+                )
+            })
+            .await?;
+        drop(sink);
         if session.native_id().is_empty() {
             session.detach().await;
             return Err(internal("Agent returned an empty native session id"));
@@ -209,8 +215,29 @@ impl Core {
         );
         summary.live = true;
         summary.status = ThreadStatus::Running;
+        if !params.options.is_empty() {
+            if let Err(error) = self.home.change_state(|state| {
+                state.threads.entry(summary.id.clone()).or_default().options = params.options;
+            }) {
+                self.home
+                    .log(&format!("Could not save thread choices: {error}"));
+            }
+        }
+        if let Some(options) = session.initial_options() {
+            if let Err(error) = self
+                .remember_initial_options(&params.agent_id, &cwd, options)
+                .await
+            {
+                self.home
+                    .log(&format!("Could not cache new session options: {error}"));
+            }
+        }
+        let cached = self.cached_thread_options(&summary);
         let mut state = Timeline::new(summary.clone());
+        state.set_options(&cached.options);
+        state.commands = cached.commands;
         state.session = Some(session.clone());
+        let summary = state.summary.clone();
         let candidate = Arc::new(Thread::new(self, state));
         let thread = self.sessions.insert(candidate.clone());
         if !Arc::ptr_eq(&thread, &candidate) {
@@ -225,6 +252,13 @@ impl Core {
 }
 
 impl Thread {
+    pub(crate) fn events_after(&self, seq: u64) -> Option<Vec<Arc<ServerEvent>>> {
+        let state = self.state.lock().unwrap();
+        let count = state.seq.saturating_sub(seq) as usize;
+        let start = state.events.len().checked_sub(count)?;
+        Some(state.events.iter().skip(start).cloned().collect())
+    }
+
     fn new(core: &Arc<Core>, state: Timeline) -> Self {
         Self {
             operations: AsyncMutex::new(()),
@@ -504,16 +538,16 @@ impl Thread {
         }
         let core = self.core();
         core.check_agent_enabled(&summary.agent_id)?;
-        let guard = core.registry.enter(&summary.agent_id, true).await;
         let (sink, events) = mpsc::unbounded_channel();
+        let agent = core.registry.get(&summary.agent_id)?;
         let result = core
-            .registry
-            .get(&summary.agent_id)?
-            .attach(
-                &summary.native_id,
-                summary.cwd.as_deref().map(Path::new),
-                sink,
-            )
+            .user_agent_call(&summary.agent_id, || {
+                agent.attach(
+                    &summary.native_id,
+                    summary.cwd.as_deref().map(Path::new),
+                    sink.clone(),
+                )
+            })
             .await;
         if let Err(error) = &result {
             if error.code == ErrorCode::NotResumable {
@@ -522,17 +556,40 @@ impl Thread {
                 state.changed(&core);
             }
         }
-        let session = match result {
-            Ok(session) => session,
-            Err(error) => {
-                drop(guard);
-                return core.auth_result(&summary.agent_id, Err(error)).await;
-            }
-        };
+        let session = result?;
         if session.native_id() != summary.native_id {
             session.detach().await;
             return Err(internal("Agent attached to a different native session"));
         }
+        let mut choices: Vec<_> = core
+            .home
+            .read_state(|state| {
+                state
+                    .threads
+                    .get(&summary.id)
+                    .map(|overlay| overlay.options.clone())
+                    .unwrap_or_default()
+            })
+            .into_iter()
+            .collect();
+        choices.sort_by_key(|(id, _)| id != "model");
+        let mut restored = None;
+        for (id, value) in choices {
+            match core
+                .user_agent_call(&summary.agent_id, || session.set_option(&id, &value))
+                .await
+            {
+                Ok(options) => restored = Some(options),
+                Err(error) => {
+                    session.detach().await;
+                    return Err(error);
+                }
+            }
+        }
+        if let Some(options) = restored {
+            let _ = sink.send(SessionEvent::Options(options));
+        }
+        drop(sink);
         let mut state = self.state.lock().unwrap();
         state.session = Some(session.clone());
         state.summary.live = true;
@@ -588,7 +645,11 @@ impl Thread {
             state.changed(core);
             (state.generation, was_active)
         };
-        if let Err(error) = session.send(content).await {
+        let agent_id = self.state.lock().unwrap().summary.agent_id.clone();
+        if let Err(error) = core
+            .user_agent_call(&agent_id, || session.send(content.clone()))
+            .await
+        {
             let agent_id = {
                 let mut state = self.state.lock().unwrap();
                 if generation == state.generation {
@@ -653,7 +714,21 @@ impl Thread {
     ) -> Result<OptionsResult> {
         let _operation = self.operations.lock().await;
         let session = self.attach().await?;
-        let options = session.set_option(&params.option_id, &params.value).await?;
+        let core = self.core();
+        let agent_id = self.state.lock().unwrap().summary.agent_id.clone();
+        let options = core
+            .user_agent_call(&agent_id, || {
+                session.set_option(&params.option_id, &params.value)
+            })
+            .await?;
+        core.home.change_state(|state| {
+            state
+                .threads
+                .entry(params.thread_id)
+                .or_default()
+                .options
+                .insert(params.option_id, params.value);
+        })?;
         let generation = self.state.lock().unwrap().generation;
         self.handle(generation, SessionEvent::Options(options.clone()));
         Ok(OptionsResult { options })
@@ -792,11 +867,9 @@ impl Thread {
         } else {
             core.home.read_raw(&params.thread_id)?
         };
-        entries.drain(
-            ..entries
-                .len()
-                .saturating_sub(page_limit(params.limit, 500, 5000)),
-        );
+        let prefix = raw_prefix_len(&entries);
+        let limit = page_limit(params.limit, 500, 5000).max(prefix);
+        entries.drain(prefix..prefix.max(entries.len().saturating_sub(limit - prefix)));
         Ok(ThreadRawResult { entries })
     }
 
@@ -805,6 +878,30 @@ impl Thread {
             core.home.log(&format!("Wire log write failed: {error}"));
         }
     }
+}
+
+fn raw_prefix_len(entries: &[RawEntry]) -> usize {
+    if !entries
+        .first()
+        .is_some_and(|entry| entry.direction == RawDirection::Spawn)
+    {
+        return 0;
+    }
+    let mut prefix = 1;
+    let mut initialize = None;
+    for entry in entries.iter().skip(1).take(3) {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&entry.text) else {
+            break;
+        };
+        match value["method"].as_str() {
+            Some("initialize") => initialize = value.get("id").cloned(),
+            Some("initialized") => {}
+            None if initialize.as_ref().is_some_and(|id| id == &value["id"]) => {}
+            _ => break,
+        }
+        prefix += 1;
+    }
+    prefix
 }
 
 impl Timeline {

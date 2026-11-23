@@ -121,6 +121,13 @@ pub trait Agent: Send + Sync + 'static {
     fn id(&self) -> &str;
     async fn info(&self) -> AgentInfo;
     async fn authenticate(&self, method_id: &str) -> Result<AuthenticateResult>;
+    fn process_auth(&self) -> Option<vetro_proto::AuthState> {
+        None
+    }
+    async fn recover_auth(&self) -> Result<bool> {
+        Ok(false)
+    }
+    async fn maintain(&self) {}
     async fn options(
         &self,
         cwd: Option<&Path>,
@@ -149,11 +156,13 @@ pub trait Agent: Send + Sync + 'static {
 #[async_trait]
 pub trait Session: Send + Sync + 'static {
     fn native_id(&self) -> &str;
+    fn initial_options(&self) -> Option<AgentOptions> {
+        None
+    }
     async fn send(&self, content: Vec<ContentBlock>) -> Result<()>;
     async fn interrupt(&self) -> Result<()>;
     async fn set_option(&self, option_id: &str, value: &str) -> Result<Vec<ConfigOption>>;
     async fn respond(&self, request_id: &str, resolution: RequestResolution) -> Result<()>;
     async fn detach(&self);
-    /// Sessions multiplexed on the same process share its wire log.
     fn wire_log(&self) -> Arc<WireLog>;
 }

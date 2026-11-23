@@ -15,6 +15,8 @@ Types are defined in `crates/vetro-proto` and generated for TypeScript into `app
 
 Unknown fields must be ignored by both sides. Timestamps are milliseconds since the Unix epoch.
 
+After `app.hello`, requests can complete out of order while events continue to arrive. Match responses by `id`. If the server sends `{"event":"app.resync","data":{}}`, reload lists and reopen subscribed threads on the same connection.
+
 ## Methods
 
 | Method | Params | Result | Notes |
@@ -23,12 +25,13 @@ Unknown fields must be ignored by both sides. Timestamps are milliseconds since 
 | `agents.list` | `Empty` | `AgentsResult` | Cached detection. |
 | `agents.refresh` | `Empty` | `AgentsResult` | Re-detect binaries, versions and auth state. |
 | `agents.authenticate` | `AuthenticateParams` | `AuthenticateResult` | Runs the agent's own sign-in method. The result carries a URL and code when the flow continues in a browser elsewhere. |
-| `agents.options` | `AgentOptionsParams` | `AgentOptionsResult` | Options and slash commands for a new thread, from the agent (cached). |
+| `agents.options` | `AgentOptionsParams` | `AgentOptionsResult` | Options and slash commands for a new thread. The versioned cache survives restart. If ACP requires a session to discover options, the adapter prepares one for the next start in that folder. |
 | `projects.list` | `Empty` | `ProjectsResult` | Includes hidden projects. Missing directories sort last. |
 | `projects.add` | `ProjectAddParams` | `Project` | Desktop client only. Adds a folder to Vetro's list. |
+| `projects.remove` | `ProjectAddParams` | `Empty` | Desktop client only. Removes a manually added folder. Projects discovered from sessions can only be hidden. |
 | `projects.update` | `ProjectUpdateParams` | `Project` | Vetro-local name, pin, hide. |
 | `threads.list` | `ThreadsListParams` | `ThreadsListResult` | Newest first, paged. Linked children appear when `includeChildren` is true or `parentId` is supplied. |
-| `threads.open` | `ThreadOpenParams` | `ThreadOpenResult` | Loads items and subscribes to `thread.event`. |
+| `threads.open` | `ThreadOpenParams` | `ThreadOpenResult` | Loads items and subscribes to `thread.event`. A detached thread also gets its cached options, commands and saved choices. |
 | `threads.close` | `ThreadIdParams` | `Empty` | Unsubscribes. Does not stop the agent. |
 | `threads.items` | `ThreadItemsParams` | `ThreadItemsResult` | Older page. |
 | `threads.start` | `ThreadStartParams` | `ThreadResult` | Creates the native session, sends the first message, subscribes. |
@@ -38,7 +41,7 @@ Unknown fields must be ignored by both sides. Timestamps are milliseconds since 
 | `threads.respond` | `ThreadRespondParams` | `Empty` | Answers a permission request or question. |
 | `threads.update` | `ThreadUpdateParams` | `ThreadResult` | Vetro-local title and archive flag. |
 | `threads.detach` | `ThreadIdParams` | `Empty` | Releases the agent process for this thread. |
-| `threads.raw` | `ThreadRawParams` | `ThreadRawResult` | Wire log. |
+| `threads.raw` | `ThreadRawParams` | `ThreadRawResult` | Per-thread wire log. The limit preserves launch and handshake entries. |
 | `search.threads` | `SearchParams` | `SearchResult` | Literal, case-insensitive full-text phrase search over titles and user and agent messages. Supports Chinese substrings. Returns one ranked hit per unarchived thread, with a matching snippet. Snippet text is HTML-escaped and matches use `<mark>` tags. |
 | `fs.list` | `FsListParams` | `FsListResult` | Read-only folder picker. Remote clients are limited to known project roots. |
 | `fs.find` | `FsFindParams` | `FsFindResult` | Read-only file mentions. Remote clients are limited to known project roots. |

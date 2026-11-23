@@ -1,5 +1,6 @@
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::BTreeMap,
+    future::Future,
     path::Path,
     sync::{atomic::AtomicBool, Arc, RwLock},
     time::Duration,
@@ -27,7 +28,6 @@ pub struct Core {
     detection: RwLock<Option<Vec<AgentInfo>>>,
     detection_refresh: Mutex<()>,
     pub(crate) history_requested: Notify,
-    pub(crate) history_authenticated: RwLock<HashSet<String>>,
     pub(crate) project_refresh_requested: AtomicBool,
 }
 
@@ -46,7 +46,6 @@ impl Core {
             detection: RwLock::new(None),
             detection_refresh: Mutex::new(()),
             history_requested: Notify::new(),
-            history_authenticated: RwLock::new(HashSet::new()),
             project_refresh_requested: AtomicBool::new(false),
         })
     }
@@ -64,9 +63,8 @@ impl Core {
             self.registry
                 .release_idle(
                     |id| self.sessions.has_live(id),
-                    |id| {
-                        self.history_authenticated.write().unwrap().remove(id);
-                    },
+                    idle,
+                    |id| self.update_cached_auth(id, AuthState::Required),
                 )
                 .await;
         }
@@ -122,13 +120,13 @@ impl Core {
     pub async fn agents(&self, refresh: bool) -> Vec<AgentInfo> {
         if !refresh {
             if let Some(agents) = self.detection.read().unwrap().as_ref() {
-                return agents.clone();
+                return self.current_auth(agents.clone());
             }
         }
         let _refresh = self.detection_refresh.lock().await;
         if !refresh {
             if let Some(agents) = self.detection.read().unwrap().as_ref() {
-                return agents.clone();
+                return self.current_auth(agents.clone());
             }
         }
         let previous = self.detection.read().unwrap().clone().unwrap_or_default();
@@ -161,10 +159,22 @@ impl Core {
             }
         }
         agents.sort_by(|left, right| left.id.cmp(&right.id));
+        let agents = self.current_auth(agents);
         *self.detection.write().unwrap() = Some(agents.clone());
         self.publish(ServerEvent::AgentsUpdated {
             agents: agents.clone(),
         });
+        agents
+    }
+
+    fn current_auth(&self, mut agents: Vec<AgentInfo>) -> Vec<AgentInfo> {
+        for info in &mut agents {
+            if let Ok(agent) = self.registry.get(&info.id) {
+                if let Some(auth) = agent.process_auth() {
+                    info.auth.state = auth;
+                }
+            }
+        }
         agents
     }
 
@@ -186,14 +196,7 @@ impl Core {
         let agent = self.registry.get(&params.agent_id)?;
         let result = {
             let _guard = self.registry.enter(&params.agent_id, true).await;
-            let result = agent.authenticate(&params.method_id).await;
-            if result.is_ok() && params.agent_id == "devin" {
-                self.history_authenticated
-                    .write()
-                    .unwrap()
-                    .insert(params.agent_id.clone());
-            }
-            result
+            agent.authenticate(&params.method_id).await
         };
         let result = self.auth_result(&params.agent_id, result).await?;
         self.request_history_refresh();
@@ -214,16 +217,52 @@ impl Core {
     }
 
     pub(crate) async fn set_agent_auth(&self, id: &str, state: AuthState) {
-        self.agents(false).await;
         let _refresh = self.detection_refresh.lock().await;
+        self.update_cached_auth(id, state);
+    }
+
+    fn update_cached_auth(&self, id: &str, state: AuthState) {
         let mut cache = self.detection.write().unwrap();
         let Some(agents) = cache.as_mut() else { return };
         if let Some(agent) = agents.iter_mut().find(|agent| agent.id == id) {
+            if agent.auth.state == state {
+                return;
+            }
             agent.auth.state = state;
             self.publish(ServerEvent::AgentsUpdated {
                 agents: agents.clone(),
             });
         }
+    }
+
+    pub(crate) async fn user_agent_call<T, F: Future<Output = Result<T>>>(
+        &self,
+        id: &str,
+        mut call: impl FnMut() -> F,
+    ) -> Result<T> {
+        let agent = self.registry.get(id)?;
+        let _guard = self.registry.enter(id, true).await;
+        let result = call().await;
+        if !result
+            .as_ref()
+            .is_err_and(|error| error.code == ErrorCode::AuthRequired)
+        {
+            return result;
+        }
+        self.update_cached_auth(id, AuthState::Required);
+        if agent.recover_auth().await? {
+            self.update_cached_auth(id, AuthState::Ok);
+            self.request_history_refresh();
+            let result = call().await;
+            if result
+                .as_ref()
+                .is_err_and(|error| error.code == ErrorCode::AuthRequired)
+            {
+                self.update_cached_auth(id, AuthState::Required);
+            }
+            return result;
+        }
+        result
     }
 
     pub(crate) async fn agent_options(
@@ -238,20 +277,23 @@ impl Core {
             .map(Path::new)
             .map(files::directory)
             .transpose()?;
-        let selected = params.selected.unwrap_or_default();
-        let key = serde_json::to_string(&(&params.agent_id, cwd.as_ref(), &selected))
-            .map_err(internal)?;
+        let info = self.agent_info(agent.id()).await?;
+        let selected = if info.kind == AgentKind::Acp {
+            BTreeMap::new()
+        } else {
+            params.selected.unwrap_or_default()
+        };
+        let version = info.version;
+        let key = option_key(agent.id(), version.as_deref(), cwd.as_deref(), &selected)?;
         if let Some(cached) = self
             .home
             .read_state(|state| state.options.get(&key).cloned())
         {
             return Ok(cached);
         }
-        let result = {
-            let _guard = self.registry.enter(agent.id(), true).await;
-            agent.options(cwd.as_deref(), &selected).await
-        };
-        let options = self.auth_result(agent.id(), result).await?;
+        let options = self
+            .user_agent_call(agent.id(), || agent.options(cwd.as_deref(), &selected))
+            .await?;
         let result = AgentOptionsResult {
             options: options.options,
             commands: options.commands,
@@ -261,10 +303,82 @@ impl Core {
         Ok(result)
     }
 
+    pub(crate) fn cached_thread_options(&self, summary: &ThreadSummary) -> AgentOptionsResult {
+        let detection = self.detection.read().unwrap();
+        let info = detection
+            .as_ref()
+            .and_then(|agents| agents.iter().find(|info| info.id == summary.agent_id));
+        self.home.read_state(|state| {
+            let selected = state
+                .threads
+                .get(&summary.id)
+                .map(|overlay| &overlay.options);
+            let candidates = state.options.iter().filter_map(|(key, value)| {
+                let (agent, version, cwd, choices): (
+                    String,
+                    Option<String>,
+                    Option<String>,
+                    BTreeMap<String, String>,
+                ) = serde_json::from_str(key).ok()?;
+                if agent != summary.agent_id || info.is_some_and(|info| info.version != version) {
+                    return None;
+                }
+                let matches_cwd = cwd == summary.cwd;
+                let matches_model = !choices.is_empty()
+                    && selected.is_some_and(|selected| {
+                        choices
+                            .iter()
+                            .all(|(id, value)| selected.get(id) == Some(value))
+                    });
+                (matches_model || choices.is_empty())
+                    .then_some(((matches_cwd, matches_model), value))
+            });
+            let mut result = candidates
+                .max_by_key(|(score, _)| *score)
+                .map(|(_, value)| value.clone())
+                .unwrap_or_else(|| AgentOptionsResult {
+                    options: Vec::new(),
+                    commands: Vec::new(),
+                });
+            if let Some(selected) = selected {
+                for option in &mut result.options {
+                    if let Some(value) = selected.get(&option.id) {
+                        option.current_value.clone_from(value);
+                    }
+                }
+            }
+            result
+        })
+    }
+
+    pub(crate) async fn remember_initial_options(
+        &self,
+        agent_id: &str,
+        cwd: &Path,
+        options: vetro_agent_api::AgentOptions,
+    ) -> Result<()> {
+        let version = self.agent_info(agent_id).await?.version;
+        let key = option_key(agent_id, version.as_deref(), Some(cwd), &BTreeMap::new())?;
+        self.home.change_state(|state| {
+            state.options.insert(
+                key,
+                AgentOptionsResult {
+                    options: options.options,
+                    commands: options.commands,
+                },
+            )
+        })?;
+        Ok(())
+    }
+
     pub(crate) fn update_settings(&self, params: SettingsUpdateParams) -> Result<Settings> {
+        let agents_changed =
+            params.patch.get("agents").is_some() || params.patch.get("customAcpAgents").is_some();
         let updated = self.home.update_settings(params.patch)?;
-        *self.detection.write().unwrap() = None;
-        self.home.change_state(|state| state.options.clear())?;
+        if agents_changed {
+            *self.detection.write().unwrap() = None;
+            self.home.change_state(|state| state.options.clear())?;
+        }
         Ok(updated)
     }
 
@@ -444,6 +558,38 @@ impl Core {
         self.project_changed(&path)
     }
 
+    pub(crate) fn remove_project(&self, params: ProjectAddParams) -> Result<()> {
+        let path = files::normalize(Path::new(&params.path))
+            .to_string_lossy()
+            .into_owned();
+        let project = self
+            .projects()?
+            .into_iter()
+            .find(|project| project.path == path)
+            .ok_or_else(|| not_found("Unknown project"))?;
+        let removed = self.home.change_state(|state| {
+            if state
+                .projects
+                .get(&path)
+                .is_some_and(|overlay| overlay.added)
+            {
+                state.projects.remove(&path);
+                true
+            } else {
+                false
+            }
+        })?;
+        if !removed {
+            return Err(bad_request(if project.thread_count > 0 {
+                "A project discovered from sessions can only be hidden"
+            } else {
+                "Only manually added projects can be removed"
+            }));
+        }
+        self.publish_projects();
+        Ok(())
+    }
+
     pub(crate) fn update_project(&self, params: ProjectUpdateParams) -> Result<Project> {
         let path = files::normalize(Path::new(&params.path))
             .to_string_lossy()
@@ -483,6 +629,15 @@ impl Core {
             Err(error) => self.home.log(&format!("Could not list projects: {error}")),
         }
     }
+}
+
+fn option_key(
+    agent: &str,
+    version: Option<&str>,
+    cwd: Option<&Path>,
+    selected: &BTreeMap<String, String>,
+) -> Result<String> {
+    serde_json::to_string(&(agent, version, cwd, selected)).map_err(internal)
 }
 
 pub(crate) fn summary(agent_id: &str, record: SessionRecord) -> ThreadSummary {

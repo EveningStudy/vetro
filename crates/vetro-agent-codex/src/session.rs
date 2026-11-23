@@ -30,6 +30,7 @@ pub(crate) struct Live {
     state: Mutex<State>,
     operations: AsyncMutex<()>,
     responses: AsyncMutex<()>,
+    log: Arc<WireLog>,
 }
 
 #[derive(Default)]
@@ -61,6 +62,7 @@ impl Live {
             state: Mutex::default(),
             operations: AsyncMutex::default(),
             responses: AsyncMutex::default(),
+            log: app.peer.wire_log().session(&id),
         });
         {
             let mut state = app.state.lock().unwrap();
@@ -136,7 +138,10 @@ impl Live {
             state.selected.insert("sandbox".into(), sandbox.into());
         }
         if state.revision == revision {
-            state.active = array(&thread["turns"])
+            let turns = response["initialTurnsPage"]["data"]
+                .as_array()
+                .map_or_else(|| array(&thread["turns"]), Vec::as_slice);
+            state.active = turns
                 .iter()
                 .rev()
                 .find(|turn| turn["status"] == "inProgress")
@@ -398,6 +403,14 @@ impl Live {
 
     fn item_update(&self, state: &mut State, raw: &Value, turn: Option<&str>, started: bool) {
         let Some(mut item) = mapping::item(raw, turn, started) else {
+            if !started && raw["type"] == "agentMessage" {
+                if let Some(mut item) = raw["id"].as_str().and_then(|id| state.items.remove(id)) {
+                    if let ItemKind::AgentMessage { streaming, .. } = &mut item.kind {
+                        *streaming = false;
+                        self.emit(SessionEvent::Item(item));
+                    }
+                }
+            }
             return;
         };
         if started {
@@ -429,16 +442,28 @@ impl Live {
         let Some(id) = params["itemId"].as_str() else {
             return;
         };
-        let Some(delta) = params["delta"].as_str() else {
+        let Some(delta) = params["delta"].as_str().filter(|delta| !delta.is_empty()) else {
             return;
         };
-        let item = self.text_item(state, id, turn, false);
-        if let ItemKind::AgentMessage { text, .. } = &mut item.kind {
-            text.push_str(delta);
-            self.emit(SessionEvent::TextDelta {
-                item_id: id.into(),
-                delta: delta.into(),
-            });
+        if let Some(item) = state.items.get_mut(id) {
+            if let ItemKind::AgentMessage { text, .. } = &mut item.kind {
+                text.push_str(delta);
+                self.emit(SessionEvent::TextDelta {
+                    item_id: id.into(),
+                    delta: delta.into(),
+                });
+            }
+        } else {
+            let item = draft(
+                id,
+                turn,
+                ItemKind::AgentMessage {
+                    text: delta.into(),
+                    streaming: true,
+                },
+            );
+            state.items.insert(id.into(), item.clone());
+            self.emit(SessionEvent::Item(item));
         }
     }
 
@@ -679,7 +704,7 @@ impl Session for Live {
     }
 
     fn wire_log(&self) -> Arc<WireLog> {
-        self.app.peer.wire_log()
+        self.log.clone()
     }
 }
 
