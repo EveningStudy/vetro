@@ -3,6 +3,14 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build and release
+        required: true
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 permissions:
   contents: write
@@ -27,6 +35,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -158,5 +168,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           draft: true
-          name: Vetro ${{ github.ref_name }}
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: Vetro ${{ env.RELEASE_TAG }}
           files: dist-release/*
