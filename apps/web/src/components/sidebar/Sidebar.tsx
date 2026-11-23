@@ -178,7 +178,7 @@ const ProjectHeader = memo(function ProjectHeader({ row }: { row: Extract<Sideba
   const remove = () =>
     actions
       .removeProject(project.path)
-      .then(() => toast.success(t("sidebar.removed", { name: project.name })))
+      .then((removed) => (removed ? toast.success(t("sidebar.removed", { name: project.name })) : setRefusal(t("sidebar.removeKept"))))
       .catch((error: unknown) => {
         if (error instanceof RpcFailure && error.code === "bad_request") setRefusal(error.message);
         else if (error instanceof RpcFailure && /unknown rpc method/i.test(error.message)) setRefusal(t("sidebar.removeUnsupported"));
@@ -534,8 +534,10 @@ export function SidebarContent() {
             : null;
       out.push({ kind: "project", key: `p:${project.path}`, project, suffix, count: list.length, collapsed, attention });
       if (collapsed) return;
+      const remote = filtering || projectCursors[project.path] === null ? 0 : Math.max(0, total - (groups.loaded.get(normalize(project.path)) ?? 0));
       if (list.length === 0) {
-        out.push({ kind: "empty", key: `e:${project.path}`, text: project.exists ? t("sidebar.noThreads") : t("sidebar.missing") });
+        if (remote > 0) out.push({ kind: "more", key: `m:${project.path}`, path: project.path, hidden: 0, remote, expanded: true });
+        else out.push({ kind: "empty", key: `e:${project.path}`, text: project.exists ? t("sidebar.noThreads") : t("sidebar.missing") });
         return;
       }
       const expanded = !!expandedMore[project.path];
@@ -548,7 +550,6 @@ export function SidebarContent() {
         for (const child of groups.children.get(thread.id) ?? []) out.push({ kind: "thread", key: `c:${child.id}`, thread: child, nested: true });
       }
       const hidden = list.length - Math.min(limit, list.length);
-      const remote = filtering || projectCursors[project.path] === null ? 0 : Math.max(0, total - (groups.loaded.get(normalize(project.path)) ?? 0));
       if (hidden > 0 || remote > 0 || expanded) out.push({ kind: "more", key: `m:${project.path}`, path: project.path, hidden, remote, expanded });
     };
     for (const project of groups.visibleProjects) add(project, groups.byProject.get(normalize(project.path)) ?? [], groups.suffixes.get(project.path), project.threadCount);

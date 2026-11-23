@@ -1,5 +1,5 @@
 import { CopyIcon, RefreshCwIcon, XIcon } from "lucide-react";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { client } from "~/api/client";
 import type { RawEntry } from "~/api/types";
 import { useT } from "~/i18n";
@@ -9,8 +9,7 @@ import { useStore } from "~/state/store";
 import { errorMessage, toast } from "~/state/toast";
 import { Button } from "./ui/button";
 import { Tip } from "./ui/overlay";
-import { Spinner, Switch } from "./ui/primitives";
-import { linesForThread } from "./rawFilter";
+import { Spinner } from "./ui/primitives";
 
 type Direction = RawEntry["direction"];
 const DIRECTIONS: Direction[] = ["spawn", "sent", "received", "stderr"];
@@ -50,8 +49,6 @@ export function RawLogPanel({ threadId }: { threadId: string }) {
   const t = useT();
   const [entries, setEntries] = useState<RawEntry[] | null>(null);
   const [filter, setFilter] = useState<Direction | null>(null);
-  const [onlyThread, setOnlyThread] = useState(true);
-  const nativeId = useStore((s) => s.threads[threadId]?.nativeId ?? s.open[threadId]?.summary.nativeId ?? threadId.slice(threadId.indexOf(":") + 1));
   const [loading, setLoading] = useState(false);
   const version = useStore((s) => `${s.open[threadId]?.items.length ?? 0}:${s.open[threadId]?.summary.status ?? ""}`);
   const listRef = useRef<HTMLDivElement>(null);
@@ -82,13 +79,7 @@ export function RawLogPanel({ threadId }: { threadId: string }) {
     if (list) list.scrollTop = list.scrollHeight;
   }, [entries]);
 
-  const scoped = useMemo(() => {
-    if (!entries || !onlyThread) return entries ?? [];
-    const keep = linesForThread(entries, nativeId);
-    return entries.filter((_, index) => keep.has(index));
-  }, [entries, onlyThread, nativeId]);
-  const shown = scoped.filter((entry) => !filter || entry.direction === filter);
-  const otherLines = (entries?.length ?? 0) - scoped.length;
+  const shown = (entries ?? []).filter((entry) => !filter || entry.direction === filter);
   const close = () => useStore.setState({ rawPanelOpen: false });
 
   return (
@@ -135,11 +126,6 @@ export function RawLogPanel({ threadId }: { threadId: string }) {
         ))}
         <span className="ms-auto text-xs tabular-nums text-muted-foreground">{t("raw.entries", { n: shown.length })}</span>
       </div>
-      <label className="flex shrink-0 cursor-pointer items-center gap-2 border-b px-4 py-2 text-xs text-muted-foreground">
-        <Switch checked={onlyThread} onCheckedChange={setOnlyThread} />
-        <span className="min-w-0 flex-1">{t("raw.onlyThread")}</span>
-        {onlyThread && otherLines > 0 ? <span className="shrink-0 tabular-nums">{t("raw.otherLines", { n: otherLines })}</span> : null}
-      </label>
       <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto font-mono text-[11.5px] leading-relaxed">
         {entries === null ? (
           <div className="flex justify-center py-10">

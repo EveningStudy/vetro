@@ -28,6 +28,16 @@ export function PairingPage({ onPaired }: { onPaired: () => void }) {
   const [name, setName] = useState(defaultDeviceName);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  if (/^(127\.0\.0\.1|localhost|\[::1\])$/.test(location.hostname) && !code)
+    return (
+      <div className="flex min-h-dvh items-center justify-center bg-background px-4 py-10">
+        <div className="flex w-full max-w-sm flex-col items-center gap-3 rounded-2xl border bg-card/80 p-6 text-center shadow-composer dark:bg-surface-raised/80">
+          <VetroMark className="size-9" />
+          <h1 className="text-lg font-semibold">{t("pair.localTitle")}</h1>
+          <p className="text-sm text-muted-foreground">{t("pair.local")}</p>
+        </div>
+      </div>
+    );
   return (
     <div className="flex min-h-dvh items-center justify-center bg-background px-4 py-10">
       <form
@@ -55,9 +65,6 @@ export function PairingPage({ onPaired }: { onPaired: () => void }) {
           <div>
             <h1 className="text-lg font-semibold">{t("pair.title")}</h1>
             <p className="mt-1 text-sm text-muted-foreground">{t("pair.body")}</p>
-            {/^(127\.0\.0\.1|localhost|\[::1\])$/.test(location.hostname) ? (
-              <p className="mt-2 text-xs text-muted-foreground">{t("pair.local")}</p>
-            ) : null}
           </div>
         </div>
         <div className="flex flex-col gap-1.5">

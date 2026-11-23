@@ -502,8 +502,7 @@ export class MockTransport implements Transport {
       this.desktopOnly();
       const index = this.projects.findIndex((p) => p.path === params.path);
       if (index < 0) throw new RpcFailure("not_found", "Unknown project");
-      if ([...this.threads.values()].some((t) => t.summary.cwd === params.path))
-        throw new RpcFailure("bad_request", "Sessions still use this folder, so it can only be hidden.");
+      if ([...this.threads.values()].some((t) => t.summary.cwd === params.path)) return {};
       this.projects.splice(index, 1);
       this.emit({ event: "projects.updated", data: { projects: this.projects } });
       return {};

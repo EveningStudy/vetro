@@ -474,9 +474,12 @@ export const actions = {
     }
   },
 
+  /** Resolves to false when the folder stays listed because sessions still point at it. */
   async removeProject(path: string) {
     await client().request("projects.remove", { path });
-    set({ projects: get().projects.filter((project) => project.path !== path) });
+    const { projects } = await client().request("projects.list", {});
+    set({ projects });
+    return !projects.some((project) => project.path === path);
   },
 
   async updateProject(path: string, patch: { name?: string; pinned?: boolean; hidden?: boolean }) {

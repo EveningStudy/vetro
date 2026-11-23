@@ -69,7 +69,6 @@ export function CustomAgents({
         <div>
           <h3 className="text-sm font-semibold">{t("custom.title")}</h3>
           <p className="text-xs text-muted-foreground">{t("custom.hint")}</p>
-          <p className="text-xs text-muted-foreground">{t("custom.restart")}</p>
         </div>
         {editing || readOnly ? null : (
           <Button size="sm" variant="outline" onClick={() => setEditing({ original: null, draft: { ...EMPTY }, args: "acp", env: "" })}>
