@@ -127,7 +127,11 @@ impl Agent for Fake {
     }
 
     async fn read(&self, native_id: &str, cwd: Option<&Path>) -> Result<Transcript> {
-        assert_eq!(cwd, Some(self.cwd.as_path()));
+        // Temp paths can differ in spelling (8.3 short names on Windows, symlinks on macOS).
+        assert_eq!(
+            cwd.map(|path| path.canonicalize().unwrap()),
+            Some(self.cwd.canonicalize().unwrap())
+        );
         if !matches!(native_id, "history" | "readonly" | "external-child") {
             return Err(AgentError::new(ErrorCode::NotFound, "Unknown fake session"));
         }
