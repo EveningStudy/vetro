@@ -14,7 +14,8 @@
         try {
           const url = new URL(location.href);
           const forced = url.searchParams.get("theme");
-          const stored = localStorage.getItem("vetro:theme") || "system";
+          let stored = "system";
+          try { stored = JSON.parse(localStorage.getItem("vetro:prefs") || "{}").theme || "system"; } catch {}
           const pref = forced || stored;
           const dark = pref === "dark" || (pref === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
           document.documentElement.classList.toggle("dark", dark);

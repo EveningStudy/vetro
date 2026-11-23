@@ -1,4 +1,6 @@
+import type { AuthSession } from "./bindings/AuthSession";
 import type { HelloParams } from "./bindings/HelloParams";
+import { getSession, setSession } from "./session";
 import type { AppInfo, ServerEvent } from "./types";
 import {
   type AuthApi,
@@ -31,7 +33,7 @@ export class WsTransport implements Transport {
 
   constructor(
     private readonly url: string,
-    private readonly hello: HelloParams,
+    private readonly hello: () => HelloParams,
   ) {}
 
   start() {
@@ -102,7 +104,7 @@ export class WsTransport implements Transport {
         },
         reject: () => socket.close(),
       });
-      socket.send(JSON.stringify({ id, method: "app.hello", params: this.hello }));
+      socket.send(JSON.stringify({ id, method: "app.hello", params: this.hello() }));
     };
     socket.onmessage = (message) => this.handle(String(message.data));
     socket.onclose = () => {
@@ -164,20 +166,40 @@ function postJson(path: string, body: unknown) {
   });
 }
 
+/** Keeps the session from a successful sign-in. An older core answered with a cookie and no body;
+ * that still works because requests stay same-origin. */
+async function keepSession(response: Response) {
+  const body = (await response.json().catch(() => null)) as Partial<AuthSession> | null;
+  if (body && typeof body.session === "string") setSession(body.session);
+  return body;
+}
+
 export const httpAuth: AuthApi = {
   async session() {
-    const response = await fetch("/api/auth/session", { credentials: "same-origin" });
-    if (response.status === 401) return null;
+    const session = getSession();
+    const response = await fetch("/api/auth/session", {
+      credentials: "same-origin",
+      headers: session ? { authorization: `Bearer ${session}` } : {},
+    });
+    if (response.status === 401) {
+      setSession(null);
+      return null;
+    }
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     return response.json();
   },
   async local(token) {
     const response = await postJson("/api/auth/local", { token });
-    return response.ok;
+    if (!response.ok) return { ok: false };
+    const body = await keepSession(response);
+    return { ok: true, remoteClient: body?.remoteClient };
   },
   async pair(code, deviceName) {
     const response = await postJson("/api/auth/pair", { code, deviceName });
-    if (response.ok) return { ok: true };
+    if (response.ok) {
+      await keepSession(response);
+      return { ok: true };
+    }
     const body = await response.json().catch(() => null);
     return { ok: false, message: body?.error?.message ?? body?.message };
   },

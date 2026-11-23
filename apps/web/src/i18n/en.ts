@@ -46,6 +46,8 @@ export const en = {
   "sidebar.noThreads": "No threads",
   "sidebar.noMatches": "No threads match the filters",
   "sidebar.showMore": "Show {n} more",
+  "sidebar.loadMore": "Load {n} more",
+  "sidebar.loadOlder": "Load older threads",
   "sidebar.showLess": "Show less",
   "sidebar.newThreadIn": "New thread in {name}",
   "sidebar.pin": "Pin project",
@@ -161,6 +163,8 @@ export const en = {
   "new.title": "What should we work on?",
   "new.subtitle": "The message goes to the agent exactly as you type it.",
 
+  "new.loadOptions": "Load options from {agent}",
+  "new.loadOptionsHint": "{agent} reports its models and modes only from a session. This starts one now, and your next thread in this folder uses it. Without it, the thread starts with {agent}'s defaults.",
   "folder.title": "Add a project folder",
   "folder.description": "Vetro only remembers the folder. Nothing is written into it.",
   "folder.choose": "Use this folder",
@@ -170,7 +174,8 @@ export const en = {
   "folder.path": "Path",
 
   "raw.title": "Raw log",
-  "raw.subtitle": "Every line Vetro sent to and received from the agent process.",
+  "raw.subtitle": "What Vetro sent to and received from the agent process for this thread, kept up to a size limit (oldest entries dropped first), with environment values masked.",
+  "raw.dropped": "Older entries were dropped to stay within the size limit.",
   "raw.copyAll": "Copy all",
   "raw.empty": "Nothing was attached in Vetro for this thread yet. History read from the agent's own store has no wire log.",
   "raw.refresh": "Refresh",
@@ -246,6 +251,10 @@ export const en = {
   "custom.remove": "Remove agent",
   "custom.idTaken": "already used",
   "settings.remoteReadOnly": "Settings can only be changed on the computer running Vetro.",
+  "settings.rawLog": "The raw log of a thread shows what Vetro sent to and received from the agent process for that thread. It is kept up to a size limit, the oldest entries are dropped first, and environment values are masked.",
+  "remote.signInLocal": "Sign-in runs on the computer running Vetro.",
+  "remote.addFolderLocal": "Folders can only be added on the computer running Vetro.",
+  "remote.knownProject": "From this device, choose one of the existing projects.",
   "settings.idleRelease": "Release idle agents after",
   "settings.idleReleaseHint": "Minutes. 0 keeps agent processes running.",
 

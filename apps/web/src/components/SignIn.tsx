@@ -18,6 +18,7 @@ export function SignInMethods({ agent, size = "sm", onDone }: { agent: AgentInfo
   const [checking, setChecking] = useState(false);
   const [copied, setCopied] = useState(false);
   const signedIn = agent.auth.state === "ok";
+  const remoteClient = useStore((s) => s.app?.remoteClient ?? false);
 
   useEffect(() => {
     if (signedIn && result) {
@@ -59,8 +60,8 @@ export function SignInMethods({ agent, size = "sm", onDone }: { agent: AgentInfo
             key={method.id}
             size={size}
             variant={index === 0 ? "default" : "outline"}
-            disabled={pending !== null}
-            title={method.description ?? undefined}
+            disabled={pending !== null || remoteClient}
+            title={remoteClient ? t("remote.signInLocal") : (method.description ?? undefined)}
             onClick={() => start(method.id)}
           >
             {pending === method.id ? <Spinner className="size-3.5" /> : <LogInIcon />}
@@ -68,6 +69,7 @@ export function SignInMethods({ agent, size = "sm", onDone }: { agent: AgentInfo
           </Button>
         ))}
       </div>
+      {remoteClient ? <p className="text-xs text-muted-foreground">{t("remote.signInLocal")}</p> : null}
       {result ? (
         <div className="flex flex-col gap-2 rounded-lg border bg-background/70 px-3 py-2.5 text-sm">
           {result.message ? <p className="text-muted-foreground">{result.message}</p> : null}

@@ -96,7 +96,7 @@ export function RawLogPanel({ threadId }: { threadId: string }) {
       <div className="flex h-(--workspace-topbar-height) shrink-0 items-center gap-2 ps-4 pe-2">
         <div className="min-w-0 flex-1">
           <div className="text-sm font-medium">{t("raw.title")}</div>
-          <div className="truncate text-xs text-muted-foreground">{t("raw.subtitle")}</div>
+          <div className="line-clamp-2 text-xs text-muted-foreground" title={t("raw.subtitle")}>{t("raw.subtitle")}</div>
         </div>
         <Tip label={t("raw.refresh")}>
           <Button size="icon-sm" variant="ghost" aria-label={t("raw.refresh")} onClick={() => void load()}>
@@ -148,7 +148,12 @@ export function RawLogPanel({ threadId }: { threadId: string }) {
         ) : entries.length === 0 ? (
           <p className="px-4 py-10 text-center font-sans text-sm text-muted-foreground">{t("raw.empty")}</p>
         ) : (
-          shown.map((entry, index) => <RawLine key={`${entry.ts}-${index}`} entry={entry} />)
+          <>
+            {entries[0]?.direction !== "spawn" ? (
+              <p className="border-b px-4 py-2 font-sans text-xs text-muted-foreground">{t("raw.dropped")}</p>
+            ) : null}
+            {shown.map((entry, index) => <RawLine key={`${entry.ts}-${index}`} entry={entry} />)}
+          </>
         )}
       </div>
     </aside>

@@ -48,6 +48,8 @@ export const zh: Record<MessageKey, string> = {
   "sidebar.noThreads": "没有会话",
   "sidebar.noMatches": "没有符合筛选条件的会话",
   "sidebar.showMore": "再显示 {n} 个",
+  "sidebar.loadMore": "再加载 {n} 个",
+  "sidebar.loadOlder": "加载更早的会话",
   "sidebar.showLess": "收起",
   "sidebar.newThreadIn": "在 {name} 中新建会话",
   "sidebar.pin": "置顶项目",
@@ -163,6 +165,8 @@ export const zh: Record<MessageKey, string> = {
   "new.title": "要做点什么？",
   "new.subtitle": "你输入的内容会原样发送给代理。",
 
+  "new.loadOptions": "从 {agent} 加载选项",
+  "new.loadOptionsHint": "{agent} 只在会话中报告模型和模式。点击会立即创建一个会话，之后在这个文件夹中新建的会话会使用它；不加载则使用 {agent} 的默认设置。",
   "folder.title": "添加项目文件夹",
   "folder.description": "Vetro 只记住这个文件夹，不会向其中写入任何内容。",
   "folder.choose": "使用此文件夹",
@@ -172,7 +176,8 @@ export const zh: Record<MessageKey, string> = {
   "folder.path": "路径",
 
   "raw.title": "原始日志",
-  "raw.subtitle": "Vetro 与代理进程之间收发的每一行内容。",
+  "raw.subtitle": "Vetro 为这个会话向代理进程发送和接收的内容，保留到一定大小（最早的内容先被丢弃），环境变量的值已隐藏。",
+  "raw.dropped": "更早的内容因超出大小限制已被丢弃。",
   "raw.copyAll": "全部复制",
   "raw.empty": "这个会话还没有在 Vetro 中连接过。从代理自身存储读取的历史记录没有通信日志。",
   "raw.refresh": "刷新",
@@ -248,6 +253,10 @@ export const zh: Record<MessageKey, string> = {
   "custom.remove": "删除代理",
   "custom.idTaken": "已被占用",
   "settings.remoteReadOnly": "只能在运行 Vetro 的电脑上修改设置。",
+  "settings.rawLog": "会话的原始日志显示 Vetro 为这个会话向代理进程发送和接收的内容。日志保留到一定大小，最早的内容先被丢弃，环境变量的值已隐藏。",
+  "remote.signInLocal": "登录需要在运行 Vetro 的电脑上进行。",
+  "remote.addFolderLocal": "只能在运行 Vetro 的电脑上添加文件夹。",
+  "remote.knownProject": "在这台设备上，请选择已有的项目。",
   "settings.idleRelease": "空闲代理释放时间",
   "settings.idleReleaseHint": "单位为分钟。0 表示保持代理进程运行。",
 

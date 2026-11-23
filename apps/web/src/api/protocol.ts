@@ -12,6 +12,7 @@ import type { FsListResult } from "./bindings/FsListResult";
 import type { HelloParams } from "./bindings/HelloParams";
 import type { OptionsResult } from "./bindings/OptionsResult";
 import type { Pairing } from "./bindings/Pairing";
+import type { Prefs } from "./bindings/Prefs";
 import type { Project } from "./bindings/Project";
 import type { ProjectAddParams } from "./bindings/ProjectAddParams";
 import type { ProjectUpdateParams } from "./bindings/ProjectUpdateParams";
@@ -69,6 +70,8 @@ export interface Methods {
   "fs.find": [FsFindParams, FsFindResult];
   "settings.get": [Empty, Settings];
   "settings.update": [SettingsUpdateParams, Settings];
+  "prefs.get": [Empty, Prefs];
+  "prefs.set": [Prefs, Empty];
   "remote.status": [Empty, RemoteStatus];
   "remote.set": [RemoteSetParams, RemoteStatus];
   "remote.createPairing": [Empty, Pairing];
@@ -106,6 +109,6 @@ export interface Transport {
 
 export interface AuthApi {
   session(): Promise<{ authenticated: boolean; remoteClient: boolean } | null>;
-  local(token: string): Promise<boolean>;
+  local(token: string): Promise<{ ok: boolean; remoteClient?: boolean }>;
   pair(code: string, deviceName: string): Promise<{ ok: boolean; message?: string }>;
 }

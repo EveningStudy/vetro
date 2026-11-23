@@ -539,6 +539,7 @@ function AboutSection() {
       <div>
         <SectionTitle title={t("settings.rulesTitle")} />
         <p className="text-sm leading-relaxed text-muted-foreground">{t("settings.rules")}</p>
+        <p className="mt-3 text-sm leading-relaxed text-muted-foreground">{t("settings.rawLog")}</p>
       </div>
     </section>
   );

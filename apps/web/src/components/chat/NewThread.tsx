@@ -4,6 +4,7 @@ import { client } from "~/api/client";
 import type { AgentInfo, ConfigOption, SlashCommand } from "~/api/types";
 import { useT } from "~/i18n";
 import { shortVersion } from "~/lib/format";
+import { getPrefs, savePrefs } from "~/state/prefs";
 import { actions, useStore } from "~/state/store";
 import { errorMessage, toast } from "~/state/toast";
 import { AgentIcon } from "../AgentIcon";
@@ -16,8 +17,6 @@ import { Composer } from "./Composer";
 import { ProjectPicker } from "./ProjectPicker";
 import { composerControlClass } from "./OptionPicker";
 
-const LAST_AGENT = "vetro:last-agent";
-const LAST_PROJECT = "vetro:last-project";
 
 function usable(agent: AgentInfo) {
   return agent.installed && !agent.error;
@@ -28,12 +27,13 @@ export function NewThread({ projectPath, agentId: routeAgent }: { projectPath: s
   const agents = useStore((s) => s.agents);
   const projects = useStore((s) => s.projects);
   const home = useStore((s) => s.app?.homeDir);
-  const [agentId, setAgentId] = useState<string | null>(routeAgent ?? localStorage.getItem(LAST_AGENT));
-  const [cwd, setCwd] = useState<string | null>(projectPath ?? localStorage.getItem(LAST_PROJECT));
+  const [agentId, setAgentId] = useState<string | null>(routeAgent ?? getPrefs().lastAgent ?? null);
+  const [cwd, setCwd] = useState<string | null>(projectPath ?? getPrefs().lastProject ?? null);
   const [baseOptions, setBaseOptions] = useState<ConfigOption[]>([]);
   const [commands, setCommands] = useState<SlashCommand[]>([]);
   const [overrides, setOverrides] = useState<Record<string, string>>({});
   const [defaults, setDefaults] = useState<Record<string, string>>({});
+  const [needsSession, setNeedsSession] = useState(false);
   const [loadingOptions, setLoadingOptions] = useState(false);
   const [browsing, setBrowsing] = useState(false);
 
@@ -64,6 +64,7 @@ export function NewThread({ projectPath, agentId: routeAgent }: { projectPath: s
         setBaseOptions(result.options);
         setDefaults(Object.fromEntries(result.options.map((option) => [option.id, option.currentValue])));
         setCommands(result.commands);
+        setNeedsSession(!!result.needsSession);
       })
       .catch(() => {
         if (!cancelled) setBaseOptions([]);
@@ -83,6 +84,21 @@ export function NewThread({ projectPath, agentId: routeAgent }: { projectPath: s
       }),
     [baseOptions, overrides],
   );
+
+  const prepareOptions = () => {
+    if (!agent) return;
+    setLoadingOptions(true);
+    client()
+      .request("agents.options", { agentId: agent.id, ...(effectiveCwd ? { cwd: effectiveCwd } : {}), prepare: true })
+      .then((result) => {
+        setBaseOptions(result.options);
+        setDefaults(Object.fromEntries(result.options.map((option) => [option.id, option.currentValue])));
+        setCommands(result.commands);
+        setNeedsSession(!!result.needsSession);
+      })
+      .catch((error) => toast.error(errorMessage(error)))
+      .finally(() => setLoadingOptions(false));
+  };
 
   const changeOption = (optionId: string, value: string) => {
     const next = { ...overrides, [optionId]: value };
@@ -117,6 +133,8 @@ export function NewThread({ projectPath, agentId: routeAgent }: { projectPath: s
   };
 
   const needsSignIn = agent?.auth.state === "required";
+  const remoteClient = useStore((s) => s.app?.remoteClient ?? false);
+  const unknownFolder = remoteClient && !!effectiveCwd && !projects.some((p) => p.path === effectiveCwd);
   const agentName = agent?.name ?? "";
 
   return (
@@ -144,19 +162,28 @@ export function NewThread({ projectPath, agentId: routeAgent }: { projectPath: s
               const option = options.find((o) => o.id === id);
               if (option?.currentValue === value && value !== defaults[id]) changed[id] = value;
             }
-            localStorage.setItem(LAST_AGENT, agent.id);
-            localStorage.setItem(LAST_PROJECT, effectiveCwd);
+            savePrefs({ lastAgent: agent.id, lastProject: effectiveCwd });
             await actions.start(agent.id, effectiveCwd, content, changed);
           }}
           imageInput={agent?.capabilities.imageInput ?? false}
           readOnly={!agent}
-          sendBlocked={needsSignIn ? t("composer.needsSignIn") : !effectiveCwd ? t("composer.needProject") : null}
+          sendBlocked={needsSignIn ? t("composer.needsSignIn") : !effectiveCwd ? t("composer.needProject") : unknownFolder ? t("remote.knownProject") : null}
           placeholder={t("composer.placeholderNew")}
           autoFocus
           leading={
             <>
               <AgentPicker agents={agents} current={agent} onChange={setAgentId} />
               {loadingOptions ? <Spinner className="mx-1.5 size-3.5 text-muted-foreground" /> : null}
+              {needsSession && !loadingOptions && agent ? (
+                <button
+                  type="button"
+                  onClick={prepareOptions}
+                  title={t("new.loadOptionsHint", { agent: agent.name })}
+                  className="h-7 shrink-0 rounded-md px-2 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+                >
+                  {t("new.loadOptions", { agent: agent.name })}
+                </button>
+              ) : null}
             </>
           }
           below={

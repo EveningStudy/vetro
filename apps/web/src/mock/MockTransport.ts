@@ -60,6 +60,8 @@ function textOf(item: Item): string {
 }
 
 const remoteClient = new URLSearchParams(location.search).has("remote");
+/** Agents that report options only from a live session, like ACP agents without a cache. */
+const SESSION_OPTIONS = new Set(["devin"]);
 
 function escapeHtml(text: string) {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -96,6 +98,8 @@ export class MockTransport implements Transport {
   private nextOrdinal = new Map<string, number>();
   private runs = new Map<string, Run>();
   private counter = 0;
+  private prepared = new Set<string>();
+  private prefs: unknown = null;
 
   constructor() {
     for (const thread of buildThreads()) this.threads.set(thread.summary.id, thread);
@@ -307,6 +311,8 @@ export class MockTransport implements Transport {
   }
 
   private startThread(params: Params<"threads.start">): Result<"threads.start"> {
+    if (remoteClient && !this.projects.some((p) => p.path === params.cwd))
+      throw new RpcFailure("unauthorized", "Remote devices can only start threads in known project folders");
     const agent = this.agents.find((a) => a.id === params.agentId);
     if (!agent?.installed) throw new RpcFailure("agent_unavailable", agent?.error ?? "Agent not available");
     if (agent.auth.state === "required") throw new RpcFailure("auth_required", `${agent.name} needs you to sign in first`);
@@ -392,7 +398,9 @@ export class MockTransport implements Transport {
     const query = params.query.trim().toLowerCase();
     if (!query) return { hits: [] };
     const hits: Result<"search.threads">["hits"] = [];
+    const hidden = new Set(this.projects.filter((p) => p.hidden).map((p) => p.path));
     for (const thread of this.threads.values()) {
+      if (!params.includeHidden && thread.summary.cwd && hidden.has(thread.summary.cwd)) continue;
       for (const source of [thread.summary.title, ...thread.items.map(textOf)]) {
         const index = source.toLowerCase().indexOf(query);
         if (index < 0) continue;
@@ -455,6 +463,7 @@ export class MockTransport implements Transport {
       return { agents: this.agents };
     },
     "agents.authenticate": async (params) => {
+      this.desktopOnly();
       await sleep(1200);
       const agent = this.agents.find((a) => a.id === params.agentId);
       if (!agent) throw new RpcFailure("not_found", "Unknown agent");
@@ -472,7 +481,11 @@ export class MockTransport implements Transport {
     "agents.options": (params) => {
       const options = agentOptions[params.agentId];
       if (!options) throw new RpcFailure("agent_unavailable", "This agent is not available");
-      return withSelection(options, params.selected ?? {});
+      if (SESSION_OPTIONS.has(params.agentId) && !this.prepared.has(params.agentId)) {
+        if (!params.prepare) return { options: [], commands: [], needsSession: true };
+        this.prepared.add(params.agentId);
+      }
+      return { ...withSelection(options, params.selected ?? {}), needsSession: false };
     },
     "projects.list": () => ({ projects: this.projects }),
     "projects.add": (params) => {
@@ -585,6 +598,11 @@ export class MockTransport implements Transport {
       this.settings = mergePatch(this.settings, params.patch) as typeof this.settings;
       return this.settings;
     },
+    "prefs.get": () => ({ prefs: (this.prefs ?? null) as never }),
+    "prefs.set": (params) => {
+      this.prefs = params.prefs;
+      return {};
+    },
     "remote.status": () => this.remote,
     "remote.set": (params) => {
       this.desktopOnly();
@@ -615,7 +633,7 @@ export const mockAuth: AuthApi = {
     return { authenticated: true, remoteClient: false };
   },
   async local() {
-    return true;
+    return { ok: true };
   },
   async pair(code) {
     await sleep(500);

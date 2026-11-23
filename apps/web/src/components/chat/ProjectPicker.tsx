@@ -4,6 +4,7 @@ import type { Project } from "~/api/types";
 import { useT } from "~/i18n";
 import { tildePath } from "~/lib/format";
 import { cn } from "~/lib/utils";
+import { useStore } from "~/state/store";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/overlay";
 import { composerControlClass } from "./OptionPicker";
 
@@ -23,6 +24,7 @@ export function ProjectPicker({
 }) {
   const t = useT();
   const [open, setOpen] = useState(false);
+  const remoteClient = useStore((s) => s.app?.remoteClient ?? false);
   const [query, setQuery] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const current = projects.find((project) => project.path === value);
@@ -86,14 +88,18 @@ export function ProjectPicker({
         <div className="border-t p-1">
           <button
             type="button"
+            disabled={remoteClient}
             onClick={() => {
               setOpen(false);
               onAddFolder();
             }}
-            className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent"
+            className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent disabled:cursor-default disabled:opacity-60 disabled:hover:bg-transparent"
           >
             <FolderPlusIcon className="size-4 shrink-0 text-muted-foreground" />
-            {t("composer.addFolder")}
+            <span className="flex min-w-0 flex-col">
+              <span>{t("composer.addFolder")}</span>
+              {remoteClient ? <span className="text-xs text-muted-foreground">{t("remote.addFolderLocal")}</span> : null}
+            </span>
           </button>
         </div>
       </PopoverPopup>

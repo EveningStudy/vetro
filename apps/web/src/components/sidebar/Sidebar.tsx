@@ -108,12 +108,13 @@ function StatusLabel({ thread }: { thread: ThreadSummary }) {
   return null;
 }
 
-const ROW_HEIGHT = { project: 40, thread: 37, nested: 33, more: 29, empty: 29 } as const;
+const ROW_HEIGHT = { project: 40, thread: 37, nested: 33, more: 29, empty: 29, loadall: 37 } as const;
 
 type SidebarRow =
   | { kind: "project"; key: string; project: Pick<Project, "path" | "name" | "exists" | "pinned" | "hidden">; suffix?: string; count: number; collapsed: boolean; attention: string | null }
   | { kind: "thread"; key: string; thread: ThreadSummary; nested: boolean }
-  | { kind: "more"; key: string; path: string; hidden: number; expanded: boolean }
+  | { kind: "more"; key: string; path: string; hidden: number; remote: number; expanded: boolean }
+  | { kind: "loadall"; key: string }
   | { kind: "empty"; key: string; text: string };
 
 const ThreadRow = memo(function ThreadRow({
@@ -320,6 +321,8 @@ function VirtualRows({
                 <ThreadRow thread={row.thread} nested={row.nested} active={row.thread.id === activeId} now={now} />
               ) : row.kind === "more" ? (
                 <MoreRow row={row} onToggle={onToggleMore} />
+              ) : row.kind === "loadall" ? (
+                <LoadAllRow />
               ) : (
                 <div className="flex h-full items-center ps-9 text-xs text-sidebar-muted-foreground">{row.text}</div>
               )}
@@ -331,15 +334,40 @@ function VirtualRows({
   );
 }
 
+function LoadAllRow() {
+  const t = useT();
+  const loading = useStore((s) => s.loadingMore);
+  return (
+    <button
+      type="button"
+      disabled={loading}
+      onClick={() => void actions.loadMoreThreads()}
+      className="mt-2 h-8 w-full rounded-md px-(--sidebar-row-content-inset) text-left text-xs text-sidebar-muted-foreground hover:bg-sidebar-row-hover hover:text-sidebar-foreground disabled:opacity-60"
+    >
+      {loading ? t("common.loading") : t("sidebar.loadOlder")}
+    </button>
+  );
+}
+
 function MoreRow({ row, onToggle }: { row: Extract<SidebarRow, { kind: "more" }>; onToggle: (path: string) => void }) {
   const t = useT();
   return (
     <button
       type="button"
-      onClick={() => onToggle(row.path)}
+      onClick={() => {
+        if (!row.expanded && row.hidden > 0) onToggle(row.path);
+        else if (row.remote > 0) {
+          if (!row.expanded) onToggle(row.path);
+          void actions.loadProjectThreads(row.path);
+        } else onToggle(row.path);
+      }}
       className="h-7 w-full rounded-md ps-9 text-left text-xs text-sidebar-muted-foreground hover:bg-sidebar-row-hover hover:text-sidebar-foreground"
     >
-      {row.expanded ? t("sidebar.showLess") : t("sidebar.showMore", { n: row.hidden })}
+      {!row.expanded && row.hidden > 0
+        ? t("sidebar.showMore", { n: row.hidden + row.remote })
+        : row.remote > 0
+          ? t("sidebar.loadMore", { n: row.remote })
+          : t("sidebar.showLess")}
     </button>
   );
 }
@@ -460,6 +488,8 @@ export function SidebarContent() {
       list.push(thread);
       children.set(thread.parent.threadId, list);
     }
+    const loaded = new Map<string, number>();
+    for (const thread of all) if (!thread.parent) loaded.set(normalize(thread.cwd), (loaded.get(normalize(thread.cwd)) ?? 0) + 1);
     const byProject = new Map<string, ThreadSummary[]>();
     for (const thread of all) {
       if (thread.parent && threads[thread.parent.threadId]) continue;
@@ -480,17 +510,19 @@ export function SidebarContent() {
       const parts = project.path.split(/[\\/]/).filter(Boolean);
       suffixes.set(project.path, parts.at(-2) ?? "");
     }
-    return { visibleProjects, byProject, children, other, suffixes };
+    return { visibleProjects, byProject, children, other, suffixes, loaded };
   }, [threads, projects, filters]);
 
   const filtering = filters.agentIds.length > 0 || filters.sources.length > 0;
   const collapsedProjects = useStore((s) => s.collapsedProjects);
+  const projectCursors = useStore((s) => s.projectCursors);
+  const threadsCursor = useStore((s) => s.threadsCursor);
   const [expandedMore, setExpandedMore] = useState<Record<string, boolean>>({});
   const toggleMore = useCallback((path: string) => setExpandedMore((current) => ({ ...current, [path]: !current[path] })), []);
 
   const rows = useMemo(() => {
     const out: SidebarRow[] = [];
-    const add = (project: Extract<SidebarRow, { kind: "project" }>["project"], list: ThreadSummary[], suffix?: string) => {
+    const add = (project: Extract<SidebarRow, { kind: "project" }>["project"], list: ThreadSummary[], suffix?: string, total = 0) => {
       if (filtering && list.length === 0) return;
       const collapsed = !!collapsedProjects[project.path];
       const attention = !collapsed
@@ -516,12 +548,14 @@ export function SidebarContent() {
         for (const child of groups.children.get(thread.id) ?? []) out.push({ kind: "thread", key: `c:${child.id}`, thread: child, nested: true });
       }
       const hidden = list.length - Math.min(limit, list.length);
-      if (hidden > 0 || expanded) out.push({ kind: "more", key: `m:${project.path}`, path: project.path, hidden, expanded });
+      const remote = filtering || projectCursors[project.path] === null ? 0 : Math.max(0, total - (groups.loaded.get(normalize(project.path)) ?? 0));
+      if (hidden > 0 || remote > 0 || expanded) out.push({ kind: "more", key: `m:${project.path}`, path: project.path, hidden, remote, expanded });
     };
-    for (const project of groups.visibleProjects) add(project, groups.byProject.get(normalize(project.path)) ?? [], groups.suffixes.get(project.path));
+    for (const project of groups.visibleProjects) add(project, groups.byProject.get(normalize(project.path)) ?? [], groups.suffixes.get(project.path), project.threadCount);
     if (groups.other.length > 0) add({ path: "", name: t("sidebar.other"), exists: true, pinned: false, hidden: false }, groups.other);
+    if (threadsCursor) out.push({ kind: "loadall", key: "loadall" });
     return out;
-  }, [groups, collapsedProjects, expandedMore, activeId, filtering, t]);
+  }, [groups, collapsedProjects, expandedMore, activeId, filtering, t, projectCursors, threadsCursor]);
 
   return (
     <div className="flex h-full min-h-0 flex-col">

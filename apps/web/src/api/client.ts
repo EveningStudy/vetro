@@ -1,4 +1,5 @@
 import { PROTOCOL_VERSION, type AuthApi, type Transport } from "./protocol";
+import { getSession } from "./session";
 import { WsTransport, httpAuth, wsUrl } from "./ws";
 
 export const isMock =
@@ -14,7 +15,10 @@ export async function initClient() {
     transport = new mock.MockTransport();
     auth = mock.mockAuth;
   } else {
-    transport = new WsTransport(wsUrl(), { clientName: "vetro-web", protocolVersion: PROTOCOL_VERSION });
+    transport = new WsTransport(wsUrl(), () => {
+      const session = getSession();
+      return { clientName: "vetro-web", protocolVersion: PROTOCOL_VERSION, ...(session ? { session } : {}) };
+    });
   }
 }
 

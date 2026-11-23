@@ -35,6 +35,7 @@ export function CommandPalette() {
   const agents = useStore((s) => s.agents);
   const projects = useStore((s) => s.projects);
   const visible = useHiddenFilter();
+  const showHidden = useStore((s) => s.filters.showHidden);
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<SearchHit[] | null>(null);
   const [searching, setSearching] = useState(false);
@@ -59,13 +60,13 @@ export function CommandPalette() {
     setSearching(true);
     const handle = setTimeout(() => {
       client()
-        .request("search.threads", { query: q, limit: 30 })
+        .request("search.threads", { query: q, limit: 30, includeHidden: showHidden })
         .then((result) => setHits(result.hits))
         .catch(() => setHits([]))
         .finally(() => setSearching(false));
     }, 120);
     return () => clearTimeout(handle);
-  }, [query]);
+  }, [query, showHidden]);
 
   const openThread = (thread: ThreadSummary) => {
     close();
@@ -88,7 +89,7 @@ export function CommandPalette() {
       meta: relativeTime(thread.updatedAt, t),
       run: () => openThread(thread),
     });
-    if (hits !== null) return [{ label: t("palette.results"), entries: hits.filter((hit) => visible(hit.thread)).map((hit) => threadEntry(hit.thread, <Snippet html={hit.snippet} />)) }];
+    if (hits !== null) return [{ label: t("palette.results"), entries: hits.map((hit) => threadEntry(hit.thread, <Snippet html={hit.snippet} />)) }];
     const recent = Object.values(threads)
       .filter((thread) => !thread.archived && visible(thread))
       .sort((a, b) => b.updatedAt - a.updatedAt)

@@ -17,6 +17,7 @@ import type {
   ThreadSummary,
   ThreadUsage,
 } from "~/api/types";
+import { connectPrefs, getPrefs, onPrefsLoaded, type PrefsData, savePrefs } from "./prefs";
 import { errorMessage, toast } from "./toast";
 
 export interface OpenThread {
@@ -62,18 +63,11 @@ interface State {
   mobileSidebarOpen: boolean;
   drafts: Record<string, string>;
   authLost: boolean;
-}
-
-const COLLAPSED_KEY = "vetro:collapsed-projects";
-const FILTERS_KEY = "vetro:filters";
-
-function readJson<T>(key: string, fallback: T): T {
-  try {
-    const raw = localStorage.getItem(key);
-    return raw ? { ...fallback, ...JSON.parse(raw) } : fallback;
-  } catch {
-    return fallback;
-  }
+  /** Cursor of the newest-first list; null when everything is loaded. */
+  threadsCursor: string | null;
+  /** Per project: undefined = not paged yet, null = all of it loaded, string = more after this. */
+  projectCursors: Record<string, string | null>;
+  loadingMore: boolean;
 }
 
 export function routeFromLocation(): Route {
@@ -115,13 +109,16 @@ export const useStore = create<State>(() => ({
   open: {},
   remote: null,
   route: routeFromLocation(),
-  filters: readJson<Filters>(FILTERS_KEY, { agentIds: [], sources: [], showArchived: false, showHidden: false }),
-  collapsedProjects: readJson<Record<string, boolean>>(COLLAPSED_KEY, {}),
+  filters: { agentIds: [], sources: [], showArchived: false, showHidden: false, ...(getPrefs().filters as Partial<Filters> | undefined) },
+  collapsedProjects: getPrefs().collapsedProjects ?? {},
   rawPanelOpen: new URLSearchParams(location.search).get("panel") === "raw",
   paletteOpen: new URLSearchParams(location.search).get("palette") === "1",
   mobileSidebarOpen: new URLSearchParams(location.search).get("sidebar") === "1",
   drafts: {},
   authLost: false,
+  threadsCursor: null,
+  projectCursors: {},
+  loadingMore: false,
 }));
 
 const set = useStore.setState;
@@ -220,26 +217,35 @@ function handleEvent(event: ServerEvent) {
   }
 }
 
+const FIRST_PAGE = 500;
+const PROJECT_PAGE = 200;
+
 async function loadLists() {
   const api = client();
   const [agents, projects] = await Promise.all([api.request("agents.list", {}), api.request("projects.list", {})]);
   set({ agents: agents.agents, projects: projects.projects });
-  const threads: ThreadSummary[] = [];
-  let cursor: string | null = null;
-  do {
-    const page: { threads: ThreadSummary[]; nextCursor: string | null } = await api.request("threads.list", {
-      includeArchived: true,
-      includeChildren: true,
-      limit: 500,
-      ...(cursor ? { cursor } : {}),
-    });
-    threads.push(...page.threads);
-    cursor = page.nextCursor;
-  } while (cursor && threads.length < 5000);
+  const page = await api.request("threads.list", { includeArchived: true, includeChildren: true, limit: FIRST_PAGE });
   const map: Record<string, ThreadSummary> = {};
-  for (const thread of threads) map[thread.id] = thread;
-  set({ threads: map, threadsLoaded: true });
+  for (const thread of page.threads) map[thread.id] = thread;
+  set({ threads: map, threadsLoaded: true, threadsCursor: page.nextCursor, projectCursors: {} });
 }
+
+async function loadPrefs() {
+  const api = client();
+  const remote = await api
+    .request("prefs.get", {})
+    .then((result) => (result.prefs && typeof result.prefs === "object" ? (result.prefs as PrefsData) : null))
+    .catch(() => undefined);
+  if (remote === undefined) return;
+  connectPrefs(remote, (prefs) => void api.request("prefs.set", { prefs: prefs as never }).catch(() => undefined));
+}
+
+onPrefsLoaded((prefs) => {
+  useStore.setState((state) => ({
+    collapsedProjects: prefs.collapsedProjects ?? state.collapsedProjects,
+    filters: prefs.filters ? { ...state.filters, ...(prefs.filters as Partial<Filters>) } : state.filters,
+  }));
+});
 
 let started = false;
 
@@ -257,6 +263,7 @@ export function startSync() {
         .catch(() => undefined);
     }
     if (status !== "open") return;
+    if (!reconnected) void loadPrefs();
     void loadLists().catch((error) => toast.error(errorMessage(error)));
     if (reconnected) for (const id of Object.keys(get().open)) void actions.openThread(id, true);
   });
@@ -266,6 +273,10 @@ export function startSync() {
 
 const opening = new Map<string, Promise<void>>();
 const refs = new Map<string, number>();
+/** Each threads.open gets a generation; a late answer to an older request is dropped. */
+const generations = new Map<string, number>();
+/** Views left while the thread was still loading; close its subscription once the open lands. */
+const closeAfterOpen = new Set<string>();
 
 export const actions = {
   navigate(route: Route, replace = false) {
@@ -279,9 +290,17 @@ export const actions = {
     if (!force && get().open[threadId]) return Promise.resolve();
     const inflight = opening.get(threadId);
     if (inflight && !force) return inflight;
+    const generation = (generations.get(threadId) ?? 0) + 1;
+    generations.set(threadId, generation);
     const promise = client()
       .request("threads.open", { threadId, limit: 200 })
       .then((result) => {
+        if (generations.get(threadId) !== generation) return;
+        if (closeAfterOpen.has(threadId)) {
+          closeAfterOpen.delete(threadId);
+          void client().request("threads.close", { threadId }).catch(() => undefined);
+          return;
+        }
         set({
           open: {
             ...get().open,
@@ -303,7 +322,9 @@ export const actions = {
         toast.error(errorMessage(error));
         throw error;
       })
-      .finally(() => opening.delete(threadId));
+      .finally(() => {
+        if (opening.get(threadId) === promise) opening.delete(threadId);
+      });
     opening.set(threadId, promise);
     return promise;
   },
@@ -311,6 +332,7 @@ export const actions = {
   /** Keeps a thread open while at least one view shows it. */
   retain(threadId: string) {
     refs.set(threadId, (refs.get(threadId) ?? 0) + 1);
+    closeAfterOpen.delete(threadId);
     void actions.openThread(threadId).catch(() => undefined);
   },
 
@@ -327,6 +349,10 @@ export const actions = {
   },
 
   closeThread(threadId: string) {
+    if (opening.has(threadId)) {
+      closeAfterOpen.add(threadId);
+      return;
+    }
     if (!get().open[threadId]) return;
     const open = { ...get().open };
     delete open[threadId];
@@ -409,6 +435,45 @@ export const actions = {
     return project;
   },
 
+  /** Next page of the flat, newest-first list. */
+  async loadMoreThreads() {
+    const cursor = get().threadsCursor;
+    if (!cursor || get().loadingMore) return;
+    set({ loadingMore: true });
+    try {
+      const page = await client().request("threads.list", { includeArchived: true, includeChildren: true, limit: FIRST_PAGE, cursor });
+      mergeSummaries(page.threads);
+      set({ threadsCursor: page.nextCursor });
+    } catch (error) {
+      toast.error(errorMessage(error));
+    } finally {
+      set({ loadingMore: false });
+    }
+  },
+
+  /** More threads of one project, independent of the flat list. */
+  async loadProjectThreads(path: string) {
+    const cursors = get().projectCursors;
+    if (cursors[path] === null || get().loadingMore) return;
+    set({ loadingMore: true });
+    try {
+      const cursor = cursors[path];
+      const page = await client().request("threads.list", {
+        projectPath: path,
+        includeArchived: true,
+        includeChildren: true,
+        limit: PROJECT_PAGE,
+        ...(cursor ? { cursor } : {}),
+      });
+      mergeSummaries(page.threads);
+      set({ projectCursors: { ...get().projectCursors, [path]: page.nextCursor } });
+    } catch (error) {
+      toast.error(errorMessage(error));
+    } finally {
+      set({ loadingMore: false });
+    }
+  },
+
   async removeProject(path: string) {
     await client().request("projects.remove", { path });
     set({ projects: get().projects.filter((project) => project.path !== path) });
@@ -425,13 +490,13 @@ export const actions = {
 
   toggleProject(path: string) {
     const collapsedProjects = { ...get().collapsedProjects, [path]: !get().collapsedProjects[path] };
-    localStorage.setItem(COLLAPSED_KEY, JSON.stringify(collapsedProjects));
+    savePrefs({ collapsedProjects });
     set({ collapsedProjects });
   },
 
   setFilters(patch: Partial<Filters>) {
     const filters = { ...get().filters, ...patch };
-    localStorage.setItem(FILTERS_KEY, JSON.stringify(filters));
+    savePrefs({ filters });
     set({ filters });
   },
 
