@@ -5,17 +5,19 @@ Types are defined in `crates/vetro-proto` and generated for TypeScript into `app
 ## Transport
 
 - `GET /api/health` -> `{ "ok": true, "version": "..." }` (no auth).
-- `POST /api/auth/local` `{ "token": "..." }` -> sets the session cookie. Loopback only; used by the desktop window, which receives the token in the URL fragment (`/#token=...`) and removes it from the address bar.
-- `POST /api/auth/pair` `{ "code": "...", "deviceName": "..." }` -> sets the session cookie for a new device.
-- `GET /api/auth/session` -> `200 { "authenticated": true, "remoteClient": bool }` or `401`.
-- `GET /api/ws` -> WebSocket (cookie required). JSON text frames:
+- `POST /api/auth/local` `{ "token": "..." }` -> `AuthSession`. Loopback only; used by the desktop window and by `vetro serve`'s printed link, which carry the local token in the URL fragment (`/#token=...`); the page removes it from the address bar.
+- `POST /api/auth/pair` `{ "code": "...", "deviceName": "..." }` -> `AuthSession` for a new device.
+- `GET /api/auth/session` with `Authorization: Bearer <session>` -> `200 { "authenticated": true, "remoteClient": bool }` or `401`.
+- `GET /api/ws` -> WebSocket, JSON text frames:
   - request `{ "id": 1, "method": "threads.list", "params": { ... } }`
   - response `{ "id": 1, "result": { ... } }` or `{ "id": 1, "error": { "code": "not_found", "message": "..." } }`
   - event `{ "event": "thread.event", "data": { ... } }`
 
-Unknown fields must be ignored by both sides. Timestamps are milliseconds since the Unix epoch.
+**No cookies.** Browsers send cookies to every port of a host, so a cookie for `127.0.0.1` would reach other local services. The client keeps the `session` string in origin-scoped storage (or in memory) and presents it explicitly: in `app.hello` on the WebSocket and as a bearer token on HTTP. A WebSocket that has not completed a valid `app.hello` within a few seconds is closed, and every other method is refused until then. `Origin` and `Host` are still checked on every request and upgrade.
 
-After `app.hello`, requests can complete out of order while events continue to arrive. Match responses by `id`. If the server sends `{"event":"app.resync","data":{}}`, reload lists and reopen subscribed threads on the same connection.
+After `app.hello`, requests can complete out of order while events continue to arrive. Match responses by `id`. If the server sends `{"event":"app.resync","data":{}}`, reload lists and reopen open threads.
+
+Unknown fields must be ignored by both sides. Timestamps are milliseconds since the Unix epoch.
 
 ## Methods
 
@@ -47,6 +49,8 @@ After `app.hello`, requests can complete out of order while events continue to a
 | `fs.find` | `FsFindParams` | `FsFindResult` | Read-only file mentions. Remote clients are limited to known project roots. |
 | `settings.get` | `Empty` | `Settings` | |
 | `settings.update` | `SettingsUpdateParams` | `Settings` | Desktop client only. |
+| `prefs.get` | `Empty` | `Prefs` | UI preferences of the calling device, stored by the core so they survive a WebView without persistent storage. |
+| `prefs.set` | `Prefs` | `Empty` | |
 | `remote.status` | `Empty` | `RemoteStatus` | |
 | `remote.set` | `RemoteSetParams` | `RemoteStatus` | Desktop client only. |
 | `remote.createPairing` | `Empty` | `Pairing` | Desktop client only. |

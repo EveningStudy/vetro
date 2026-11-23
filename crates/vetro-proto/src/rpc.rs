@@ -104,10 +104,32 @@ pub struct Empty {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export)]
+#[ts(export, optional_fields)]
 pub struct HelloParams {
     pub client_name: String,
     pub protocol_version: u32,
+    /// The session string from `POST /api/auth/local` or `/api/auth/pair`. A connection can call nothing
+    /// else until a hello with a valid session succeeded.
+    pub session: Option<String>,
+}
+
+/// Body of a successful `POST /api/auth/local` or `POST /api/auth/pair`. The client keeps `session` in
+/// origin-scoped storage and presents it in `app.hello` and as `Authorization: Bearer` on HTTP calls.
+/// Vetro sets no cookies.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct AuthSession {
+    pub session: String,
+    pub remote_client: bool,
+}
+
+/// UI preferences of the calling device (theme, language, layout). Opaque to the core.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct Prefs {
+    pub prefs: Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -365,6 +387,8 @@ pub struct ThreadRawResult {
 pub struct SearchParams {
     pub query: String,
     pub limit: Option<u32>,
+    /// Also return threads of hidden projects. Default false.
+    pub include_hidden: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
