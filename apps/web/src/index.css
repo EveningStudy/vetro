@@ -1,0 +1,597 @@
+/* Theme tokens, chat markdown and scrollbar styles adapted from T3 Code (MIT); see THIRD_PARTY_NOTICES.md. */
+@import "tailwindcss";
+@import "@fontsource-variable/inter";
+
+@custom-variant dark (&:is(.dark, .dark *));
+@custom-variant light (&:not(.dark, .dark *));
+@custom-variant any-hover {
+  @media (any-hover: hover) {
+    &:hover {
+      @slot;
+    }
+  }
+}
+
+:root {
+  --app-scrollbar-width: 6px;
+  --app-scrollbar-thumb: rgb(217 217 217);
+  --app-scrollbar-thumb-hover: rgb(191 191 191);
+  --control-radius: 0.5rem;
+  --sidebar-row-content-inset: 0.625rem;
+  --glass-blur: 12px;
+  --glass-opacity: 80%;
+  --glass-saturation: 1.14;
+  --workspace-topbar-height: 52px;
+  --chat-content-max-width: 46rem;
+  --workspace-gutter: 0.75rem;
+
+  @variant sm {
+    --workspace-gutter: 1.25rem;
+  }
+
+  @variant dark {
+    --app-scrollbar-thumb: rgb(255 255 255 / 36%);
+    --app-scrollbar-thumb-hover: rgb(255 255 255 / 45%);
+    --glass-blur: 16px;
+    --glass-saturation: 1.08;
+  }
+}
+
+@theme {
+  --font-sans: "Inter Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, "Microsoft YaHei UI", "PingFang SC", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+@theme inline {
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: calc(1 / 0.6875);
+  --text-3xs: 0.625rem;
+  --text-3xs--line-height: calc(0.875 / 0.625);
+  --shadow-composer: 0 1px 2px rgb(0 0 0 / 5%);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+  --color-zinc-25: oklch(99.2% 0 0);
+  --animate-status-pulse: status-pulse 2s infinite;
+  --color-warning-foreground: var(--warning-foreground);
+  --color-warning: var(--warning);
+  --color-warning-surface: var(--warning-surface);
+  --color-error-foreground: var(--error-foreground);
+  --color-error: var(--error);
+  --color-error-surface: var(--error-surface);
+  --color-success-foreground: var(--success-foreground);
+  --color-success: var(--success);
+  --color-info-foreground: var(--info-foreground);
+  --color-info: var(--info);
+  --color-diff-addition: var(--diff-addition);
+  --color-diff-deletion: var(--diff-deletion);
+  --color-diff-addition-foreground: var(--diff-addition-foreground);
+  --color-diff-deletion-foreground: var(--diff-deletion-foreground);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-destructive: var(--destructive);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-placeholder: var(--placeholder);
+  --color-secondary-label: var(--secondary-label);
+  --color-icon-muted: var(--icon-muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-code: var(--code-background);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --color-message: var(--message-surface);
+  --color-message-foreground: var(--message-foreground);
+  --color-message-action: var(--message-action);
+  --color-message-action-foreground: var(--message-action-foreground);
+  --color-message-action-hover: var(--message-action-hover);
+  --color-surface-raised: var(--surface-raised);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-muted-foreground: var(--sidebar-muted-foreground);
+  --color-sidebar-row-hover: var(--sidebar-row-hover);
+  --color-sidebar-row-active: var(--sidebar-row-active);
+  --color-sidebar-border: var(--sidebar-border);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+  @keyframes status-pulse {
+    0%,
+    40% {
+      opacity: 1;
+      animation-timing-function: steps(6);
+    }
+    50%,
+    90% {
+      opacity: 0.5;
+      animation-timing-function: steps(6);
+    }
+    100% {
+      opacity: 1;
+    }
+  }
+}
+
+:root {
+  color-scheme: light;
+  --radius: 0.5rem;
+  --background: var(--color-zinc-25);
+  --surface-raised: var(--color-white);
+  --foreground: var(--color-zinc-900);
+  --card: var(--color-white);
+  --card-foreground: var(--color-zinc-900);
+  --popover: var(--color-white);
+  --popover-foreground: var(--color-zinc-900);
+  --primary: oklch(0.488 0.217 264);
+  --primary-foreground: var(--color-white);
+  --secondary: var(--color-zinc-50);
+  --secondary-foreground: var(--color-zinc-800);
+  --muted: var(--color-zinc-50);
+  --muted-foreground: var(--color-zinc-500);
+  --placeholder: var(--muted-foreground);
+  --secondary-label: var(--muted-foreground);
+  --icon-muted: var(--muted-foreground);
+  --message-surface: color-mix(in srgb, var(--color-zinc-200) 55%, var(--color-zinc-100));
+  --message-foreground: var(--foreground);
+  --message-action: var(--primary);
+  --message-action-foreground: var(--primary-foreground);
+  --message-action-hover: color-mix(in srgb, var(--primary) 90%, var(--background));
+  --accent: var(--color-zinc-100);
+  --accent-foreground: var(--color-zinc-900);
+  --error: var(--color-red-500);
+  --error-foreground: var(--color-red-700);
+  --error-surface: color-mix(in srgb, var(--error) 8%, transparent);
+  --destructive: var(--error);
+  --destructive-foreground: var(--error-foreground);
+  --border: var(--color-zinc-200);
+  --input: var(--color-zinc-300);
+  --ring: var(--primary);
+  --info: var(--color-blue-500);
+  --info-foreground: var(--color-blue-700);
+  --success: var(--color-emerald-500);
+  --success-foreground: var(--color-emerald-700);
+  --warning: var(--color-amber-500);
+  --warning-foreground: var(--color-amber-700);
+  --warning-surface: color-mix(in srgb, var(--warning) 8%, transparent);
+  --diff-addition: color-mix(in srgb, var(--color-emerald-500) 12%, transparent);
+  --diff-deletion: color-mix(in srgb, var(--color-red-500) 10%, transparent);
+  --diff-addition-foreground: var(--color-emerald-700);
+  --diff-deletion-foreground: var(--color-red-700);
+  --sidebar: var(--color-zinc-50);
+  --sidebar-foreground: var(--foreground);
+  --sidebar-muted-foreground: var(--muted-foreground);
+  --sidebar-row-hover: color-mix(in srgb, var(--color-zinc-200) 45%, transparent);
+  --sidebar-row-active: var(--color-white);
+  --sidebar-border: var(--border);
+  --code-background: color-mix(in srgb, var(--card) 90%, var(--background));
+
+  @variant dark {
+    color-scheme: dark;
+    --background: #000;
+    --surface-raised: color-mix(in srgb, var(--color-neutral-950) 97%, var(--color-white));
+    --foreground: var(--color-neutral-100);
+    --card: color-mix(in srgb, var(--color-neutral-950) 97%, var(--color-white));
+    --card-foreground: var(--color-neutral-100);
+    --popover: color-mix(in srgb, var(--color-neutral-950) 97%, var(--color-white));
+    --popover-foreground: var(--color-neutral-100);
+    --primary: oklch(0.571 0.21 264);
+    --secondary: rgb(255 255 255 / 3%);
+    --secondary-foreground: var(--color-neutral-100);
+    --muted: rgb(255 255 255 / 3%);
+    --muted-foreground: var(--color-neutral-400);
+    --secondary-label: #8f8f8f;
+    --accent: rgb(255 255 255 / 6%);
+    --accent-foreground: var(--color-neutral-100);
+    --message-surface: color-mix(in srgb, var(--color-neutral-950) 88%, var(--color-white));
+    --error: color-mix(in srgb, var(--color-red-500) 90%, var(--color-white));
+    --error-foreground: var(--color-red-400);
+    --error-surface: color-mix(in srgb, var(--error) 16%, transparent);
+    --border: rgb(255 255 255 / 8%);
+    --input: rgb(255 255 255 / 11%);
+    --info-foreground: var(--color-blue-400);
+    --success-foreground: var(--color-emerald-400);
+    --warning-foreground: var(--color-amber-400);
+    --warning-surface: color-mix(in srgb, var(--warning) 16%, transparent);
+    --diff-addition: color-mix(in srgb, var(--color-emerald-500) 14%, transparent);
+    --diff-deletion: color-mix(in srgb, var(--color-red-500) 14%, transparent);
+    --diff-addition-foreground: var(--color-emerald-400);
+    --diff-deletion-foreground: var(--color-red-400);
+    --sidebar: var(--card);
+    --sidebar-foreground: #f1f3f7;
+    --sidebar-muted-foreground: #a3a3a3;
+    --sidebar-row-hover: rgb(255 255 255 / 6%);
+    --sidebar-row-active: rgb(255 255 255 / 9%);
+  }
+}
+
+@utility surface-glass {
+  background: color-mix(in srgb, var(--background) var(--glass-opacity), transparent);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
+}
+
+@utility dropdown-glass {
+  background: color-mix(in srgb, var(--popover) 94%, transparent);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
+  border: 1px solid color-mix(in srgb, var(--foreground) 10%, transparent);
+}
+
+@utility dialog-glass {
+  background: color-mix(in srgb, var(--background) 92%, transparent);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
+  border-color: color-mix(in srgb, var(--foreground) 10%, transparent);
+  box-shadow: 0 24px 64px -24px rgb(0 0 0 / 45%);
+
+  @variant dark {
+    border-color: color-mix(in srgb, var(--color-white) 8%, transparent);
+    box-shadow:
+      inset 0 1px rgb(255 255 255 / 4%),
+      0 24px 72px -20px rgb(0 0 0 / 90%);
+  }
+}
+
+@utility dialog-backdrop {
+  background: color-mix(in srgb, var(--background) 60%, transparent);
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
+}
+
+@keyframes live-tool-shine {
+  from {
+    background-position:
+      -4.5rem 0,
+      0 0;
+  }
+  to {
+    background-position:
+      calc(100% + 4.5rem) 0,
+      0 0;
+  }
+}
+
+@utility live-tool-shine {
+  @media (prefers-reduced-motion: no-preference) {
+    color: transparent;
+    background-image:
+      linear-gradient(to right, transparent, var(--foreground), transparent),
+      linear-gradient(var(--secondary-label), var(--secondary-label));
+    background-size:
+      4.5rem 100%,
+      100% 100%;
+    background-repeat: no-repeat;
+    background-clip: text;
+    animation: live-tool-shine 2.2s steps(30) infinite;
+  }
+}
+
+.no-transitions,
+.no-transitions *,
+.no-transitions *::before,
+.no-transitions *::after {
+  transition-duration: 0s !important;
+  animation-duration: 0s !important;
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+  :where(svg.lucide[stroke-width="2"]) {
+    stroke-width: 1.75;
+  }
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]) {
+    cursor: pointer;
+  }
+}
+
+html,
+body {
+  height: 100%;
+  overscroll-behavior: none;
+}
+
+body {
+  margin: 0;
+  overflow: hidden;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-feature-settings: "cv11", "ss01";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  -webkit-tap-highlight-color: transparent;
+}
+
+#root {
+  height: 100%;
+  width: 100%;
+  overflow: clip;
+  padding-top: env(safe-area-inset-top);
+}
+
+pre,
+code,
+kbd,
+.font-mono {
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--primary) 28%, transparent);
+}
+
+:where(:not(iframe))::-webkit-scrollbar {
+  width: var(--app-scrollbar-width);
+  height: var(--app-scrollbar-width);
+}
+:where(:not(iframe))::-webkit-scrollbar-track {
+  background: transparent;
+}
+:where(:not(iframe))::-webkit-scrollbar-thumb {
+  background: var(--app-scrollbar-thumb);
+  border-radius: 3px;
+}
+:where(:not(iframe))::-webkit-scrollbar-thumb:hover {
+  background: var(--app-scrollbar-thumb-hover);
+}
+:where(:not(iframe))::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Chat markdown */
+
+.chat-markdown {
+  overflow-wrap: anywhere;
+}
+@keyframes caret-blink {
+  50% {
+    opacity: 0;
+  }
+}
+.chat-markdown.streaming > :last-child::after {
+  content: "";
+  display: inline-block;
+  width: 0.45em;
+  height: 1em;
+  margin-inline-start: 2px;
+  vertical-align: -0.15em;
+  border-radius: 1px;
+  background: color-mix(in srgb, currentcolor 55%, transparent);
+  animation: caret-blink 1s steps(1) infinite;
+}
+.chat-markdown > :first-child {
+  margin-top: 0;
+}
+.chat-markdown > :last-child {
+  margin-bottom: 0;
+}
+.chat-markdown p,
+.chat-markdown ul,
+.chat-markdown ol,
+.chat-markdown blockquote,
+.chat-markdown pre,
+.chat-markdown .chat-markdown-table,
+.chat-markdown .chat-markdown-codeblock {
+  margin: 0.65rem 0;
+}
+.chat-markdown h1,
+.chat-markdown h2,
+.chat-markdown h3,
+.chat-markdown h4,
+.chat-markdown h5,
+.chat-markdown h6 {
+  margin: 1.25rem 0 0.5rem;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.chat-markdown h1 {
+  font-size: 1.25rem;
+}
+.chat-markdown h2 {
+  font-size: 1.125rem;
+}
+.chat-markdown h3 {
+  font-size: 1rem;
+}
+.chat-markdown h4,
+.chat-markdown h5,
+.chat-markdown h6 {
+  font-size: 0.875rem;
+}
+.chat-markdown ul {
+  padding-inline-start: 1.25rem;
+  list-style-type: disc;
+}
+.chat-markdown ol {
+  padding-inline-start: 1.5rem;
+  list-style-type: decimal;
+}
+.chat-markdown ol > li::marker {
+  font-variant-numeric: tabular-nums;
+}
+.chat-markdown ul ul {
+  list-style-type: circle;
+}
+.chat-markdown li + li {
+  margin-top: 0.25rem;
+}
+.chat-markdown li > ul,
+.chat-markdown li > ol {
+  margin: 0.25rem 0;
+}
+.chat-markdown li.task-list-item {
+  list-style-type: none;
+}
+.chat-markdown li.task-list-item input[type="checkbox"] {
+  margin-inline: -1.25rem 0.35em;
+  vertical-align: middle;
+}
+.chat-markdown a {
+  color: var(--info-foreground);
+  text-decoration: none;
+}
+.chat-markdown a:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.chat-markdown blockquote {
+  border-inline-start: 2px solid color-mix(in srgb, currentcolor 35%, transparent);
+  padding-inline-start: 0.8rem;
+}
+.chat-markdown hr {
+  margin: 1rem 0;
+}
+.chat-markdown :not(pre) > code {
+  border-radius: 0.25rem;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  background: color-mix(in srgb, var(--foreground) 9%, transparent);
+  padding: 0.1em 0.35em;
+  font-size: 0.85em;
+}
+.chat-markdown strong {
+  font-weight: 650;
+}
+.chat-markdown pre {
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.chat-markdown-codeblock {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--muted);
+}
+.chat-markdown-codeblock pre {
+  margin: 0 !important;
+  padding: 0.75rem 0.9rem;
+  font-size: 0.8125rem;
+  line-height: 1.55;
+}
+.chat-markdown-table {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+}
+.chat-markdown table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+}
+.chat-markdown th,
+.chat-markdown td {
+  padding: 0.4rem 0.75rem;
+  text-align: start;
+  border-bottom: 1px solid var(--border);
+}
+.chat-markdown td code {
+  white-space: nowrap;
+}
+.chat-markdown tr:last-child td {
+  border-bottom: 0;
+}
+.chat-markdown th {
+  font-weight: 600;
+  background: var(--muted);
+}
+.chat-markdown mark,
+.search-snippet mark {
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--warning) 35%, transparent);
+  color: inherit;
+}
+
+/* Syntax highlighting (highlight.js classes) */
+.hljs-comment,
+.hljs-quote {
+  color: var(--muted-foreground);
+  font-style: italic;
+}
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-built_in,
+.hljs-meta .hljs-keyword {
+  color: oklch(0.5 0.2 300);
+}
+.hljs-string,
+.hljs-attr .hljs-string,
+.hljs-regexp,
+.hljs-addition {
+  color: oklch(0.52 0.13 150);
+}
+.hljs-number,
+.hljs-literal,
+.hljs-symbol,
+.hljs-bullet {
+  color: oklch(0.58 0.15 50);
+}
+.hljs-title,
+.hljs-title.function_,
+.hljs-section {
+  color: oklch(0.5 0.15 255);
+}
+.hljs-type,
+.hljs-title.class_,
+.hljs-variable.language_ {
+  color: oklch(0.55 0.12 200);
+}
+.hljs-attr,
+.hljs-attribute,
+.hljs-property,
+.hljs-name,
+.hljs-tag {
+  color: oklch(0.52 0.15 25);
+}
+.hljs-meta,
+.hljs-deletion {
+  color: oklch(0.55 0.15 20);
+}
+.dark .hljs-keyword,
+.dark .hljs-selector-tag,
+.dark .hljs-built_in,
+.dark .hljs-meta .hljs-keyword {
+  color: oklch(0.76 0.13 310);
+}
+.dark .hljs-string,
+.dark .hljs-regexp,
+.dark .hljs-addition {
+  color: oklch(0.8 0.12 145);
+}
+.dark .hljs-number,
+.dark .hljs-literal,
+.dark .hljs-symbol,
+.dark .hljs-bullet {
+  color: oklch(0.8 0.12 60);
+}
+.dark .hljs-title,
+.dark .hljs-title.function_,
+.dark .hljs-section {
+  color: oklch(0.78 0.11 250);
+}
+.dark .hljs-type,
+.dark .hljs-title.class_,
+.dark .hljs-variable.language_ {
+  color: oklch(0.8 0.1 195);
+}
+.dark .hljs-attr,
+.dark .hljs-attribute,
+.dark .hljs-property,
+.dark .hljs-name,
+.dark .hljs-tag {
+  color: oklch(0.78 0.12 30);
+}
