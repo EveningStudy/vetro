@@ -35,7 +35,13 @@ fn main() {
         return;
     }
     let temp = tempfile::tempdir().unwrap();
-    let path = temp.path();
+    // macOS temp directories sit behind a symlink (/var -> /private/var).
+    let resolved = if cfg!(windows) {
+        temp.path().to_path_buf()
+    } else {
+        temp.path().canonicalize().unwrap()
+    };
+    let path = resolved.as_path();
     std::env::set_var("HOME", path);
     std::env::set_var("USERPROFILE", path);
     std::env::remove_var("VETRO_HOME");
