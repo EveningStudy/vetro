@@ -22,7 +22,7 @@ Unknown fields must be ignored by both sides. Timestamps are milliseconds since 
 | `app.hello` | `HelloParams` | `AppInfo` | First call on every connection. |
 | `agents.list` | `Empty` | `AgentsResult` | Cached detection. |
 | `agents.refresh` | `Empty` | `AgentsResult` | Re-detect binaries, versions and auth state. |
-| `agents.authenticate` | `AuthenticateParams` | `Empty` | Runs the agent's own sign-in method. |
+| `agents.authenticate` | `AuthenticateParams` | `AuthenticateResult` | Runs the agent's own sign-in method. The result carries a URL and code when the flow continues in a browser elsewhere. |
 | `agents.options` | `AgentOptionsParams` | `AgentOptionsResult` | Options and slash commands for a new thread, from the agent (cached). |
 | `projects.list` | `Empty` | `ProjectsResult` | |
 | `projects.add` | `ProjectAddParams` | `Project` | Adds a folder to Vetro's list only. |
@@ -56,6 +56,12 @@ Unknown fields must be ignored by both sides. Timestamps are milliseconds since 
 - `thread.event`: for opened threads only; `seq` increases by one per thread. `ThreadEvent` is `item_added`, `item_updated`, `text_delta`, `summary`, `options`, `commands` or `usage`.
 - `threads.upserted` / `threads.removed`: the thread list changed (new session, title, status, link, history refresh). Sent to every connection.
 - `agents.updated`, `projects.updated`, `index.progress`, `remote.updated`.
+
+## Content rules
+
+- A `text` block is what the user typed, unchanged, including `@path` mentions and `/commands`.
+- `file` blocks accompany a mention as a hint. Adapters map them to the agent's native mention type when one exists and ignore them otherwise; a message is never rejected because of them.
+- `projects.list` returns hidden projects too; clients filter on `hidden`.
 
 ## Client rules
 

@@ -149,6 +149,19 @@ pub struct AuthenticateParams {
 pub struct AgentOptionsParams {
     pub agent_id: String,
     pub cwd: Option<String>,
+    /// Choices already made in the new-thread form (option id to value). Dependent options, such as the
+    /// thinking levels of the chosen model, are returned for these choices.
+    pub selected: Option<BTreeMap<String, String>>,
+}
+
+/// What the user needs to finish a sign-in that continues outside Vetro (device-code flows).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct AuthenticateResult {
+    pub message: Option<String>,
+    pub url: Option<String>,
+    pub code: Option<String>,
 }
 
 /// What a new thread of this agent would start with. Comes from the agent, possibly cached.
