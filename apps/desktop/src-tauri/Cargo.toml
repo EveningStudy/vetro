@@ -1,0 +1,21 @@
+[package]
+name = "vetro-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Vetro desktop shell"
+
+[lib]
+name = "vetro_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-ico", "image-png"] }
+tauri-plugin-single-instance = "2"
+tauri-plugin-opener = "2"
+anyhow = "1"
+serde_json = { workspace = true }

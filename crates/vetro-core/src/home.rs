@@ -1,0 +1,266 @@
+use std::{
+    collections::BTreeMap,
+    fs::{self, File},
+    io::{self, BufRead, BufReader, BufWriter, Read, Write},
+    path::{Path, PathBuf},
+    sync::Mutex,
+};
+
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
+use vetro_agent_api::Result;
+use vetro_proto::{
+    rpc::{AgentOptionsResult, RemoteDevice, Settings},
+    RawEntry,
+};
+
+use crate::{internal, now};
+
+pub struct Home {
+    root: PathBuf,
+    user_home: PathBuf,
+    settings: Mutex<Settings>,
+    state: Mutex<State>,
+    log_lock: Mutex<()>,
+}
+
+#[derive(Clone, Default, Deserialize, Serialize)]
+#[serde(default, rename_all = "camelCase")]
+pub(crate) struct State {
+    pub local_token: String,
+    pub devices: BTreeMap<String, Device>,
+    pub threads: BTreeMap<String, ThreadOverlay>,
+    pub projects: BTreeMap<String, ProjectOverlay>,
+    pub options: BTreeMap<String, AgentOptionsResult>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+pub(crate) struct Device {
+    pub secret: String,
+    pub details: RemoteDevice,
+}
+
+#[derive(Clone, Default, Deserialize, Serialize)]
+pub(crate) struct ThreadOverlay {
+    pub title: Option<String>,
+    pub archived: Option<bool>,
+}
+
+#[derive(Clone, Default, Deserialize, Serialize)]
+pub(crate) struct ProjectOverlay {
+    pub name: Option<String>,
+    pub pinned: bool,
+    pub hidden: bool,
+    #[serde(default)]
+    pub added: bool,
+}
+
+impl Home {
+    pub fn discover() -> Result<Self> {
+        let user_home =
+            std::env::home_dir().ok_or_else(|| internal("Home directory unavailable"))?;
+        let root = std::env::var_os("VETRO_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| user_home.join(".vetro"));
+        Self::open(root, user_home)
+    }
+
+    pub fn open(root: PathBuf, user_home: PathBuf) -> Result<Self> {
+        let root = std::path::absolute(root).map_err(internal)?;
+        fs::create_dir_all(&root).map_err(internal)?;
+        for name in ["raw", "logs"] {
+            let path = root.join(name);
+            match fs::create_dir(&path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(internal(error)),
+            }
+            let actual = fs::canonicalize(&path).map_err(internal)?;
+            if actual != fs::canonicalize(&root).map_err(internal)?.join(name) {
+                return Err(internal(
+                    "Vetro data subdirectory redirects outside its location",
+                ));
+            }
+        }
+
+        let config = root.join("config.json");
+        let settings = match read(&config)? {
+            Some(settings) => settings,
+            None => {
+                let settings = Settings::default();
+                write(&config, &settings)?;
+                settings
+            }
+        };
+        let state_path = root.join("state.json");
+        let mut state: State = read(&state_path)?.unwrap_or_default();
+        if state.local_token.is_empty() {
+            state.local_token = secret(32)?;
+            write(&state_path, &state)?;
+        }
+        Ok(Self {
+            root,
+            user_home,
+            settings: Mutex::new(settings),
+            state: Mutex::new(state),
+            log_lock: Mutex::new(()),
+        })
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn user_home(&self) -> &Path {
+        &self.user_home
+    }
+
+    pub fn settings(&self) -> Settings {
+        self.settings.lock().unwrap().clone()
+    }
+
+    pub fn local_token(&self) -> String {
+        self.state.lock().unwrap().local_token.clone()
+    }
+
+    pub(crate) fn check_token(&self, token: &str) -> bool {
+        equal(&self.state.lock().unwrap().local_token, token)
+    }
+
+    pub(crate) fn read_state<T>(&self, action: impl FnOnce(&State) -> T) -> T {
+        action(&self.state.lock().unwrap())
+    }
+
+    pub(crate) fn change_state<T>(&self, action: impl FnOnce(&mut State) -> T) -> Result<T> {
+        let mut state = self.state.lock().unwrap();
+        let mut next = state.clone();
+        let result = action(&mut next);
+        write(&self.root.join("state.json"), &next)?;
+        *state = next;
+        Ok(result)
+    }
+
+    pub(crate) fn update_settings(&self, patch: serde_json::Value) -> Result<Settings> {
+        let mut settings = self.settings.lock().unwrap();
+        let mut value = serde_json::to_value(&*settings).map_err(internal)?;
+        merge(&mut value, patch);
+        let next: Settings = serde_json::from_value(value)
+            .map_err(|error| crate::bad_request(format!("Invalid settings: {error}")))?;
+        write(&self.root.join("config.json"), &next)?;
+        *settings = next.clone();
+        Ok(next)
+    }
+
+    pub(crate) fn read_raw(&self, thread_id: &str) -> Result<Vec<RawEntry>> {
+        let path = self.raw_path(thread_id);
+        let file = match File::open(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(internal(error)),
+        };
+        BufReader::new(file)
+            .lines()
+            .map(|line| serde_json::from_str(&line.map_err(internal)?).map_err(internal))
+            .collect()
+    }
+
+    pub fn write_raw(&self, thread_id: &str, entries: &[RawEntry]) -> Result<()> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+        atomic(&self.raw_path(thread_id), |file| {
+            let mut writer = BufWriter::new(file);
+            for entry in entries {
+                serde_json::to_writer(&mut writer, entry)?;
+                writer.write_all(b"\n")?;
+            }
+            writer.flush()
+        })
+    }
+
+    fn raw_path(&self, thread_id: &str) -> PathBuf {
+        self.root
+            .join("raw")
+            .join(format!("{:x}.jsonl", Sha256::digest(thread_id.as_bytes())))
+    }
+
+    pub(crate) fn log(&self, message: &str) {
+        let _guard = self.log_lock.lock().unwrap();
+        let path = self.root.join("logs/core.log");
+        let mut previous = Vec::new();
+        if let Ok(file) = File::open(&path) {
+            let _ = file.take(256 * 1024).read_to_end(&mut previous);
+        }
+        let line = format!("{} {message}\n", now());
+        let start = previous
+            .len()
+            .saturating_sub((256 * 1024usize).saturating_sub(line.len()));
+        let start = if start > 0 {
+            previous[start..]
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map_or(previous.len(), |offset| start + offset + 1)
+        } else {
+            0
+        };
+        let _ = atomic(&path, |file| {
+            file.write_all(&previous[start..])?;
+            file.write_all(line.as_bytes())
+        });
+    }
+}
+
+pub(crate) fn secret(size: usize) -> Result<String> {
+    let mut bytes = vec![0; size];
+    getrandom::fill(&mut bytes).map_err(internal)?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+pub(crate) fn equal(left: &str, right: &str) -> bool {
+    bool::from(left.as_bytes().ct_eq(right.as_bytes()))
+}
+
+fn read<T: DeserializeOwned>(path: &Path) -> Result<Option<T>> {
+    match File::open(path) {
+        Ok(file) => serde_json::from_reader(BufReader::new(file))
+            .map(Some)
+            .map_err(|error| internal(format!("{}: {error}", path.display()))),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(internal(error)),
+    }
+}
+
+fn write(path: &Path, value: &impl Serialize) -> Result<()> {
+    atomic(path, |file| {
+        serde_json::to_writer_pretty(&mut *file, value)?;
+        file.write_all(b"\n")
+    })
+}
+
+fn atomic(path: &Path, write: impl FnOnce(&mut File) -> io::Result<()>) -> Result<()> {
+    let mut tmp = tempfile::NamedTempFile::new_in(path.parent().unwrap()).map_err(internal)?;
+    write(tmp.as_file_mut()).map_err(internal)?;
+    tmp.as_file().sync_all().map_err(internal)?;
+    tmp.persist(path).map_err(internal)?;
+    Ok(())
+}
+
+fn merge(target: &mut serde_json::Value, patch: serde_json::Value) {
+    use serde_json::Value;
+    if let Value::Object(fields) = patch {
+        if !target.is_object() {
+            *target = Value::Object(Default::default());
+        }
+        let target = target.as_object_mut().unwrap();
+        for (key, value) in fields {
+            if value.is_null() {
+                target.remove(&key);
+            } else {
+                merge(target.entry(key).or_insert(Value::Null), value);
+            }
+        }
+    } else {
+        *target = patch;
+    }
+}

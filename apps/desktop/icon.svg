@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="pane" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#bfe1ff" stop-opacity="0.38"/>
+      <stop offset="1" stop-color="#8fc7ff" stop-opacity="0.10"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" rx="224" fill="#12161f"/>
+  <rect x="184" y="160" width="656" height="704" rx="108" fill="url(#pane)" stroke="#9fd3ff" stroke-width="72" stroke-opacity="0.95"/>
+  <rect x="304" y="290" width="224" height="64" rx="32" fill="#f2faff" transform="rotate(-15 304 290)"/>
+</svg>

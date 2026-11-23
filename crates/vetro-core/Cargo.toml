@@ -1,0 +1,39 @@
+[package]
+name = "vetro-core"
+description = "Local Vetro service and session manager"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+claude = ["dep:vetro-agent-claude"]
+codex = ["dep:vetro-agent-codex"]
+acp = ["dep:vetro-agent-acp"]
+
+[dependencies]
+axum = { version = "0.8", features = ["ws"] }
+getrandom = "0.3"
+ignore = "0.4"
+mime_guess = "2"
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+subtle = "2"
+tempfile = "3"
+tokio = { version = "1", features = ["fs", "macros", "net", "rt-multi-thread", "sync", "time"] }
+vetro-agent-api = { path = "../vetro-agent-api" }
+vetro-agent-acp = { path = "../vetro-agent-acp", optional = true }
+vetro-agent-claude = { path = "../vetro-agent-claude", optional = true }
+vetro-agent-codex = { path = "../vetro-agent-codex", optional = true }
+vetro-proto = { path = "../vetro-proto" }
+
+[dev-dependencies]
+futures-util = "0.3"
+tokio-tungstenite = "0.29"
+
+[[test]]
+name = "websocket"
+harness = false
