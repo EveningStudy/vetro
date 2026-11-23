@@ -1,0 +1,23 @@
+[package]
+name = "vetro-agent-acp"
+description = "Agent Client Protocol v1 adapter for Vetro"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+humantime = "2"
+serde_json.workspace = true
+tokio = { version = "1", features = ["rt", "sync", "time"] }
+vetro-agent-api = { path = "../vetro-agent-api" }
+vetro-proto = { path = "../vetro-proto" }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros"] }
+
+[[test]]
+name = "fake_acp"
+path = "tests/fake_acp.rs"
+harness = false
