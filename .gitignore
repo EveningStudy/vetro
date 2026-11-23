@@ -17,3 +17,6 @@ Thumbs.db
 .idea/
 .vscode/*
 !.vscode/extensions.json
+
+# local toolchains on build machines
+/.tools/
