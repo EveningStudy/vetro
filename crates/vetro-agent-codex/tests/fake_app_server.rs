@@ -13,7 +13,7 @@ use vetro_agent_api::{Agent, SessionEvent, StartRequest};
 use vetro_agent_codex::CodexAgent;
 use vetro_proto::{
     AuthState, ContentBlock, ItemKind, RequestBody, RequestResolution, StopReason, ThreadSource,
-    ToolContent, ToolKind, ToolStatus,
+    ThreadStatus, ToolContent, ToolKind, ToolStatus,
 };
 
 fn main() {
@@ -97,7 +97,7 @@ fn app_server() {
                 json!({"data": [fake_model("fixture", true, "low")], "nextCursor": "next-model"})
             }
             "collaborationMode/list" => {
-                json!({"data": [{"mode": "plan", "name": "Plan"}, {"mode": "default", "name": "Default"}]})
+                json!({"data": [{"mode": "plan", "name": "Plan", "model": "preset", "reasoning_effort": "low"}, {"mode": "default", "name": "Default"}]})
             }
             "config/read" => json!({"config": {"sandbox_mode": "read-only"}}),
             "permissionProfile/list" => json!({"data": [
@@ -175,6 +175,24 @@ fn app_server() {
                 );
                 json!({"turn": {"id": "turn-1", "status": "inProgress"}})
             }
+            "turn/start" if params["threadId"] == "thread-2" => {
+                send(event(
+                    "turn/completed",
+                    json!({
+                        "threadId": "thread-2", "turn": {"id": "prior", "status": "completed"}
+                    }),
+                ));
+                send(json!({"id": message["id"], "result": {
+                    "turn": {"id": "turn-other", "status": "inProgress"}
+                }}));
+                send(event(
+                    "turn/completed",
+                    json!({
+                        "threadId": "thread-2", "turn": {"id": "turn-other", "status": "completed"}
+                    }),
+                ));
+                continue;
+            }
             "turn/start" => {
                 if params["threadId"] == "thread-3" {
                     assert_eq!(
@@ -250,6 +268,25 @@ fn app_server() {
                 assert_eq!(params["excludeTurns"], true);
                 assert_eq!(params["initialTurnsPage"]["limit"], 1);
                 json!({"thread": {"id": "saved", "name": "Renamed", "status": {"type": "idle"}}})
+            }
+            "thread/settings/update" if params.get("collaborationMode").is_some() => {
+                assert_eq!(
+                    params,
+                    &json!({
+                        "threadId": "thread-1", "collaborationMode": {
+                            "mode": "plan", "settings": {"model": "alternative"}
+                        }
+                    })
+                );
+                send(event(
+                    "thread/settings/updated",
+                    json!({
+                        "threadId": "thread-1", "threadSettings": {
+                            "model": "alternative", "effort": "high", "collaborationMode": {"mode": "plan"}
+                        }
+                    }),
+                ));
+                json!({})
             }
             "thread/settings/update" => {
                 assert_eq!(
@@ -344,6 +381,20 @@ async fn test_adapter() {
         )
         .await
         .unwrap();
+    let mut order = Vec::new();
+    loop {
+        match recv(&mut other_events).await {
+            SessionEvent::Item(item) if matches!(item.kind, ItemKind::TurnEnd { .. }) => {
+                order.push("complete");
+                if order.iter().filter(|entry| **entry == "complete").count() == 2 {
+                    break;
+                }
+            }
+            SessionEvent::Status(ThreadStatus::Running) => order.push("running"),
+            _ => {}
+        }
+    }
+    assert_eq!(order, ["complete", "running", "complete"]);
     assert!(!Arc::ptr_eq(&first.wire_log(), &second.wire_log()));
     let raw = first.wire_log().snapshot();
     assert_eq!(raw[0].direction, vetro_proto::RawDirection::Spawn);
@@ -436,6 +487,13 @@ async fn test_adapter() {
     }
     assert!(running_output);
     let options = first.set_option("model", "alternative").await.unwrap();
+    assert!(options
+        .iter()
+        .any(|option| option.id == "effort" && option.current_value == "high"));
+    let options = first.set_option("mode", "plan").await.unwrap();
+    assert!(options
+        .iter()
+        .any(|option| option.id == "mode" && option.current_value == "plan"));
     assert!(options
         .iter()
         .any(|option| option.id == "effort" && option.current_value == "high"));

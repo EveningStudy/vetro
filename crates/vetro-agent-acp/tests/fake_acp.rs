@@ -27,7 +27,7 @@ fn main() {
             .build()
             .unwrap()
             .block_on(async {
-                tokio::time::timeout(Duration::from_secs(15), suites())
+                tokio::time::timeout(Duration::from_secs(75), suites())
                     .await
                     .unwrap();
             }),
@@ -111,6 +111,9 @@ fn fake(scenario: &str) {
                 assert_eq!(params["mcpServers"], json!([]));
                 session_count += 1;
                 let session = json!(format!("new-{session_count}"));
+                for _ in 0..300 {
+                    update(&session, json!({"sessionUpdate":"unknown_update"}));
+                }
                 update(
                     &session,
                     json!({"sessionUpdate":"available_commands_update","availableCommands":[{"name":"help","input":{"hint":"topic"}}]}),
@@ -224,6 +227,9 @@ fn fake(scenario: &str) {
             Some("session/cancel") => {
                 assert!(id.is_null());
                 assert_eq!(params, &json!({"sessionId":expected_session}));
+                if scenario == "cancel-timeout" {
+                    continue;
+                }
                 output(json!({"id":prompt_id,"result":{"stopReason":"cancelled"}}));
                 continue;
             }
@@ -298,6 +304,19 @@ async fn until_end(
 }
 
 async fn suites() {
+    let silent = agent("cancel-timeout");
+    let (sink, mut events) = mpsc::unbounded_channel();
+    let session = silent
+        .start(request(vec![text("cancel")]), sink)
+        .await
+        .unwrap();
+    session.interrupt().await.unwrap();
+    let (reason, _) = tokio::time::timeout(Duration::from_secs(35), until_end(&mut events))
+        .await
+        .unwrap();
+    assert_eq!(reason, StopReason::Cancelled);
+    silent.shutdown().await;
+
     let failure = agent("startup-failure").info().await.error.unwrap();
     assert!(
         failure.contains("71")
@@ -333,9 +352,16 @@ async fn suites() {
         1_795_392_000_250
     );
     assert_eq!(agent.info().await.auth.state, AuthState::Unknown);
+    assert!(agent
+        .options(None, &BTreeMap::new())
+        .await
+        .unwrap()
+        .options
+        .is_empty());
+    assert_eq!(agent.info().await.auth.state, AuthState::Unknown);
     assert_eq!(
         agent
-            .options(None, &BTreeMap::new())
+            .prepare_options(None, &BTreeMap::new())
             .await
             .unwrap_err()
             .code,
@@ -344,10 +370,10 @@ async fn suites() {
     assert_eq!(agent.info().await.auth.state, AuthState::Required);
     agent.authenticate("test").await.unwrap();
     assert_eq!(agent.info().await.auth.state, AuthState::Ok);
-    let options = agent.options(None, &BTreeMap::new()).await.unwrap();
+    let options = agent.prepare_options(None, &BTreeMap::new()).await.unwrap();
     assert_eq!(options.options[0].choices[0].group.as_deref(), Some("Fast"));
     assert_eq!(options.commands[0].name, "help");
-    agent.options(None, &BTreeMap::new()).await.unwrap();
+    agent.prepare_options(None, &BTreeMap::new()).await.unwrap();
 
     let (sink, mut events) = mpsc::unbounded_channel();
     let session = agent
@@ -494,7 +520,7 @@ async fn suites() {
     ) {}
     assert_eq!(agent.info().await.auth.state, AuthState::Unknown);
     agent.authenticate("test").await.unwrap();
-    agent.options(None, &BTreeMap::new()).await.unwrap();
+    agent.prepare_options(None, &BTreeMap::new()).await.unwrap();
     agent.shutdown().await;
 
     let mut spec = SpawnSpec::new(env::current_exe().unwrap());

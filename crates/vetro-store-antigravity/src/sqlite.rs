@@ -104,7 +104,9 @@ fn register() -> rusqlite::Result<()> {
 
 fn uri(path: &Path, query: &str) -> String {
     let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
-    let raw = abs.to_string_lossy().replace('\\', "/");
+    let raw = abs.to_string_lossy();
+    #[cfg(windows)]
+    let raw = raw.replace('\\', "/");
     let mut out = String::from("file:");
     if !raw.starts_with('/') {
         out.push_str("///");
@@ -124,9 +126,8 @@ fn uri(path: &Path, query: &str) -> String {
 /// Open a foreign SQLite database strictly read-only.
 ///
 /// A database with a `-wal` file is opened as a normal reader so committed frames that have
-/// not been checkpointed are visible. Without one (the app is not writing it right now, or the
-/// shim refused to open a missing `-wal`/`-shm`) the file is opened `immutable`, which takes no
-/// locks at all.
+/// not been checkpointed are visible. A WAL that cannot be read safely produces a busy error.
+/// A database without a WAL can be opened immutable.
 pub fn open_readonly(path: &Path) -> rusqlite::Result<Connection> {
     register()?;
     let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
@@ -136,7 +137,7 @@ pub fn open_readonly(path: &Path) -> rusqlite::Result<Connection> {
         let conn = Connection::open_with_flags_and_vfs(uri(path, query), flags, VFS_NAME)?;
         conn.pragma_update(None, "query_only", true)?;
         conn.pragma_update(None, "temp_store", "memory")?;
-        conn.busy_timeout(std::time::Duration::from_millis(500))?;
+        conn.busy_timeout(std::time::Duration::from_millis(10))?;
         // Force the schema read now so a refused `-wal` shows up here, not mid-query.
         conn.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))?;
         Ok(conn)
@@ -147,16 +148,23 @@ pub fn open_readonly(path: &Path) -> rusqlite::Result<Connection> {
             Some(format!("{} does not exist", path.display())),
         ));
     }
-    let wal = path.with_file_name(format!(
-        "{}-wal",
-        path.file_name().unwrap_or_default().to_string_lossy()
-    ));
-    if wal.is_file() {
-        if let Ok(conn) = open("mode=ro&readonly_shm=1") {
-            return Ok(conn);
+    let wal = super::sibling(path, "-wal");
+    if !wal.try_exists().unwrap_or(true) {
+        let immutable = open("immutable=1");
+        if !wal.try_exists().unwrap_or(true) {
+            return immutable;
         }
     }
-    open("immutable=1")
+    let busy = |detail: &str| {
+        rusqlite::Error::SqliteFailure(
+            ffi::Error::new(ffi::SQLITE_BUSY),
+            Some(format!("{}: WAL unavailable: {detail}", path.display())),
+        )
+    };
+    if !super::sibling(path, "-shm").is_file() {
+        return Err(busy("shared memory file missing"));
+    }
+    open("mode=ro&readonly_shm=1").map_err(|error| busy(&error.to_string()))
 }
 
 #[cfg(test)]
@@ -172,8 +180,8 @@ mod tests {
         );
         #[cfg(unix)]
         assert_eq!(
-            uri(Path::new("/tmp/x.db"), "mode=ro"),
-            "file:/tmp/x.db?mode=ro"
+            uri(Path::new(r"/tmp/x\y.db"), "mode=ro"),
+            "file:/tmp/x%5Cy.db?mode=ro"
         );
     }
 }

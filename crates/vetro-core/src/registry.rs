@@ -1,7 +1,10 @@
 use std::{
     collections::BTreeMap,
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     time::{Duration, Instant},
 };
 
@@ -22,7 +25,7 @@ mod detection;
 
 #[derive(Default)]
 pub struct Registry {
-    agents: BTreeMap<String, Entry>,
+    agents: BTreeMap<String, Arc<Entry>>,
     pub(crate) history_paths: BTreeMap<String, Vec<PathBuf>>,
 }
 
@@ -30,6 +33,7 @@ struct Entry {
     agent: Arc<dyn Agent>,
     access: Arc<RwLock<()>>,
     activity: Mutex<Activity>,
+    retired: AtomicBool,
 }
 
 struct Activity {
@@ -51,7 +55,7 @@ impl Registry {
             }
             registry.agents.insert(
                 id,
-                Entry {
+                Arc::new(Entry {
                     agent,
                     access: Arc::new(RwLock::new(())),
                     activity: Mutex::new(Activity {
@@ -60,7 +64,8 @@ impl Registry {
                         in_use: false,
                         release_requested: false,
                     }),
-                },
+                    retired: AtomicBool::new(false),
+                }),
             );
         }
         Ok(registry)
@@ -95,6 +100,36 @@ impl Registry {
         self
     }
 
+    pub(crate) fn reconfigure(
+        &self,
+        previous: &Settings,
+        current: &Settings,
+    ) -> Result<(Self, Self)> {
+        let mut next = Self::from_settings(current)?;
+        let mut retired = Self::default();
+        for (id, entry) in &self.agents {
+            let old_custom = previous
+                .custom_acp_agents
+                .iter()
+                .find(|agent| &agent.id == id);
+            let new_custom = current
+                .custom_acp_agents
+                .iter()
+                .find(|agent| &agent.id == id);
+            let same =
+                old_custom == new_custom && previous.agents.get(id) == current.agents.get(id);
+            if same {
+                next.agents.insert(id.clone(), entry.clone());
+                if let Some(paths) = self.history_paths.get(id) {
+                    next.history_paths.insert(id.clone(), paths.clone());
+                }
+            } else {
+                retired.agents.insert(id.clone(), entry.clone());
+            }
+        }
+        Ok((next, retired))
+    }
+
     pub fn get(&self, id: &str) -> Result<Arc<dyn Agent>> {
         self.agents
             .get(id)
@@ -111,9 +146,28 @@ impl Registry {
         self.agents.values().map(|entry| &entry.agent)
     }
 
-    pub(crate) async fn enter(&self, id: &str, user_action: bool) -> OwnedRwLockReadGuard<()> {
-        let entry = &self.agents[id];
+    pub(crate) fn retire(&self) {
+        for entry in self.agents.values() {
+            entry.retired.store(true, Ordering::Release);
+        }
+    }
+
+    pub(crate) async fn enter(
+        &self,
+        id: &str,
+        user_action: bool,
+    ) -> Result<OwnedRwLockReadGuard<()>> {
+        let unavailable = || {
+            AgentError::new(
+                ErrorCode::AgentUnavailable,
+                format!("Agent configuration changed: {id}"),
+            )
+        };
+        let entry = self.agents.get(id).ok_or_else(unavailable)?;
         let guard = entry.access.clone().read_owned().await;
+        if entry.retired.load(Ordering::Acquire) {
+            return Err(unavailable());
+        }
         let mut activity = entry.activity.lock().unwrap();
         if user_action || (!activity.in_use && activity.last_release.is_none()) {
             activity.warm_since = Instant::now();
@@ -123,11 +177,13 @@ impl Registry {
             activity.release_requested = false;
         }
         activity.in_use = true;
-        guard
+        Ok(guard)
     }
 
     pub(crate) fn request_release(&self, id: &str) {
-        self.agents[id].activity.lock().unwrap().release_requested = true;
+        if let Some(entry) = self.agents.get(id) {
+            entry.activity.lock().unwrap().release_requested = true;
+        }
     }
 
     pub(crate) fn background_poll_due(&self, id: &str) -> bool {
@@ -149,6 +205,9 @@ impl Registry {
             let Ok(_access) = entry.access.try_write() else {
                 continue;
             };
+            if entry.retired.load(Ordering::Acquire) {
+                continue;
+            }
             entry.agent.maintain().await;
             let authenticated = entry.agent.process_auth() == Some(AuthState::Ok);
             let release = {

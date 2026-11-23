@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     path::Path,
     sync::{Arc, Mutex, Weak},
     time::{Duration, Instant},
@@ -80,10 +80,13 @@ impl Sessions {
     }
 
     pub(crate) async fn maintenance(&self, idle: Option<Duration>) {
-        let threads = self.snapshot();
-        for thread in threads {
-            thread.maintain(idle).await;
+        let mut tasks = tokio::task::JoinSet::new();
+        for thread in self.snapshot() {
+            tasks.spawn(async move {
+                let _ = tokio::time::timeout(Duration::from_secs(5), thread.maintain(idle)).await;
+            });
         }
+        while tasks.join_next().await.is_some() {}
         Self::trim(&mut self.0.lock().unwrap());
     }
 
@@ -139,7 +142,8 @@ impl Core {
             return Ok(thread);
         }
         let (agent_id, native_id) = split_id(id)?;
-        let agent = self.registry.get(agent_id)?;
+        let registry = self.registry();
+        let agent = registry.get(agent_id)?;
         let indexed = self.store.get(id)?;
         let unknown = indexed.is_none();
         let summary = indexed.unwrap_or_else(|| {
@@ -148,7 +152,9 @@ impl Core {
             summary
         });
         let transcript = self
-            .user_agent_call(agent_id, || self.read_history_items(&agent, &summary))
+            .user_agent_call_on(&registry, agent_id, || {
+                self.read_history_items(&agent, &summary)
+            })
             .await?;
         let cached = self.cached_thread_options(&summary);
         let mut state = Timeline::new(summary);
@@ -171,7 +177,8 @@ impl Core {
         params: ThreadStartParams,
     ) -> Result<(ThreadSummary, Arc<Thread>)> {
         self.check_agent_enabled(&params.agent_id)?;
-        let agent = self.registry.get(&params.agent_id)?;
+        let registry = self.registry();
+        let agent = registry.get(&params.agent_id)?;
         let cwd = crate::files::directory(Path::new(&params.cwd))?;
         let title = params
             .content
@@ -191,7 +198,7 @@ impl Core {
             .unwrap_or_else(|| "New thread".into());
         let (sink, events) = mpsc::unbounded_channel();
         let session = self
-            .user_agent_call(&params.agent_id, || {
+            .user_agent_call_on(&registry, &params.agent_id, || {
                 agent.start(
                     StartRequest {
                         cwd: cwd.clone(),
@@ -539,12 +546,26 @@ impl Thread {
         let core = self.core();
         core.check_agent_enabled(&summary.agent_id)?;
         let (sink, events) = mpsc::unbounded_channel();
-        let agent = core.registry.get(&summary.agent_id)?;
+        let registry = core.registry();
+        let agent = registry.get(&summary.agent_id)?;
+        let (launch, mut choices): (Vec<_>, Vec<_>) = core
+            .home
+            .read_state(|state| {
+                state
+                    .threads
+                    .get(&summary.id)
+                    .map(|overlay| overlay.options.clone())
+                    .unwrap_or_default()
+            })
+            .into_iter()
+            .partition(|(id, _)| agent.launch_only_option(id));
+        let launch: BTreeMap<_, _> = launch.into_iter().collect();
         let result = core
-            .user_agent_call(&summary.agent_id, || {
-                agent.attach(
+            .user_agent_call_on(&registry, &summary.agent_id, || {
+                agent.attach_with_options(
                     &summary.native_id,
                     summary.cwd.as_deref().map(Path::new),
+                    launch.clone(),
                     sink.clone(),
                 )
             })
@@ -561,22 +582,13 @@ impl Thread {
             session.detach().await;
             return Err(internal("Agent attached to a different native session"));
         }
-        let mut choices: Vec<_> = core
-            .home
-            .read_state(|state| {
-                state
-                    .threads
-                    .get(&summary.id)
-                    .map(|overlay| overlay.options.clone())
-                    .unwrap_or_default()
-            })
-            .into_iter()
-            .collect();
         choices.sort_by_key(|(id, _)| id != "model");
         let mut restored = None;
         for (id, value) in choices {
             match core
-                .user_agent_call(&summary.agent_id, || session.set_option(&id, &value))
+                .user_agent_call_on(&registry, &summary.agent_id, || {
+                    session.set_option(&id, &value)
+                })
                 .await
             {
                 Ok(options) => restored = Some(options),
@@ -803,7 +815,12 @@ impl Thread {
             }
             state.summary.agent_id.clone()
         };
-        let _guard = core.registry.enter(&agent_id, false).await;
+        let registry = core.registry();
+        let _guard = if registry.get(&agent_id).is_ok() {
+            registry.enter(&agent_id, false).await.ok()
+        } else {
+            None
+        };
         let (session, id) = {
             let mut state = self.state.lock().unwrap();
             if !force && !state.pending.is_empty() {
@@ -829,7 +846,7 @@ impl Thread {
         };
         session.detach().await;
         self.persist_log(&core, &id, &session);
-        core.registry.request_release(&agent_id);
+        registry.request_release(&agent_id);
         Ok(())
     }
 

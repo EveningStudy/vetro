@@ -97,18 +97,33 @@ impl ClaudeAgent {
         Ok(session)
     }
 
-    async fn probe(&self, cwd: Option<&Path>) -> Result<(Value, AgentOptions)> {
+    async fn probe(
+        &self,
+        cwd: Option<&Path>,
+        selected: &BTreeMap<String, String>,
+    ) -> Result<(Value, AgentOptions)> {
         let (sink, _events) = tokio::sync::mpsc::unbounded_channel();
-        let session = self
-            .launch(
-                uuid()?,
-                cwd.map(Path::to_path_buf),
-                false,
-                BTreeMap::new(),
-                sink,
-            )
-            .await?;
-        let metadata = session.metadata();
+        let mut spec = self.spawn_spec()?.clone();
+        if !spec
+            .args
+            .iter()
+            .any(|arg| arg == "--no-session-persistence")
+        {
+            spec.args.push("--no-session-persistence".into());
+        }
+        let session = ClaudeSession::launch(
+            spec,
+            uuid()?,
+            cwd.map(Path::to_path_buf),
+            false,
+            BTreeMap::new(),
+            sink,
+        )?;
+        if let Err(error) = session.initialize().await {
+            session.detach().await;
+            return Err(error);
+        }
+        let metadata = session.metadata(selected);
         session.detach().await;
         Ok(metadata)
     }
@@ -121,7 +136,10 @@ impl Agent for ClaudeAgent {
     }
 
     async fn info(&self) -> AgentInfo {
-        let probe = self.probe(None).await.map(|(initialize, _)| initialize);
+        let probe = self
+            .probe(None, &BTreeMap::new())
+            .await
+            .map(|(initialize, _)| initialize);
         let reply = probe.as_ref().ok();
         let account = reply.and_then(|reply| reply.get("account"));
         let account_label = account.and_then(|account| {
@@ -177,9 +195,9 @@ impl Agent for ClaudeAgent {
     async fn options(
         &self,
         cwd: Option<&Path>,
-        _: &BTreeMap<String, String>,
+        selected: &BTreeMap<String, String>,
     ) -> Result<AgentOptions> {
-        self.probe(cwd).await.map(|(_, options)| options)
+        self.probe(cwd, selected).await.map(|(_, options)| options)
     }
 
     async fn list(&self, _cursor: Option<String>) -> Result<SessionPage> {
@@ -213,6 +231,21 @@ impl Agent for ClaudeAgent {
         cwd: Option<&Path>,
         sink: EventSink,
     ) -> Result<Arc<dyn Session>> {
+        self.attach_with_options(native_id, cwd, BTreeMap::new(), sink)
+            .await
+    }
+
+    fn launch_only_option(&self, id: &str) -> bool {
+        id == "effort"
+    }
+
+    async fn attach_with_options(
+        &self,
+        native_id: &str,
+        cwd: Option<&Path>,
+        options: BTreeMap<String, String>,
+        sink: EventSink,
+    ) -> Result<Arc<dyn Session>> {
         history::validate_id(native_id)?;
         let root = self.projects.clone();
         let id = native_id.to_owned();
@@ -226,7 +259,7 @@ impl Agent for ClaudeAgent {
                 )
             })?;
         Ok(self
-            .launch(native_id.to_owned(), Some(cwd), true, BTreeMap::new(), sink)
+            .launch(native_id.to_owned(), Some(cwd), true, options, sink)
             .await?)
     }
 

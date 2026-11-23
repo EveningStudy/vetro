@@ -37,7 +37,9 @@ pub(crate) struct Live {
 struct State {
     closed: bool,
     active: Option<String>,
+    last_completed: Option<String>,
     revision: u64,
+    settings_revision: u64,
     counter: u64,
     usage: ThreadUsage,
     usage_turn: Option<String>,
@@ -161,13 +163,11 @@ impl Live {
         extra: Value,
         mode: Option<&str>,
     ) -> Result<()> {
-        let (revision, collaboration) = {
+        let collaboration = {
             let state = self.state.lock().unwrap();
             check_open(&state)?;
-            let collaboration = mode
-                .map(|mode| self.catalog.collaboration(mode, &state.selected))
-                .transpose()?;
-            (state.revision, collaboration)
+            mode.map(|mode| self.catalog.collaboration(mode, &state.selected))
+                .transpose()?
         };
         let mut params = extra;
         params["threadId"] = json!(self.id);
@@ -175,15 +175,28 @@ impl Live {
         if let Some(collaboration) = collaboration {
             params["collaborationMode"] = collaboration;
         }
-        let response = self.app.call("turn/start", params).await?;
-        let turn = string(&response["turn"], "id")
+        let live = self.app.live(&self.id).map(|live| Arc::downgrade(&live));
+        let response = self
+            .app
+            .call_ordered("turn/start", params, move |reply| {
+                if let (Ok(reply), Some(live)) = (reply, live.and_then(|live| live.upgrade())) {
+                    let turn = &reply["turn"];
+                    let mut state = live.state.lock().unwrap();
+                    if let Some(id) = string(turn, "id") {
+                        if !state.closed
+                            && state.active.is_none()
+                            && state.last_completed.as_deref() != Some(&id)
+                            && turn["status"] == "inProgress"
+                        {
+                            state.active = Some(id);
+                            live.emit(SessionEvent::Status(status(&state, &Value::Null)));
+                        }
+                    }
+                }
+            })
+            .await?;
+        string(&response["turn"], "id")
             .ok_or_else(|| unavailable("Codex returned a turn without an id"))?;
-        let mut state = self.state.lock().unwrap();
-        if !state.closed && state.revision == revision && response["turn"]["status"] == "inProgress"
-        {
-            state.active = Some(turn);
-            self.emit(SessionEvent::Status(status(&state, &Value::Null)));
-        }
         Ok(())
     }
 
@@ -268,6 +281,7 @@ impl Live {
             "turn/completed" => {
                 let turn = &params["turn"];
                 let id = turn["id"].as_str();
+                state.last_completed = id.map(str::to_owned);
                 let usage = (state.usage_turn.as_deref() == id)
                     .then(|| state.usage.last_turn.clone())
                     .flatten();
@@ -295,6 +309,24 @@ impl Live {
             }
             "thread/status/changed" => {
                 self.emit(SessionEvent::Status(status(&state, &params["status"])))
+            }
+            "thread/settings/updated" => {
+                let settings = &params["threadSettings"];
+                state.settings_revision += 1;
+                for (id, value) in [
+                    ("model", &settings["model"]),
+                    ("effort", &settings["effort"]),
+                    ("mode", &settings["collaborationMode"]["mode"]),
+                    ("permissions", &settings["activePermissionProfile"]["id"]),
+                ] {
+                    if let Some(value) = value.as_str() {
+                        state.selected.insert(id.into(), value.into());
+                    } else if id == "effort" && settings.get("effort").is_some() {
+                        state.selected.remove(id);
+                    }
+                }
+                self.emit(SessionEvent::Model(state.selected.get("model").cloned()));
+                self.emit(SessionEvent::Options(self.catalog.options(&state.selected)));
             }
             "thread/name/updated" => {
                 if let Some(name) = string(params, "threadName") {
@@ -608,10 +640,10 @@ impl Session for Live {
 
     async fn set_option(&self, option_id: &str, value: &str) -> Result<Vec<ConfigOption>> {
         let _operation = self.operations.lock().await;
-        let mut selected = {
+        let (mut selected, revision) = {
             let state = self.state.lock().unwrap();
             check_open(&state)?;
-            state.selected.clone()
+            (state.selected.clone(), state.settings_revision)
         };
         self.catalog.validate(option_id, value, &selected)?;
         let mut params = json!({"threadId": self.id});
@@ -650,9 +682,12 @@ impl Session for Live {
                 selected.remove("effort");
             }
         }
-        let options = self.catalog.options(&selected);
         let mut state = self.state.lock().unwrap();
         check_open(&state)?;
+        if state.settings_revision != revision {
+            return Ok(self.catalog.options(&state.selected));
+        }
+        let options = self.catalog.options(&selected);
         state.selected = selected;
         if option_id == "model" {
             self.emit(SessionEvent::Model(Some(value.into())));

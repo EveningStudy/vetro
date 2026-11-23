@@ -1,6 +1,7 @@
 mod core;
 
 use std::error::Error;
+#[cfg(not(target_os = "macos"))]
 use std::path::PathBuf;
 
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
@@ -83,17 +84,25 @@ fn error_window(app: &AppHandle, message: &str) -> Result<WebviewWindow> {
 }
 
 fn window_builder(app: &AppHandle, url: WebviewUrl) -> WebviewWindowBuilder<'_, Wry, AppHandle> {
-    let mut builder = WebviewWindowBuilder::new(app, MAIN_WINDOW, url)
+    let builder = WebviewWindowBuilder::new(app, MAIN_WINDOW, url)
         .title("Vetro")
         .inner_size(1280.0, 820.0)
         .min_inner_size(900.0, 600.0)
         .center();
-    if let Some(dir) = vetro_home(app) {
-        builder = builder.data_directory(dir.join("webview"));
+    #[cfg(target_os = "macos")]
+    {
+        builder.incognito(true)
     }
-    builder
+    #[cfg(not(target_os = "macos"))]
+    {
+        if let Some(dir) = vetro_home(app) {
+            return builder.data_directory(dir.join("webview"));
+        }
+        builder
+    }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn vetro_home(app: &AppHandle) -> Option<PathBuf> {
     if let Ok(dir) = std::env::var("VETRO_HOME") {
         if !dir.is_empty() {

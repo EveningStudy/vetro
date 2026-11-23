@@ -229,21 +229,17 @@ impl Catalog {
         mode: &str,
         selected: &BTreeMap<String, String>,
     ) -> Result<Value> {
-        let preset = self
-            .modes
-            .iter()
-            .find(|entry| entry["mode"] == mode)
-            .ok_or_else(|| bad_request("Unsupported Codex collaboration mode"))?;
-        let model = preset["model"]
-            .as_str()
-            .or_else(|| selected.get("model").map(String::as_str))
+        self.validate("mode", mode, selected)?;
+        let model = selected
+            .get("model")
+            .map(String::as_str)
             .or_else(|| self.model(selected).and_then(model_id))
             .ok_or_else(|| bad_request("Codex collaboration mode requires a model"))?;
-        let effort = selected
-            .get("effort")
-            .map(String::as_str)
-            .or_else(|| preset["reasoning_effort"].as_str());
-        Ok(json!({"mode": mode, "settings": {"model": model, "reasoning_effort": effort}}))
+        let mut settings = json!({"model": model});
+        if let Some(effort) = selected.get("effort") {
+            settings["reasoning_effort"] = json!(effort);
+        }
+        Ok(json!({"mode": mode, "settings": settings}))
     }
 }
 

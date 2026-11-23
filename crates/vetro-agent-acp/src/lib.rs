@@ -412,7 +412,19 @@ impl Agent for AcpAgent {
         }
     }
 
+    fn options_need_session(&self) -> bool {
+        true
+    }
+
     async fn options(
+        &self,
+        _cwd: Option<&Path>,
+        _selected: &BTreeMap<String, String>,
+    ) -> Result<AgentOptions> {
+        Ok(AgentOptions::default())
+    }
+
+    async fn prepare_options(
         &self,
         cwd: Option<&Path>,
         _: &BTreeMap<String, String>,

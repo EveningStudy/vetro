@@ -99,6 +99,9 @@ async fn call(
     }
     match method {
         "app.hello" => {
+            if connection.hello {
+                return Err(bad_request("app.hello already completed"));
+            }
             let params: HelloParams = parse(params)?;
             if params.protocol_version != PROTOCOL_VERSION {
                 return Err(bad_request(format!(
@@ -116,8 +119,18 @@ async fn call(
             core.request_history_refresh();
             output(AgentsResult { agents })
         }
-        "agents.authenticate" => output(core.authenticate(parse(params)?).await?),
-        "agents.options" => output(core.agent_options(parse(params)?).await?),
+        "agents.authenticate" => {
+            client.desktop()?;
+            output(core.authenticate(parse(params)?).await?)
+        }
+        "agents.options" => {
+            let mut params: AgentOptionsParams = parse(params)?;
+            if client.remote() {
+                let cwd = params.cwd.as_deref().unwrap_or_default();
+                params.cwd = Some(checked_cwd(state, cwd)?);
+            }
+            output(core.agent_options(params).await?)
+        }
         "projects.list" => output(ProjectsResult {
             projects: core.projects()?,
         }),
@@ -149,7 +162,11 @@ async fn call(
             output(thread.items(params.before, params.limit))
         }
         "threads.start" => {
-            let (summary, thread) = core.start(parse(params)?).await?;
+            let mut params: ThreadStartParams = parse(params)?;
+            if client.remote() {
+                params.cwd = checked_cwd(state, &params.cwd)?;
+            }
+            let (summary, thread) = core.start(params).await?;
             connection.subscribe(summary.id.clone(), thread, 0);
             output(ThreadResult { thread: summary })
         }
@@ -240,26 +257,48 @@ async fn call(
             let mut settings = core.home.settings();
             if client.remote() {
                 for agent in settings.agents.values_mut() {
-                    agent.env.clear();
+                    agent
+                        .env
+                        .values_mut()
+                        .for_each(|value| *value = "***".into());
                 }
                 for agent in &mut settings.custom_acp_agents {
-                    agent.env.clear();
+                    agent
+                        .env
+                        .values_mut()
+                        .for_each(|value| *value = "***".into());
                 }
             }
             output(settings)
         }
+        "prefs.get" => output(Prefs {
+            prefs: core.home.read_state(|state| {
+                state
+                    .prefs
+                    .get(client.device_key())
+                    .cloned()
+                    .unwrap_or(Value::Null)
+            }),
+        }),
+        "prefs.set" => {
+            let params: Prefs = parse(params)?;
+            core.home.change_state(|state| {
+                state.prefs.insert(client.device_key().into(), params.prefs);
+            })?;
+            empty()
+        }
         "settings.update" => {
             client.desktop()?;
-            output(core.update_settings(parse(params)?)?)
+            output(core.update_settings(parse(params)?).await?)
         }
         "remote.status" => {
             state.auth.refresh().await;
-            output(auth::status(state, client))
+            output(auth::status(state, Some(client)))
         }
         "remote.set" => {
             client.desktop()?;
             state.auth.set(state.address, parse(params)?).await?;
-            let status = auth::status(state, client);
+            let status = auth::status(state, Some(client));
             core.publish(ServerEvent::RemoteUpdated {
                 status: status.clone(),
             });
@@ -278,6 +317,12 @@ async fn call(
             format!("Unknown RPC method: {method}"),
         )),
     }
+}
+
+fn checked_cwd(state: &HttpState, cwd: &str) -> Result<String> {
+    Ok(remote_path(state, Path::new(cwd))?
+        .to_string_lossy()
+        .into_owned())
 }
 
 fn in_project(path: &Path, projects: &[vetro_proto::Project]) -> bool {

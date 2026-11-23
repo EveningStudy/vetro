@@ -458,6 +458,10 @@ fn score(
     if parent == child.id
         || hint.is_some_and(|hint| hint != parent)
         || !call.targets.contains(&child.agent_id)
+        || child
+            .created_at
+            .zip(call.start)
+            .is_some_and(|(child, call)| child < call)
     {
         return None;
     }
@@ -499,11 +503,10 @@ fn score(
             .created_at
             .zip(call.start)
             .is_some_and(|(started, call_start)| {
-                started >= call_start
-                    && started
-                        <= call
-                            .end
-                            .unwrap_or(call_start.saturating_add(15 * 60 * 1000))
+                started
+                    <= call
+                        .end
+                        .unwrap_or(call_start.saturating_add(15 * 60 * 1000))
             })
     {
         return Some(if explicit {
@@ -581,7 +584,7 @@ mod tests {
                 "codex exec -",
                 None,
                 "/other",
-                35,
+                24,
                 Some(Exact),
             ),
             (
@@ -599,8 +602,17 @@ mod tests {
                 "codex exec 'a specific prompt'",
                 None,
                 "/other",
-                35,
+                24,
                 Some(Prompt),
+            ),
+            (
+                "reused prompt after child started",
+                "",
+                "codex exec 'a specific prompt'",
+                None,
+                "/project",
+                26,
+                None,
             ),
             (
                 "stdin prompt",
@@ -608,7 +620,7 @@ mod tests {
                 "codex exec - < prompt.txt",
                 Some("a specific\nprompt"),
                 "/other",
-                35,
+                24,
                 Some(Prompt),
             ),
             (

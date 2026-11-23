@@ -22,17 +22,35 @@ fn main() {
     match args.next().as_deref() {
         Some("fixture-echo") => echo(args.collect()),
         Some("fixture-rpc") => rpc(args.next().unwrap() == "v2"),
-        Some("fixture-tree") => {
+        Some("fixture-tree" | "fixture-detached-tree") => {
+            let detached = env::args().nth(1).as_deref() == Some("fixture-detached-tree");
             let mut leaf = Command::new(env::current_exe().unwrap())
+                .arg(if detached {
+                    "fixture-detached-leaf"
+                } else {
+                    "fixture-leaf"
+                })
+                .spawn()
+                .unwrap();
+            if !detached {
+                emit(leaf.id());
+            }
+            leaf.wait().unwrap();
+        }
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        Some("fixture-detached-leaf") => {
+            assert_ne!(unsafe { libc::setsid() }, -1);
+            let mut child = Command::new(env::current_exe().unwrap())
                 .arg("fixture-leaf")
                 .spawn()
                 .unwrap();
-            emit(leaf.id());
-            leaf.wait().unwrap();
+            emit(format!("{} {}", std::process::id(), child.id()));
+            child.wait().unwrap();
         }
         Some("fixture-leaf") => thread::sleep(Duration::from_secs(60)),
         Some("fixture-host") => runtime().block_on(async {
-            let (process, mut stdout) = spawn("fixture-tree", Arc::default());
+            let mode = args.next().unwrap_or_else(|| "fixture-tree".into());
+            let (process, mut stdout) = spawn(&mode, Arc::default());
             emit(format!("{} {}", process.id(), line(&mut stdout).await));
             let _ = process.wait().await;
         }),
@@ -43,12 +61,19 @@ fn main() {
                 json_rpc(Version::V2).await;
                 json_rpc(Version::Bare).await;
                 println!("JSON-RPC with and without version field ... ok");
-                tree_shutdown(TreeShutdown::Drop).await;
-                tree_shutdown(TreeShutdown::Kill).await;
-                tree_shutdown(TreeShutdown::Stop).await;
+                tree_shutdown(TreeShutdown::Drop, "fixture-tree").await;
+                tree_shutdown(TreeShutdown::Kill, "fixture-tree").await;
+                tree_shutdown(TreeShutdown::Stop, "fixture-tree").await;
                 println!("process tree drop, kill and stop ... ok");
-                host_death().await;
+                host_death("fixture-tree", 2).await;
                 println!("process tree after hard host exit ... ok");
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                {
+                    tree_shutdown(TreeShutdown::Drop, "fixture-detached-tree").await;
+                    tree_shutdown(TreeShutdown::Stop, "fixture-detached-tree").await;
+                    host_death("fixture-detached-tree", 3).await;
+                    println!("setsid descendants after drop, stop and hard host exit ... ok");
+                }
             })
             .await
             .expect("transport tests timed out");
@@ -283,12 +308,15 @@ enum TreeShutdown {
     Stop,
 }
 
-async fn tree_shutdown(shutdown: TreeShutdown) {
-    let (process, mut stdout) = spawn("fixture-tree", Arc::default());
-    let tree = [
-        TrackedProcess::new(process.id()),
-        TrackedProcess::new(line(&mut stdout).await.parse().unwrap()),
-    ];
+async fn tree_shutdown(shutdown: TreeShutdown, mode: &str) {
+    let (process, mut stdout) = spawn(mode, Arc::default());
+    let mut tree = vec![TrackedProcess::new(process.id())];
+    tree.extend(
+        line(&mut stdout)
+            .await
+            .split_whitespace()
+            .map(|pid| TrackedProcess::new(pid.parse().unwrap())),
+    );
     let (other, _) = spawn("fixture-leaf", Arc::default());
     let other_handle = TrackedProcess::new(other.id());
     match shutdown {
@@ -301,9 +329,10 @@ async fn tree_shutdown(shutdown: TreeShutdown) {
     other.kill().await.unwrap();
 }
 
-async fn host_death() {
+async fn host_death(mode: &str, expected: usize) {
     let mut host = tokio::process::Command::new(env::current_exe().unwrap())
         .arg("fixture-host")
+        .arg(mode)
         .stdout(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
@@ -316,7 +345,7 @@ async fn host_death() {
         .split_whitespace()
         .map(|pid| TrackedProcess::new(pid.parse().unwrap()))
         .collect();
-    assert_eq!(tree.len(), 2);
+    assert_eq!(tree.len(), expected);
     host.kill().await.unwrap();
     assert_dead(&tree).await;
 }

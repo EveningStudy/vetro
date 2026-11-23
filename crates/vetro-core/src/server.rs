@@ -26,7 +26,7 @@ use tokio::{
     sync::{broadcast, watch},
 };
 use vetro_agent_api::Result;
-use vetro_proto::rpc::RpcRequest;
+use vetro_proto::rpc::{ErrorCode, HelloParams, RpcRequest, RpcResponse};
 
 use crate::{internal, Core};
 
@@ -112,12 +112,15 @@ impl Server {
             .with_state(self.state);
         let history = tokio::spawn(core.clone().history_worker());
         let sessions = tokio::spawn(core.clone().session_worker());
-        let result = axum::serve(self.listener, app)
-            .with_graceful_shutdown(async move {
-                shutdown.await;
-                self.stop.send_replace(true);
-            })
-            .await;
+        let result = axum::serve(
+            self.listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(async move {
+            shutdown.await;
+            self.stop.send_replace(true);
+        })
+        .await;
         state.auth.stop().await;
         history.abort();
         sessions.abort();
@@ -213,25 +216,72 @@ fn authority(headers: &HeaderMap) -> Option<Authority> {
 async fn upgrade(
     State(state): State<Arc<HttpState>>,
     axum::Extension(host): axum::Extension<RequestHost>,
-    headers: HeaderMap,
     upgrade: WebSocketUpgrade,
 ) -> Response {
-    let Some(client) = state.auth.client(&state, &headers, host) else {
-        return StatusCode::UNAUTHORIZED.into_response();
-    };
     upgrade
         .max_message_size(32 * 1024 * 1024)
-        .on_upgrade(move |socket| websocket(socket, state, client))
+        .on_upgrade(move |socket| websocket(socket, state, host))
 }
 
-async fn websocket(mut socket: WebSocket, state: Arc<HttpState>, client: auth::Client) {
+async fn handshake(
+    socket: &mut WebSocket,
+    state: &HttpState,
+    host: RequestHost,
+    connection: &mut rpc::Connection,
+) -> Option<auth::Client> {
+    loop {
+        let request = match socket.recv().await?.ok()? {
+            Message::Text(text) => serde_json::from_str::<RpcRequest>(&text).ok()?,
+            Message::Close(_) => return None,
+            _ => continue,
+        };
+        let client = (request.method == "app.hello")
+            .then(|| serde_json::from_value::<HelloParams>(request.params.clone()).ok())
+            .flatten()
+            .and_then(|params| state.auth.client(state, params.session.as_deref()?, host));
+        let response = if let Some(client) = &client {
+            rpc::dispatch(state, client, connection, request).await
+        } else {
+            RpcResponse {
+                id: request.id,
+                error: Some(
+                    vetro_agent_api::AgentError::new(
+                        ErrorCode::Unauthorized,
+                        "Call app.hello with a valid session",
+                    )
+                    .into(),
+                ),
+                result: None,
+            }
+        };
+        socket
+            .send(Message::Text(serde_json::to_string(&response).ok()?.into()))
+            .await
+            .ok()?;
+        if connection.hello {
+            return client;
+        }
+    }
+}
+
+async fn websocket(mut socket: WebSocket, state: Arc<HttpState>, host: RequestHost) {
     const MAX_REQUESTS: usize = 32;
     const RESYNC: &str = r#"{"event":"app.resync","data":{}}"#;
     let mut connection = rpc::Connection::default();
+    let mut stopping = state.stopping.clone();
+    if *stopping.borrow() {
+        return;
+    }
+    let client = tokio::select! {
+        _ = stopping.changed() => return,
+        result = tokio::time::timeout(Duration::from_secs(4), handshake(&mut socket, &state, host, &mut connection)) => {
+            let Ok(Some(client)) = result else { return };
+            client
+        }
+    };
     let mut events = state.core.events.subscribe();
     let mut requests = tokio::task::JoinSet::new();
     let mut pending_opens = HashMap::new();
-    let mut stopping = state.stopping.clone();
     let invalidated = client.invalidated(&state, state.auth.changes());
     tokio::pin!(invalidated);
     if *stopping.borrow() {
@@ -253,7 +303,7 @@ async fn websocket(mut socket: WebSocket, state: Arc<HttpState>, client: auth::C
                             break;
                         }
                         let thread_id = request.params["threadId"].as_str().map(str::to_owned);
-                        if !connection.hello || matches!(request.method.as_str(), "app.hello" | "threads.close") {
+                        if request.method == "threads.close" {
                             if request.method == "threads.close" {
                                 if let Some(id) = thread_id {
                                     pending_opens.remove(&id);
@@ -309,7 +359,7 @@ async fn websocket(mut socket: WebSocket, state: Arc<HttpState>, client: auth::C
                     Ok(event) if !connection.accepts(&event) => continue,
                     Ok(event) if matches!(&*event, vetro_proto::rpc::ServerEvent::RemoteUpdated { .. }) => {
                         serde_json::to_string(&vetro_proto::rpc::ServerEvent::RemoteUpdated {
-                        status: auth::status(&state, &client),
+                        status: auth::status(&state, Some(&client)),
                         })
                     }
                     Ok(event) => serde_json::to_string(&*event),
@@ -430,27 +480,21 @@ mod port_tests {
     async fn lagging_websocket_requests_resynchronization_without_closing() {
         use futures_util::{SinkExt, StreamExt};
         use tokio_tungstenite::{connect_async, tungstenite};
-        use tungstenite::client::IntoClientRequest;
         use vetro_proto::rpc::ServerEvent;
 
         let root = tempfile::tempdir().unwrap();
         let home = crate::home::Home::open(root.path().join(".vetro"), root.path().into()).unwrap();
-        let cookie = format!("vetro_session={}", home.new_local_session().unwrap());
+        let session = home.new_local_session().unwrap();
         let core = Core::new(home, crate::registry::Registry::default());
         let server = Server::bind(core.clone(), Some(0)).await.unwrap();
-        let mut request = format!("ws://{}/api/ws", server.address())
-            .into_client_request()
-            .unwrap();
-        request
-            .headers_mut()
-            .insert(header::COOKIE, cookie.parse().unwrap());
+        let request = format!("ws://{}/api/ws", server.address());
         let (stop, stopping) = tokio::sync::oneshot::channel();
         let serving = tokio::spawn(server.serve(async {
             let _ = stopping.await;
         }));
         let (mut socket, _) = connect_async(request).await.unwrap();
         socket.send(tungstenite::Message::Text(json!({
-            "id": 1, "method": "app.hello", "params": {"protocolVersion": 1, "clientName": "test"},
+            "id": 1, "method": "app.hello", "params": {"protocolVersion": 1, "clientName": "test", "session": session},
         }).to_string().into())).await.unwrap();
         let frame = socket.next().await.unwrap().unwrap();
         assert_eq!(

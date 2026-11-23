@@ -63,7 +63,7 @@ pub(crate) fn show_auth(result: vetro_proto::rpc::AuthenticateResult) {
 }
 
 pub(crate) async fn run(core: &Core, args: Args) -> Result<()> {
-    let agent = core.registry.get(&args.agent)?;
+    let agent = core.registry().get(&args.agent)?;
     if core
         .home
         .settings()

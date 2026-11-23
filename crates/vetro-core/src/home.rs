@@ -34,6 +34,7 @@ pub(crate) struct State {
     pub threads: BTreeMap<String, ThreadOverlay>,
     pub projects: BTreeMap<String, ProjectOverlay>,
     pub options: BTreeMap<String, AgentOptionsResult>,
+    pub prefs: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -72,14 +73,12 @@ impl Home {
 
     pub fn open(root: PathBuf, user_home: PathBuf) -> Result<Self> {
         let root = std::path::absolute(root).map_err(internal)?;
-        fs::create_dir_all(&root).map_err(internal)?;
+        private_dir(&root).map_err(internal)?;
+        #[cfg(unix)]
+        tighten(&fs::canonicalize(&root).map_err(internal)?).map_err(internal)?;
         for name in ["raw", "logs"] {
             let path = root.join(name);
-            match fs::create_dir(&path) {
-                Ok(()) => {}
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(internal(error)),
-            }
+            private_dir(&path).map_err(internal)?;
             let actual = fs::canonicalize(&path).map_err(internal)?;
             if actual != fs::canonicalize(&root).map_err(internal)?.join(name) {
                 return Err(internal(
@@ -152,13 +151,12 @@ impl Home {
         Ok(token)
     }
 
-    pub(crate) fn check_local_session(&self, token: &str) -> bool {
-        let hash = device_token_hash(token);
+    pub(crate) fn check_local_session_hash(&self, hash: &str) -> bool {
         self.read_state(|state| {
             state
                 .local_session_hashes
                 .iter()
-                .any(|stored| equal(stored, &hash))
+                .any(|stored| equal(stored, hash))
         })
     }
 
@@ -175,15 +173,20 @@ impl Home {
         Ok(result)
     }
 
-    pub(crate) fn update_settings(&self, patch: serde_json::Value) -> Result<Settings> {
+    pub(crate) fn update_settings<T>(
+        &self,
+        patch: serde_json::Value,
+        validate: impl FnOnce(&Settings, &Settings) -> Result<T>,
+    ) -> Result<(Settings, T)> {
         let mut settings = self.settings.lock().unwrap();
         let mut value = serde_json::to_value(&*settings).map_err(internal)?;
         merge(&mut value, patch);
         let next: Settings = serde_json::from_value(value)
             .map_err(|error| crate::bad_request(format!("Invalid settings: {error}")))?;
+        let validated = validate(&settings, &next)?;
         write(&self.root.join("config.json"), &next)?;
         *settings = next.clone();
-        Ok(next)
+        Ok((next, validated))
     }
 
     pub(crate) fn read_raw(&self, thread_id: &str) -> Result<Vec<RawEntry>> {
@@ -245,6 +248,36 @@ impl Home {
     }
 }
 
+fn private_dir(path: &Path) -> io::Result<()> {
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(path)
+}
+
+#[cfg(unix)]
+fn tighten(path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        return Ok(());
+    }
+    if metadata.is_dir() {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+        for entry in fs::read_dir(path)? {
+            tighten(&entry?.path())?;
+        }
+    } else if metadata.is_file() {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
 pub(crate) fn secret(size: usize) -> Result<String> {
     let mut bytes = vec![0; size];
     getrandom::fill(&mut bytes).map_err(internal)?;
@@ -300,5 +333,33 @@ fn merge(target: &mut serde_json::Value, patch: serde_json::Value) {
         }
     } else {
         *target = patch;
+    }
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn tightens_existing_directory_and_creates_private_files() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let parent = tempfile::tempdir().unwrap();
+    let root = parent.path().join(".vetro");
+    fs::create_dir(&root).unwrap();
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(root.join("config.json"), "{}").unwrap();
+    fs::set_permissions(root.join("config.json"), fs::Permissions::from_mode(0o644)).unwrap();
+    let home = Home::open(root.clone(), parent.path().into()).unwrap();
+    let _index = crate::storage::Index::open(home.root()).unwrap();
+    home.log("test");
+    for name in ["", "raw", "logs"] {
+        assert_eq!(
+            fs::metadata(root.join(name)).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+    }
+    for name in ["config.json", "state.json", "index.db", "logs/core.log"] {
+        assert_eq!(
+            fs::metadata(root.join(name)).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 }

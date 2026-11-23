@@ -21,7 +21,8 @@ use crate::{
 
 pub struct Core {
     pub home: Home,
-    pub registry: Registry,
+    registry: RwLock<Arc<Registry>>,
+    pub(crate) registry_changed: tokio::sync::watch::Sender<()>,
     pub(crate) store: Arc<Index>,
     pub(crate) sessions: Sessions,
     pub(crate) events: broadcast::Sender<Arc<ServerEvent>>,
@@ -39,7 +40,8 @@ impl Core {
         });
         Arc::new(Self {
             home,
-            registry,
+            registry: RwLock::new(Arc::new(registry)),
+            registry_changed: tokio::sync::watch::channel(()).0,
             store: Arc::new(store),
             sessions: Sessions::default(),
             events: broadcast::channel(1024).0,
@@ -54,13 +56,17 @@ impl Core {
         self.history_requested.notify_waiters();
     }
 
+    pub fn registry(&self) -> Arc<Registry> {
+        self.registry.read().unwrap().clone()
+    }
+
     pub(crate) async fn session_worker(self: Arc<Self>) {
         loop {
             tokio::time::sleep(Duration::from_secs(5)).await;
             let minutes = self.home.settings().idle_release_minutes;
             let idle = (minutes != 0).then(|| Duration::from_secs(u64::from(minutes) * 60));
             self.sessions.maintenance(idle).await;
-            self.registry
+            self.registry()
                 .release_idle(
                     |id| self.sessions.has_live(id),
                     idle,
@@ -76,7 +82,7 @@ impl Core {
             tasks.spawn(async move { thread.shutdown().await });
         }
         while tasks.join_next().await.is_some() {}
-        self.registry.shutdown().await;
+        self.registry().shutdown().await;
     }
 
     pub(crate) fn broadcast(&self, event: Arc<ServerEvent>) {
@@ -132,7 +138,8 @@ impl Core {
         let previous = self.detection.read().unwrap().clone().unwrap_or_default();
         let mut tasks = tokio::task::JoinSet::new();
         let mut agents = Vec::new();
-        for agent in self.registry.all() {
+        let registry = self.registry();
+        for agent in registry.all() {
             if self.check_agent_enabled(agent.id()).is_err() {
                 let info = previous
                     .iter()
@@ -146,7 +153,9 @@ impl Core {
                 continue;
             }
             let agent = agent.clone();
-            let guard = self.registry.enter(agent.id(), true).await;
+            let Ok(guard) = registry.enter(agent.id(), true).await else {
+                continue;
+            };
             tasks.spawn(async move {
                 let _guard = guard;
                 agent.info().await
@@ -169,7 +178,7 @@ impl Core {
 
     fn current_auth(&self, mut agents: Vec<AgentInfo>) -> Vec<AgentInfo> {
         for info in &mut agents {
-            if let Ok(agent) = self.registry.get(&info.id) {
+            if let Ok(agent) = self.registry().get(&info.id) {
                 if let Some(auth) = agent.process_auth() {
                     info.auth.state = auth;
                 }
@@ -193,9 +202,10 @@ impl Core {
 
     pub async fn authenticate(&self, params: AuthenticateParams) -> Result<AuthenticateResult> {
         self.check_agent_enabled(&params.agent_id)?;
-        let agent = self.registry.get(&params.agent_id)?;
+        let registry = self.registry();
+        let agent = registry.get(&params.agent_id)?;
         let result = {
-            let _guard = self.registry.enter(&params.agent_id, true).await;
+            let _guard = registry.enter(&params.agent_id, true).await?;
             agent.authenticate(&params.method_id).await
         };
         let result = self.auth_result(&params.agent_id, result).await?;
@@ -238,10 +248,20 @@ impl Core {
     pub(crate) async fn user_agent_call<T, F: Future<Output = Result<T>>>(
         &self,
         id: &str,
+        call: impl FnMut() -> F,
+    ) -> Result<T> {
+        let registry = self.registry();
+        self.user_agent_call_on(&registry, id, call).await
+    }
+
+    pub(crate) async fn user_agent_call_on<T, F: Future<Output = Result<T>>>(
+        &self,
+        registry: &Registry,
+        id: &str,
         mut call: impl FnMut() -> F,
     ) -> Result<T> {
-        let agent = self.registry.get(id)?;
-        let _guard = self.registry.enter(id, true).await;
+        let agent = registry.get(id)?;
+        let _guard = registry.enter(id, true).await?;
         let result = call().await;
         if !result
             .as_ref()
@@ -270,7 +290,8 @@ impl Core {
         params: AgentOptionsParams,
     ) -> Result<AgentOptionsResult> {
         self.check_agent_enabled(&params.agent_id)?;
-        let agent = self.registry.get(&params.agent_id)?;
+        let registry = self.registry();
+        let agent = registry.get(&params.agent_id)?;
         let cwd = params
             .cwd
             .as_deref()
@@ -291,12 +312,26 @@ impl Core {
         {
             return Ok(cached);
         }
+        if agent.options_need_session() && params.prepare != Some(true) {
+            return Ok(AgentOptionsResult {
+                options: Vec::new(),
+                commands: Vec::new(),
+                needs_session: true,
+            });
+        }
         let options = self
-            .user_agent_call(agent.id(), || agent.options(cwd.as_deref(), &selected))
+            .user_agent_call_on(&registry, agent.id(), || async {
+                if agent.options_need_session() {
+                    agent.prepare_options(cwd.as_deref(), &selected).await
+                } else {
+                    agent.options(cwd.as_deref(), &selected).await
+                }
+            })
             .await?;
         let result = AgentOptionsResult {
             options: options.options,
             commands: options.commands,
+            needs_session: false,
         };
         self.home
             .change_state(|state| state.options.insert(key, result.clone()))?;
@@ -339,6 +374,7 @@ impl Core {
                 .unwrap_or_else(|| AgentOptionsResult {
                     options: Vec::new(),
                     commands: Vec::new(),
+                    needs_session: false,
                 });
             if let Some(selected) = selected {
                 for option in &mut result.options {
@@ -365,19 +401,33 @@ impl Core {
                 AgentOptionsResult {
                     options: options.options,
                     commands: options.commands,
+                    needs_session: false,
                 },
             )
         })?;
         Ok(())
     }
 
-    pub(crate) fn update_settings(&self, params: SettingsUpdateParams) -> Result<Settings> {
+    pub(crate) async fn update_settings(&self, params: SettingsUpdateParams) -> Result<Settings> {
         let agents_changed =
             params.patch.get("agents").is_some() || params.patch.get("customAcpAgents").is_some();
-        let updated = self.home.update_settings(params.patch)?;
-        if agents_changed {
+        let refresh = self.detection_refresh.lock().await;
+        let (updated, replacement) =
+            self.home
+                .update_settings(params.patch, |previous, current| {
+                    agents_changed
+                        .then(|| self.registry().reconfigure(previous, current))
+                        .transpose()
+                })?;
+        if let Some((next, retired)) = replacement {
+            retired.retire();
+            *self.registry.write().unwrap() = Arc::new(next);
             *self.detection.write().unwrap() = None;
+            self.registry_changed.send_replace(());
             self.home.change_state(|state| state.options.clear())?;
+            tokio::spawn(async move { retired.shutdown().await });
+            drop(refresh);
+            self.agents(true).await;
         }
         Ok(updated)
     }
@@ -491,12 +541,31 @@ impl Core {
         agent: Option<&str>,
         parent: Option<&str>,
     ) -> Result<SearchResult> {
+        let hidden: Vec<_> = if params.include_hidden.unwrap_or(false) {
+            Vec::new()
+        } else {
+            self.home.read_state(|state| {
+                state
+                    .projects
+                    .iter()
+                    .filter(|(_, project)| project.hidden)
+                    .map(|(path, _)| files::normalize(Path::new(path)))
+                    .collect()
+            })
+        };
         let mut hits = self.store.search(
             params.query.trim(),
             page_limit(params.limit, 50, 500),
             &self.overlay_json()?,
             agent,
             parent,
+            |thread| {
+                hidden.is_empty()
+                    || thread.cwd.as_ref().is_none_or(|cwd| {
+                        let cwd = files::normalize(Path::new(cwd));
+                        !hidden.iter().any(|root| cwd.starts_with(root))
+                    })
+            },
         )?;
         for hit in &mut hits {
             hit.thread = self.overlay(hit.thread.clone());
@@ -677,5 +746,43 @@ fn project_at(path: String) -> Project {
         hidden: false,
         thread_count: 0,
         last_activity_at: None,
+    }
+}
+
+#[cfg(all(test, feature = "acp"))]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn settings_add_and_remove_custom_agents_without_restart() {
+        let root = tempfile::tempdir().unwrap();
+        let home = Home::open(root.path().join(".vetro"), root.path().into()).unwrap();
+        let core = Core::new(home, Registry::default());
+        let mut events = core.events.subscribe();
+        let command = root.path().join("missing-custom-agent");
+        let patch = json!({
+            "agents": {
+                "codex": {"enabled": false}, "claude": {"enabled": false},
+                "devin": {"enabled": false}, "antigravity": {"enabled": false}
+            },
+            "customAcpAgents": [{"id": "custom", "name": "Custom", "command": command}]
+        });
+        core.update_settings(SettingsUpdateParams { patch })
+            .await
+            .unwrap();
+        assert!(core.registry().get("custom").is_ok());
+        let event = events.recv().await.unwrap();
+        assert!(matches!(&*event, ServerEvent::AgentsUpdated { agents }
+            if agents.iter().any(|agent| agent.id == "custom")));
+        core.update_settings(SettingsUpdateParams {
+            patch: json!({"customAcpAgents": []}),
+        })
+        .await
+        .unwrap();
+        assert!(core.registry().get("custom").is_err());
+        let event = events.recv().await.unwrap();
+        assert!(matches!(&*event, ServerEvent::AgentsUpdated { agents }
+            if agents.iter().all(|agent| agent.id != "custom")));
     }
 }

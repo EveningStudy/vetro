@@ -14,7 +14,9 @@ use vetro_proto::{
     ThreadSummary,
 };
 
-use crate::{internal, links::Projection, now, service::summary, storage::Changes, Core};
+use crate::{
+    internal, links::Projection, now, registry::Registry, service::summary, storage::Changes, Core,
+};
 
 mod native;
 
@@ -28,27 +30,34 @@ struct Entry {
 
 impl Core {
     pub(crate) async fn history_worker(self: Arc<Self>) {
-        let mut jobs = JoinSet::new();
-        for agent in self.registry.all().cloned() {
-            let core = self.clone();
-            jobs.spawn(async move { core.watch_agent(agent).await });
-        }
-        jobs.spawn(self.clone().live_index_worker());
-        while let Some(job) = jobs.join_next().await {
-            if let Err(error) = job {
-                self.home.log(&format!("History worker stopped: {error}"));
+        let mut workers = JoinSet::new();
+        workers.spawn(self.clone().live_index_worker());
+        let mut changed = self.registry_changed.subscribe();
+        loop {
+            let registry = self.registry();
+            let mut jobs = JoinSet::new();
+            for agent in registry.all().cloned() {
+                let core = self.clone();
+                let registry = registry.clone();
+                jobs.spawn(async move { core.watch_agent(&registry, agent).await });
             }
+            loop {
+                tokio::select! {
+                    _ = changed.changed() => break,
+                    Some(job) = jobs.join_next(), if !jobs.is_empty() => {
+                        if let Err(error) = job {
+                            self.home.log(&format!("History worker stopped: {error}"));
+                        }
+                    }
+                }
+            }
+            jobs.shutdown().await;
         }
     }
 
-    async fn watch_agent(&self, agent: Arc<dyn Agent>) {
+    async fn watch_agent(&self, registry: &Registry, agent: Arc<dyn Agent>) {
         let id = agent.id();
-        let paths = self
-            .registry
-            .history_paths
-            .get(id)
-            .cloned()
-            .unwrap_or_default();
+        let paths = registry.history_paths.get(id).cloned().unwrap_or_default();
         let (wake, mut changed) = mpsc::channel(1);
         let agent_id = id.to_owned();
         let mut watcher =
@@ -79,10 +88,12 @@ impl Core {
             if requested
                 || pending
                 || !paths.is_empty()
-                || self.registry.background_poll_due(id)
+                || registry.background_poll_due(id)
                 || self.sessions.has_open(id)
             {
-                pending = self.sync_agent(&agent, Some(Duration::from_secs(3))).await;
+                pending = self
+                    .sync_agent(registry, &agent, Some(Duration::from_secs(3)))
+                    .await;
             }
             requested = false;
             let interval = if pending {
@@ -109,20 +120,27 @@ impl Core {
 
     pub async fn refresh_history(self: &Arc<Self>) {
         let mut jobs = JoinSet::new();
-        for agent in self.registry.all() {
+        let registry = self.registry();
+        for agent in registry.all() {
             let core = self.clone();
             let agent = Arc::clone(agent);
-            jobs.spawn(async move { core.sync_agent(&agent, None).await });
+            let registry = registry.clone();
+            jobs.spawn(async move { core.sync_agent(&registry, &agent, None).await });
         }
         while jobs.join_next().await.is_some() {}
     }
 
-    async fn sync_agent(&self, agent: &Arc<dyn Agent>, budget: Option<Duration>) -> bool {
+    async fn sync_agent(
+        &self,
+        registry: &Registry,
+        agent: &Arc<dyn Agent>,
+        budget: Option<Duration>,
+    ) -> bool {
         if self.check_agent_enabled(agent.id()).is_err() {
             return false;
         }
         let started = Instant::now();
-        match self.sync(agent, budget).await {
+        match self.sync(registry, agent, budget).await {
             Ok((total, indexed, failed, pending)) => {
                 if (indexed > 0 && !pending) || failed > 0 {
                     self.home.log(&format!(
@@ -142,6 +160,7 @@ impl Core {
 
     async fn sync(
         &self,
+        registry: &Registry,
         agent: &Arc<dyn Agent>,
         budget: Option<Duration>,
     ) -> Result<(usize, usize, usize, bool)> {
@@ -153,18 +172,16 @@ impl Core {
             .into_iter()
             .map(|(id, mark, indexed)| (id, (mark, indexed)))
             .collect();
-        let paths = self
-            .registry
-            .history_paths
-            .get(id)
-            .cloned()
-            .unwrap_or_default();
+        let paths = registry.history_paths.get(id).cloned().unwrap_or_default();
         let allow_protocol = budget.is_none()
-            || self.registry.background_poll_due(id)
+            || registry.background_poll_due(id)
             || (paths.is_empty() && self.sessions.has_open(id));
         let roots = paths.clone();
         let agent_id = id.to_owned();
         let inventory = blocking(move || native::inventory(&agent_id, &roots)).await?;
+        for error in &inventory.errors {
+            self.home.log(&format!("History {id}: {error}"));
+        }
         let list = if inventory.authoritative {
             Vec::new()
         } else if !allow_protocol {
@@ -173,7 +190,7 @@ impl Core {
                 .await?
                 .map_or_else(Vec::new, |page| page.sessions)
         } else {
-            let _guard = self.registry.enter(id, false).await;
+            let _guard = registry.enter(id, false).await?;
             match time::timeout(Duration::from_secs(30), list(agent)).await {
                 Ok(Ok(list)) => list,
                 Ok(Err(error)) if inventory.files.is_empty() => return Err(error),
@@ -254,7 +271,7 @@ impl Core {
             .into_iter()
             .filter_map(|(id, (mark, _))| mark.map(|_| id))
             .collect();
-        if !removed.is_empty() && inventory.authoritative {
+        if !removed.is_empty() && inventory.authoritative && inventory.errors.is_empty() {
             let store = self.store.clone();
             let removed = blocking(move || store.remove(removed)).await?;
             changes.upserted.extend(removed.upserted);
@@ -288,7 +305,7 @@ impl Core {
                 }
                 let read = {
                     let _guard = if allow_protocol {
-                        Some(self.registry.enter(id, false).await)
+                        Some(registry.enter(id, false).await?)
                     } else {
                         None
                     };
@@ -373,7 +390,7 @@ impl Core {
     #[cfg(feature = "codex")]
     async fn read_codex_store(&self, native_id: &str) -> Result<Option<Transcript>> {
         let Some(root) = self
-            .registry
+            .registry()
             .history_paths
             .get("codex")
             .and_then(|roots| roots.first())

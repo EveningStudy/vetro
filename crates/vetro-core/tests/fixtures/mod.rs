@@ -64,6 +64,10 @@ impl Agent for Fake {
         Ok(AuthenticateResult::default())
     }
 
+    fn options_need_session(&self) -> bool {
+        true
+    }
+
     async fn options(
         &self,
         _: Option<&Path>,

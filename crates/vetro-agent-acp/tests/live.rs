@@ -188,7 +188,7 @@ async fn devin_round_trip() {
         "{info:?}"
     );
     let _ = agent.list(None).await.unwrap();
-    let probe = agent.options(Some(&cwd), &BTreeMap::new()).await;
+    let probe = agent.prepare_options(Some(&cwd), &BTreeMap::new()).await;
     assert_eq!(probe.unwrap_err().code, ErrorCode::AuthRequired);
     agent.authenticate("devin-browser").await.unwrap();
     let (sink, mut events) = mpsc::unbounded_channel();
@@ -248,7 +248,10 @@ async fn antigravity_handshake() {
     let info = agent.info().await;
     println!("Antigravity version {:?}", info.version);
     assert!(info.error.is_none(), "{info:?}");
-    let initial = agent.options(Some(&cwd), &BTreeMap::new()).await.unwrap();
+    let initial = agent
+        .prepare_options(Some(&cwd), &BTreeMap::new())
+        .await
+        .unwrap();
     println!(
         "Antigravity reported {} configuration options",
         initial.options.len()

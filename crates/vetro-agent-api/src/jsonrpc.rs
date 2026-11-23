@@ -63,10 +63,16 @@ pub enum Incoming {
         method: String,
         params: Option<Value>,
     },
+    Response {
+        id: u64,
+        envelope: Value,
+    },
 }
 
 pub type IncomingMessages = mpsc::UnboundedReceiver<Incoming>;
-type PendingMap = Mutex<Option<HashMap<u64, oneshot::Sender<Result<Value, Error>>>>>;
+type Reply = Result<Value, Error>;
+type Completion = Box<dyn FnOnce(Reply) + Send>;
+type PendingMap = Mutex<Option<HashMap<u64, Completion>>>;
 
 pub struct Peer {
     process: Process,
@@ -79,9 +85,31 @@ impl Peer {
     /// Start draining stdout. Consume the incoming stream in parallel with requests.
     /// Incoming envelopes may use either version. The adapter handles unknown methods.
     pub fn new(process: Process, stdout: Stdout, version: Version) -> (Self, IncomingMessages) {
+        Self::spawn(process, stdout, version, false)
+    }
+
+    pub fn new_ordered(
+        process: Process,
+        stdout: Stdout,
+        version: Version,
+    ) -> (Self, IncomingMessages) {
+        Self::spawn(process, stdout, version, true)
+    }
+
+    fn spawn(
+        process: Process,
+        stdout: Stdout,
+        version: Version,
+        ordered: bool,
+    ) -> (Self, IncomingMessages) {
         let (incoming, messages) = mpsc::unbounded_channel();
         let pending = Arc::new(Mutex::new(Some(HashMap::new())));
-        tokio::spawn(read_messages(stdout, Arc::clone(&pending), incoming));
+        tokio::spawn(read_messages(
+            stdout,
+            Arc::clone(&pending),
+            incoming,
+            ordered,
+        ));
         (
             Self {
                 process,
@@ -94,6 +122,15 @@ impl Peer {
     }
 
     pub async fn request(&self, method: &str, params: Option<Value>) -> Result<Value, Error> {
+        self.request_with(method, params, |_| {}).await
+    }
+
+    pub async fn request_with(
+        &self,
+        method: &str,
+        params: Option<Value>,
+        received: impl FnOnce(&Reply) + Send + 'static,
+    ) -> Result<Value, Error> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (send, response) = oneshot::channel();
         self.pending
@@ -101,12 +138,26 @@ impl Peer {
             .unwrap()
             .as_mut()
             .ok_or(Error::Closed)?
-            .insert(id, send);
+            .insert(
+                id,
+                Box::new(move |reply| {
+                    received(&reply);
+                    let _ = send.send(reply);
+                }),
+            );
         let pending = PendingRequest(&self.pending, id);
         self.write(call(Some(id), method, params)).await?;
         let result = response.await.map_err(|_| Error::Closed)?;
         drop(pending);
         result
+    }
+
+    pub fn complete(&self, id: u64, envelope: Value) {
+        complete(&self.pending, id, envelope);
+    }
+
+    pub fn finish_incoming(&self) {
+        self.pending.lock().unwrap().take();
     }
 
     pub async fn notify(&self, method: &str, params: Option<Value>) -> Result<(), Error> {
@@ -175,6 +226,7 @@ async fn read_messages(
     mut stdout: Stdout,
     pending: Arc<PendingMap>,
     incoming: mpsc::UnboundedSender<Incoming>,
+    ordered: bool,
 ) {
     while let Some(Ok(line)) = stdout.recv().await {
         let Ok(message) = serde_json::from_str::<Value>(&line) else {
@@ -192,23 +244,39 @@ async fn read_messages(
             };
             let _ = incoming.send(event);
         } else if let Some(id) = message.get("id").and_then(Value::as_u64) {
-            let sender = pending
-                .lock()
-                .unwrap()
-                .as_mut()
-                .and_then(|map| map.remove(&id));
-            if let Some(sender) = sender {
-                let result = match (message.get("result"), message.get("error")) {
-                    (Some(result), None) => Ok(result.clone()),
-                    (None, Some(error)) => {
-                        Err(serde_json::from_value::<RemoteError>(error.clone())
-                            .map_or(Error::InvalidResponse, Error::Remote))
-                    }
-                    _ => Err(Error::InvalidResponse),
-                };
-                let _ = sender.send(result);
+            if ordered {
+                if incoming
+                    .send(Incoming::Response {
+                        id,
+                        envelope: message,
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            } else {
+                complete(&pending, id, message);
             }
         }
     }
-    pending.lock().unwrap().take();
+    if !ordered {
+        pending.lock().unwrap().take();
+    }
+}
+
+fn complete(pending: &PendingMap, id: u64, envelope: Value) {
+    let sender = pending
+        .lock()
+        .unwrap()
+        .as_mut()
+        .and_then(|map| map.remove(&id));
+    if let Some(sender) = sender {
+        let result = match (envelope.get("result"), envelope.get("error")) {
+            (Some(result), None) => Ok(result.clone()),
+            (None, Some(error)) => Err(serde_json::from_value::<RemoteError>(error.clone())
+                .map_or(Error::InvalidResponse, Error::Remote)),
+            _ => Err(Error::InvalidResponse),
+        };
+        sender(result);
+    }
 }

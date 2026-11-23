@@ -128,11 +128,21 @@ pub trait Agent: Send + Sync + 'static {
         Ok(false)
     }
     async fn maintain(&self) {}
+    fn options_need_session(&self) -> bool {
+        false
+    }
     async fn options(
         &self,
         cwd: Option<&Path>,
         selected: &BTreeMap<String, String>,
     ) -> Result<AgentOptions>;
+    async fn prepare_options(
+        &self,
+        cwd: Option<&Path>,
+        selected: &BTreeMap<String, String>,
+    ) -> Result<AgentOptions> {
+        self.options(cwd, selected).await
+    }
     async fn list(&self, cursor: Option<String>) -> Result<SessionPage>;
     async fn list_without_runtime(&self) -> Result<Option<SessionPage>> {
         Ok(None)
@@ -150,6 +160,18 @@ pub trait Agent: Send + Sync + 'static {
         cwd: Option<&Path>,
         sink: EventSink,
     ) -> Result<Arc<dyn Session>>;
+    fn launch_only_option(&self, _id: &str) -> bool {
+        false
+    }
+    async fn attach_with_options(
+        &self,
+        native_id: &str,
+        cwd: Option<&Path>,
+        _options: BTreeMap<String, String>,
+        sink: EventSink,
+    ) -> Result<Arc<dyn Session>> {
+        self.attach(native_id, cwd, sink).await
+    }
     async fn shutdown(&self);
 }
 

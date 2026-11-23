@@ -92,12 +92,27 @@ impl Index {
             }
         }
         let path = root.join("index.db");
-        let open = || {
+        let open = || -> Result<_> {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(false)
+                    .mode(0o600)
+                    .open(&path)
+                    .map_err(internal)?;
+            }
+            Ok(())
+        };
+        let connect = || {
             let conn = Connection::open(&path)?;
             conn.execute_batch(SCHEMA)?;
             Ok(conn)
         };
-        let conn = match open() {
+        open()?;
+        let conn = match connect() {
             Err(rusqlite::Error::SqliteFailure(error, _))
                 if matches!(
                     error.code,
@@ -116,7 +131,8 @@ impl Index {
                         Err(error) => return Err(internal(error)),
                     }
                 }
-                open().map_err(internal)?
+                open()?;
+                connect().map_err(internal)?
             }
             other => other.map_err(internal)?,
         };
@@ -355,6 +371,7 @@ impl Index {
         overlays: &str,
         agent: Option<&str>,
         parent: Option<&str>,
+        visible: impl Fn(&ThreadSummary) -> bool,
     ) -> Result<Vec<SearchHit>> {
         if !query.chars().any(char::is_alphanumeric) {
             return Ok(Vec::new());
@@ -369,19 +386,25 @@ impl Index {
              ), best AS (SELECT thread, min(rank) AS score, snippet FROM hits GROUP BY thread)
              SELECT {SUMMARY}, best.snippet FROM best JOIN threads t ON t.id=best.thread
              LEFT JOIN links l ON l.child=t.id
-             LEFT JOIN json_each(?3) o ON o.key=t.id
+             LEFT JOIN json_each(?2) o ON o.key=t.id
              WHERE NOT coalesce(o.value->>'archived',t.archived)
-             AND (?4 IS NULL OR t.agent=?4) AND (?5 IS NULL OR l.parent=?5)
-             ORDER BY best.score, t.updated DESC, t.id LIMIT ?2"
+             AND (?3 IS NULL OR t.agent=?3) AND (?4 IS NULL OR l.parent=?4)
+             ORDER BY best.score, t.updated DESC, t.id"
             ))
             .map_err(internal)?;
-        collect(
-            &mut stmt,
-            params![query, limit as i64, overlays, agent, parent],
-            |row| {
-                let snippet: String = row.get(3)?;
-                Ok(SearchHit {
-                    thread: row_summary(row)?,
+        let mut rows = stmt
+            .query(params![query, overlays, agent, parent])
+            .map_err(internal)?;
+        let mut hits = Vec::new();
+        while hits.len() < limit {
+            let Some(row) = rows.next().map_err(internal)? else {
+                break;
+            };
+            let thread = row_summary(row).map_err(internal)?;
+            if visible(&thread) {
+                let snippet: String = row.get(3).map_err(internal)?;
+                hits.push(SearchHit {
+                    thread,
                     snippet: snippet
                         .replace('\u{1}', "")
                         .replace(END_START, "")
@@ -390,9 +413,10 @@ impl Index {
                         .replace('>', "&gt;")
                         .replace('\u{2}', "<mark>")
                         .replace('\u{3}', "</mark>"),
-                })
-            },
-        )
+                });
+            }
+        }
+        Ok(hits)
     }
 }
 

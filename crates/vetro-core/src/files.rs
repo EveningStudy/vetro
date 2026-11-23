@@ -79,7 +79,7 @@ pub fn list(path: &Path) -> Result<FsListResult> {
 
 pub fn find(params: FsFindParams) -> Result<FsFindResult> {
     let root = directory(Path::new(&params.cwd))?;
-    let query = params.query.to_lowercase().replace('\\', "/");
+    let query = display_separators(params.query.to_lowercase());
     let mut matches = Vec::new();
     for entry in WalkBuilder::new(&root)
         .require_git(false)
@@ -90,7 +90,7 @@ pub fn find(params: FsFindParams) -> Result<FsFindResult> {
         if path.as_os_str().is_empty() {
             continue;
         }
-        let path = path.to_string_lossy().replace('\\', "/");
+        let path = display_separators(path.to_string_lossy().into_owned());
         let lower = path.to_lowercase();
         if let Some(offset) = lower.find(&query) {
             matches.push(((0, offset, path.len()), path));
@@ -106,6 +106,27 @@ pub fn find(params: FsFindParams) -> Result<FsFindResult> {
             .map(|(_, path)| path)
             .collect(),
     })
+}
+
+fn display_separators(path: String) -> String {
+    #[cfg(windows)]
+    return path.replace('\\', "/");
+    #[cfg(not(windows))]
+    path
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn file_search_keeps_backslashes_inside_posix_file_names() {
+    let root = tempfile::tempdir().unwrap();
+    fs::write(root.path().join(r"a\b.txt"), "").unwrap();
+    let result = find(FsFindParams {
+        cwd: root.path().to_string_lossy().into_owned(),
+        query: r"a\b".into(),
+        limit: None,
+    })
+    .unwrap();
+    assert_eq!(result.paths, [r"a\b.txt"]);
 }
 
 fn subsequence(candidate: &str, query: &str) -> Option<usize> {

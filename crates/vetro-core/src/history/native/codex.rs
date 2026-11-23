@@ -29,90 +29,30 @@ pub(super) fn inventory(root: &Path) -> Result<Inventory> {
     }
     let state = database(root, "state_");
     if let Some(path) = state {
-        let conn = open_readonly(&path).map_err(internal)?;
-        let mut stmt = conn.prepare("SELECT * FROM threads").map_err(internal)?;
-        let mut rows = stmt.query([]).map_err(internal)?;
-        while let Some(row) = rows.next().map_err(internal)? {
-            let id: String = row.get("id").map_err(internal)?;
-            let source: String = row.get("source").map_err(internal)?;
-            let title = column(row, "name").or_else(|| column(row, "title"));
-            let preview = column(row, "preview").or_else(|| column(row, "first_user_message"));
-            let archived = row.get::<_, bool>("archived").unwrap_or_default();
-            let rollout = column(row, "rollout_path").map(PathBuf::from);
-            let src = serde_json::from_str(&source).unwrap_or(Value::String(source));
-            let origin = column(row, "originator");
-            let parent = column(row, "attached_thread_parent_id").or_else(|| parent(&src));
-            let record = SessionRecord {
-                native_id: id.clone(),
-                title: title
-                    .or_else(|| preview.clone())
-                    .unwrap_or_else(|| "Codex thread".into()),
-                preview,
-                cwd: column(row, "cwd").map(PathBuf::from),
-                created_at: times(row, "created_at_ms", "created_at"),
-                updated_at: times(row, "updated_at_ms", "updated_at").unwrap_or_default(),
-                source: source_kind(&src, origin.as_deref()),
-                origin: origin.or_else(|| src.as_str().map(str::to_owned)),
-                model: column(row, "model"),
-                resumable: true,
-                parent_native_id: parent,
-            };
-            let file = inventory.files.remove(&id);
-            let path = file.as_ref().and_then(|file| file.path.clone()).or(rollout);
-            let disk_mark = file.map(|file| file.mark).unwrap_or_default();
-            let mark = format!(
-                "{archived}{}{disk_mark}{}",
-                record_mark(&record),
-                path.as_deref().and_then(file_mark).unwrap_or_default()
-            );
-            inventory.files.insert(
-                id,
-                NativeFile {
-                    record: Some(record),
-                    path,
-                    mark,
-                    archived,
-                },
-            );
+        match read_state(&path, &mut inventory.files) {
+            Ok(()) => inventory.authoritative = true,
+            Err(error) => inventory
+                .errors
+                .push(format!("{}: {error}", path.display())),
         }
-        inventory.authoritative = true;
     }
     if let Some(path) = database(root, "thread_history_") {
-        let conn = open_readonly(&path).map_err(internal)?;
-        let mut stmt = conn
-            .prepare("SELECT thread_id, next_rollout_ordinal FROM thread_history_projection_state")
-            .map_err(internal)?;
-        let mut rows = stmt.query([]).map_err(internal)?;
-        while let Some(row) = rows.next().map_err(internal)? {
-            let id: String = row.get(0).map_err(internal)?;
-            let ordinal: i64 = row.get(1).map_err(internal)?;
-            if let Some(file) = inventory.files.get_mut(&id) {
-                file.mark.push_str(&format!(":{ordinal}"));
-                continue;
-            }
-            let span = conn.query_row(
-                "SELECT min(started_at), max(coalesce(completed_at,started_at)), count(*) FROM thread_turns WHERE thread_id=?1",
-                [&id], |row| Ok((row.get(0)?, row.get::<_, Option<i64>>(1)?, row.get::<_, i64>(2)?))
-            ).map_err(internal)?;
-            if span.2 == 0 {
-                continue;
-            }
-            let mut record = blank(id.clone(), &path, "Codex thread");
-            record.created_at = span.0;
-            record.updated_at = span.1.unwrap_or_default();
-            record.origin = Some("history projection".into());
-            inventory.files.insert(
-                id,
-                NativeFile {
-                    record: Some(record),
-                    mark: format!("projection:{ordinal}"),
-                    archived: false,
-                    path: None,
-                },
-            );
+        if let Err(error) = read_projection_inventory(&path, &mut inventory.files) {
+            inventory
+                .errors
+                .push(format!("{}: {error}", path.display()));
         }
     }
-    read_catalogs(root, &mut inventory.files)?;
+    for name in ["codex.db", "codex-dev.db"] {
+        let path = root.join("sqlite").join(name);
+        if path.is_file() {
+            if let Err(error) = read_catalog(&path, &mut inventory.files) {
+                inventory
+                    .errors
+                    .push(format!("{}: {error}", path.display()));
+            }
+        }
+    }
     for file in inventory.files.values_mut() {
         if file.record.as_ref().is_none_or(|record| {
             record.resumable || record.origin.as_deref() == Some("history projection")
@@ -123,74 +63,155 @@ pub(super) fn inventory(root: &Path) -> Result<Inventory> {
     Ok(inventory)
 }
 
-fn read_catalogs(root: &Path, files: &mut HashMap<String, NativeFile>) -> Result<()> {
-    for name in ["codex.db", "codex-dev.db"] {
-        let path = root.join("sqlite").join(name);
-        if !path.is_file() {
+fn read_state(path: &Path, files: &mut HashMap<String, NativeFile>) -> Result<()> {
+    let conn = open_readonly(path).map_err(internal)?;
+    let mut stmt = conn.prepare("SELECT * FROM threads").map_err(internal)?;
+    let mut rows = stmt.query([]).map_err(internal)?;
+    while let Some(row) = rows.next().map_err(internal)? {
+        let id: String = row.get("id").map_err(internal)?;
+        let source: String = row.get("source").map_err(internal)?;
+        let title = column(row, "name").or_else(|| column(row, "title"));
+        let preview = column(row, "preview").or_else(|| column(row, "first_user_message"));
+        let archived = row.get::<_, bool>("archived").unwrap_or_default();
+        let rollout = column(row, "rollout_path").map(PathBuf::from);
+        let src = serde_json::from_str(&source).unwrap_or(Value::String(source));
+        let origin = column(row, "originator");
+        let parent = column(row, "attached_thread_parent_id").or_else(|| parent(&src));
+        let record = SessionRecord {
+            native_id: id.clone(),
+            title: title
+                .or_else(|| preview.clone())
+                .unwrap_or_else(|| "Codex thread".into()),
+            preview,
+            cwd: column(row, "cwd").map(PathBuf::from),
+            created_at: times(row, "created_at_ms", "created_at"),
+            updated_at: times(row, "updated_at_ms", "updated_at").unwrap_or_default(),
+            source: source_kind(&src, origin.as_deref()),
+            origin: origin.or_else(|| src.as_str().map(str::to_owned)),
+            model: column(row, "model"),
+            resumable: true,
+            parent_native_id: parent,
+        };
+        let file = files.remove(&id);
+        let path = file.as_ref().and_then(|file| file.path.clone()).or(rollout);
+        let disk_mark = file.map(|file| file.mark).unwrap_or_default();
+        let mark = format!(
+            "{archived}{}{disk_mark}{}",
+            record_mark(&record),
+            path.as_deref().and_then(file_mark).unwrap_or_default()
+        );
+        files.insert(
+            id,
+            NativeFile {
+                record: Some(record),
+                path,
+                mark,
+                archived,
+            },
+        );
+    }
+    Ok(())
+}
+
+fn read_projection_inventory(path: &Path, files: &mut HashMap<String, NativeFile>) -> Result<()> {
+    let conn = open_readonly(path).map_err(internal)?;
+    let mut stmt = conn
+        .prepare("SELECT thread_id, next_rollout_ordinal FROM thread_history_projection_state")
+        .map_err(internal)?;
+    let mut rows = stmt.query([]).map_err(internal)?;
+    while let Some(row) = rows.next().map_err(internal)? {
+        let id: String = row.get(0).map_err(internal)?;
+        let ordinal: i64 = row.get(1).map_err(internal)?;
+        if let Some(file) = files.get_mut(&id) {
+            file.mark.push_str(&format!(":{ordinal}"));
             continue;
         }
-        let conn = open_readonly(&path).map_err(internal)?;
-        let exists = conn
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='local_thread_catalog')",
-                [],
-                |row| row.get::<_, bool>(0),
-            )
-            .map_err(internal)?;
-        if !exists {
+        let span = conn.query_row(
+                "SELECT min(started_at), max(coalesce(completed_at,started_at)), count(*) FROM thread_turns WHERE thread_id=?1",
+                [&id], |row| Ok((row.get(0)?, row.get::<_, Option<i64>>(1)?, row.get::<_, i64>(2)?))
+            ).map_err(internal)?;
+        if span.2 == 0 {
             continue;
         }
-        let mut stmt = conn
-            .prepare(
-                "SELECT thread_id, display_title, source_created_at, source_updated_at, cwd,
+        let mut record = blank(id.clone(), path, "Codex thread");
+        record.created_at = span.0;
+        record.updated_at = span.1.unwrap_or_default();
+        record.origin = Some("history projection".into());
+        files.insert(
+            id,
+            NativeFile {
+                record: Some(record),
+                mark: format!("projection:{ordinal}"),
+                archived: false,
+                path: None,
+            },
+        );
+    }
+    Ok(())
+}
+
+fn read_catalog(path: &Path, files: &mut HashMap<String, NativeFile>) -> Result<()> {
+    let conn = open_readonly(path).map_err(internal)?;
+    let exists = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='local_thread_catalog')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(internal)?;
+    if !exists {
+        return Ok(());
+    }
+    let mut stmt = conn
+        .prepare(
+            "SELECT thread_id, display_title, source_created_at, source_updated_at, cwd,
                     CASE WHEN host_id='local' THEN 'local' WHEN source_kind='chatgpt' THEN 'cloud'
                          ELSE 'remote' END
              FROM local_thread_catalog WHERE missing_candidate=0 ORDER BY source_updated_at DESC",
-            )
-            .map_err(internal)?;
-        let mut rows = stmt.query([]).map_err(internal)?;
-        while let Some(row) = rows.next().map_err(internal)? {
-            let id: String = row.get(0).map_err(internal)?;
-            if files.contains_key(&id) {
-                continue;
-            }
-            let host: String = row.get(5).map_err(internal)?;
-            let title: String = row.get(1).map_err(internal)?;
-            let created: f64 = row.get(2).map_err(internal)?;
-            let updated: f64 = row.get(3).map_err(internal)?;
-            let record = SessionRecord {
-                native_id: id.clone(),
-                title,
-                preview: None,
-                cwd: if host == "local" {
-                    row.get::<_, Option<String>>(4)
-                        .map_err(internal)?
-                        .map(PathBuf::from)
-                } else {
-                    None
-                },
-                created_at: Some((created * 1000.0) as i64),
-                updated_at: (updated * 1000.0) as i64,
-                source: if host == "cloud" {
-                    ThreadSource::Cloud
-                } else {
-                    ThreadSource::Desktop
-                },
-                origin: Some(format!("Codex desktop catalog ({host})")),
-                model: None,
-                resumable: false,
-                parent_native_id: None,
-            };
-            files.insert(
-                id,
-                NativeFile {
-                    mark: record_mark(&record),
-                    record: Some(record),
-                    path: None,
-                    archived: false,
-                },
-            );
+        )
+        .map_err(internal)?;
+    let mut rows = stmt.query([]).map_err(internal)?;
+    while let Some(row) = rows.next().map_err(internal)? {
+        let id: String = row.get(0).map_err(internal)?;
+        if files.contains_key(&id) {
+            continue;
         }
+        let host: String = row.get(5).map_err(internal)?;
+        let title: String = row.get(1).map_err(internal)?;
+        let created: f64 = row.get(2).map_err(internal)?;
+        let updated: f64 = row.get(3).map_err(internal)?;
+        let record = SessionRecord {
+            native_id: id.clone(),
+            title,
+            preview: None,
+            cwd: if host == "local" {
+                row.get::<_, Option<String>>(4)
+                    .map_err(internal)?
+                    .map(PathBuf::from)
+            } else {
+                None
+            },
+            created_at: Some((created * 1000.0) as i64),
+            updated_at: (updated * 1000.0) as i64,
+            source: if host == "cloud" {
+                ThreadSource::Cloud
+            } else {
+                ThreadSource::Desktop
+            },
+            origin: Some(format!("Codex desktop catalog ({host})")),
+            model: None,
+            resumable: false,
+            parent_native_id: None,
+        };
+        files.insert(
+            id,
+            NativeFile {
+                mark: record_mark(&record),
+                record: Some(record),
+                path: None,
+                archived: false,
+            },
+        );
     }
     Ok(())
 }
@@ -337,11 +358,15 @@ pub(in crate::history) fn fallback(root: &Path, id: &str) -> Result<Option<Trans
             return Ok(Some(transcript));
         }
     }
+    let mut projection_error = None;
     if let Some(path) = database(root, "thread_history_") {
-        let conn = open_readonly(&path).map_err(internal)?;
-        let transcript = read_projection(&conn, id)?;
-        if !transcript.items.is_empty() {
-            return Ok(Some(transcript));
+        match open_readonly(&path)
+            .map_err(internal)
+            .and_then(|conn| read_projection(&conn, id))
+        {
+            Ok(transcript) if !transcript.items.is_empty() => return Ok(Some(transcript)),
+            Ok(_) => {}
+            Err(error) => projection_error = Some(error),
         }
     }
     if parts.is_empty() {
@@ -360,7 +385,10 @@ pub(in crate::history) fn fallback(root: &Path, id: &str) -> Result<Option<Trans
         }
     }
     let transcript = read_rollouts(&parts, id)?;
-    Ok((!transcript.items.is_empty()).then_some(transcript))
+    if !transcript.items.is_empty() {
+        return Ok(Some(transcript));
+    }
+    projection_error.map_or(Ok(None), Err)
 }
 
 fn read_rollouts(parts: &[PathBuf], id: &str) -> Result<Transcript> {
@@ -615,6 +643,33 @@ fn projected_item(raw: &Value, ts: Option<i64>, turn_id: Option<String>) -> Opti
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bad_databases_do_not_hide_records_from_healthy_sources() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path();
+        fs::create_dir(path.join("sqlite")).unwrap();
+        for name in [
+            "state_1.sqlite",
+            "thread_history_1.sqlite",
+            "sqlite/codex.db",
+        ] {
+            fs::write(path.join(name), "corrupt").unwrap();
+        }
+        let catalog = Connection::open(path.join("sqlite/codex-dev.db")).unwrap();
+        catalog.execute_batch(
+            "CREATE TABLE local_thread_catalog(thread_id, display_title, source_created_at,
+             source_updated_at, cwd, host_id, source_kind, missing_candidate);
+             INSERT INTO local_thread_catalog VALUES ('healthy','Desktop',1.0,2.0,NULL,'local','cli',0)"
+        ).unwrap();
+        let result = inventory(path).unwrap();
+        assert_eq!(result.errors.len(), 3);
+        assert!(!result.authoritative);
+        assert_eq!(
+            result.files["healthy"].record.as_ref().unwrap().title,
+            "Desktop"
+        );
+    }
 
     #[test]
     fn reads_all_segments_of_a_compressed_rollout() {

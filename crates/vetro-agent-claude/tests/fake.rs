@@ -57,6 +57,21 @@ async fn test() {
         .unwrap();
     assert_eq!(starter.options[0].choices[0].value, "haiku");
     assert_eq!(starter.commands[0].name, "help");
+    let selected = BTreeMap::from([("model".into(), "haiku".into())]);
+    let options = agent
+        .options(Some(temp.path()), &selected)
+        .await
+        .unwrap()
+        .options;
+    assert!(options
+        .iter()
+        .any(|option| option.id == "effort" && option.current_value == "low"));
+    assert!(options.iter().any(|option| option.id == "mode"
+        && option.current_value == "default"
+        && option
+            .choices
+            .iter()
+            .any(|choice| choice.value == "default")));
     let info = agent.info().await;
     assert_eq!(info.auth.account.as_deref(), Some("synthetic-plan"));
     assert_eq!(info.version.as_deref(), Some("test-version"));
@@ -274,11 +289,20 @@ async fn test() {
         format!("{content}\n{{\"type\":\"user\"")
     );
     let (sink, _events) = unbounded_channel();
-    let resumed = agent.attach(ID, Some(temp.path()), sink).await.unwrap();
+    assert!(agent.launch_only_option("effort"));
+    let resumed = agent
+        .attach_with_options(
+            ID,
+            Some(temp.path()),
+            BTreeMap::from([("effort".into(), "low".into())]),
+            sink,
+        )
+        .await
+        .unwrap();
     let log = resumed.wire_log().snapshot();
     let spawn: Value = serde_json::from_str(&log[0].text).unwrap();
     let mut expected = PREFIX.to_vec();
-    expected.extend(["--resume", ID]);
+    expected.extend(["--resume", ID, "--effort", "low"]);
     assert_eq!(spawn["args"], json!(expected));
     assert_eq!(spawn["cwd"], json!(original));
     agent.shutdown().await;
@@ -306,7 +330,10 @@ fn fake(args: &[String]) {
         args[PREFIX.len()].as_str(),
         "--session-id" | "--resume"
     ));
-    assert_eq!(args.len(), PREFIX.len() + 2);
+    let extra = &args[PREFIX.len() + 2..];
+    assert!(
+        extra.is_empty() || extra == ["--effort", "low"] || extra == ["--no-session-persistence"]
+    );
     let mut first = true;
     let mut folded = None;
     for line in io::stdin().lock().lines() {
@@ -318,9 +345,9 @@ fn fake(args: &[String]) {
                     "initialize" => {
                         assert_eq!(req, &json!({"subtype":"initialize"}));
                         json!({
-                            "models":[{"value":"haiku","displayName":"Haiku","supportedEffortLevels":["low"]}],
+                            "models":[{"value":"haiku","displayName":"Haiku","supportedEffortLevels":["low"],"defaultEffortLevel":"low"}],
                             "commands":[{"name":"help","description":"Help","argumentHint":""}],
-                            "claude_code_version":"test-version","current_permission_mode":"manual",
+                            "claude_code_version":"test-version","current_permission_mode":"default",
                             "account":{"subscriptionType":"synthetic-plan"}
                         })
                     }

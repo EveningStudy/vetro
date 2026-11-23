@@ -117,12 +117,24 @@ impl Agent for Antigravity {
         self.acp.authenticate(method_id).await
     }
 
+    fn options_need_session(&self) -> bool {
+        true
+    }
+
     async fn options(
         &self,
         cwd: Option<&Path>,
         selected: &BTreeMap<String, String>,
     ) -> Result<AgentOptions> {
         self.acp.options(cwd, selected).await
+    }
+
+    async fn prepare_options(
+        &self,
+        cwd: Option<&Path>,
+        selected: &BTreeMap<String, String>,
+    ) -> Result<AgentOptions> {
+        self.acp.prepare_options(cwd, selected).await
     }
 
     async fn list(&self, cursor: Option<String>) -> Result<SessionPage> {

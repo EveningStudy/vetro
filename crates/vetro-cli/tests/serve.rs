@@ -52,6 +52,28 @@ async fn serves_on_loopback_and_prints_local_url() {
         stream.read_to_string(&mut reply).await.unwrap();
         assert!(reply.starts_with("HTTP/1.1 200 "));
         assert!(reply.contains("\"ok\":true"));
+
+        let body = serde_json::json!({"token": token}).to_string();
+        let mut stream = TcpStream::connect(socket_address).await.unwrap();
+        stream.write_all(format!(
+            "POST /api/auth/local HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        ).as_bytes()).await.unwrap();
+        let mut reply = String::new();
+        stream.read_to_string(&mut reply).await.unwrap();
+        assert!(reply.starts_with("HTTP/1.1 200 "));
+        assert!(!reply.to_ascii_lowercase().contains("\r\nset-cookie:"));
+        let body: serde_json::Value = serde_json::from_str(reply.split_once("\r\n\r\n").unwrap().1).unwrap();
+        assert_eq!(body["remoteClient"], false);
+        let session = body["session"].as_str().unwrap();
+        let mut stream = TcpStream::connect(socket_address).await.unwrap();
+        stream.write_all(format!(
+            "GET /api/auth/session HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\nAuthorization: Bearer {session}\r\n\r\n"
+        ).as_bytes()).await.unwrap();
+        let mut reply = String::new();
+        stream.read_to_string(&mut reply).await.unwrap();
+        assert!(reply.starts_with("HTTP/1.1 200 "));
+        assert!(reply.contains("\"authenticated\":true"));
     })
     .await
     .unwrap();

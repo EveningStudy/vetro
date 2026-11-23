@@ -16,6 +16,7 @@ use crate::internal;
 pub(super) struct Inventory {
     pub authoritative: bool,
     pub files: HashMap<String, NativeFile>,
+    pub errors: Vec<String>,
 }
 
 pub(super) struct NativeFile {

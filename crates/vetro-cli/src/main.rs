@@ -150,7 +150,7 @@ async fn list_threads(
     children_of: Option<String>,
 ) -> Result<()> {
     if let Some(agent) = agent.as_deref() {
-        core.registry.get(agent)?;
+        core.registry().get(agent)?;
     }
     core.refresh_history().await;
     if let Some(query) = search {
@@ -159,6 +159,7 @@ async fn list_threads(
                 SearchParams {
                     query,
                     limit: Some(500),
+                    include_hidden: None,
                 },
                 agent.as_deref(),
                 children_of.as_deref(),

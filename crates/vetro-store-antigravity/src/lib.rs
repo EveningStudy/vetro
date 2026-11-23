@@ -63,6 +63,17 @@ fn internal(e: impl std::fmt::Display) -> AgentError {
     AgentError::new(ErrorCode::Internal, format!("antigravity store: {e}"))
 }
 
+fn read_error(error: rusqlite::Error) -> AgentError {
+    if matches!(
+        error.sqlite_error_code(),
+        Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+    ) {
+        AgentError::new(ErrorCode::Busy, format!("antigravity store: {error}"))
+    } else {
+        internal(error)
+    }
+}
+
 fn valid_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 128
@@ -96,6 +107,32 @@ fn has_table(conn: &Connection, name: &str) -> rusqlite::Result<bool> {
     .map(|n| n > 0)
 }
 
+fn batches<Key: rusqlite::ToSql + Clone, Value>(
+    conn: &Connection,
+    sql: &str,
+    mut after: Key,
+    mut decode: impl FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<(Key, Value)>,
+    mut consume: impl FnMut(Key, Value),
+) -> rusqlite::Result<()> {
+    const BATCH_SIZE: usize = 64;
+    let mut stmt = conn.prepare(sql)?;
+    loop {
+        let batch = stmt
+            .query_map(rusqlite::params![after, BATCH_SIZE as i64], &mut decode)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        if let Some((last, _)) = batch.last() {
+            after = last.clone();
+        }
+        let done = batch.len() < BATCH_SIZE;
+        for (key, value) in batch {
+            consume(key, value);
+        }
+        if done {
+            return Ok(());
+        }
+    }
+}
+
 fn read_summaries(path: &Path) -> rusqlite::Result<HashMap<String, Summary>> {
     let mut out = HashMap::new();
     if !path.is_file() {
@@ -105,71 +142,82 @@ fn read_summaries(path: &Path) -> rusqlite::Result<HashMap<String, Summary>> {
     if !has_table(&conn, "conversation_summaries")? {
         return Ok(out);
     }
-    let mut stmt = conn.prepare(
+    batches(
+        &conn,
         "SELECT conversation_id, title, preview, last_modified_time, workspace_uris, source, \
-         app_data_dir, parent_conversation_id, raw_summary FROM conversation_summaries",
-    )?;
-    let mut rows = stmt.query([])?;
-    while let Some(r) = rows.next()? {
-        let Some(id) = r.get::<_, Option<String>>(0)? else {
-            continue;
-        };
-        let text = |i: usize| -> rusqlite::Result<String> {
-            Ok(r.get::<_, Option<String>>(i)
-                .unwrap_or_default()
-                .unwrap_or_default())
-        };
-        let raw = r
-            .get_ref(8)?
-            .as_blob_or_null()
-            .ok()
-            .flatten()
-            .unwrap_or(&[]);
-        let raw = Msg(raw);
-        let info = raw.msg(17);
-        out.insert(
-            id,
-            Summary {
-                title: text(1)?,
-                preview: text(2)?,
-                updated_at: util::parse_time(&text(3)?)
-                    .or_else(|| raw.msg(3).and_then(timestamp_ms)),
-                created_at: raw
-                    .msg(7)
-                    .and_then(timestamp_ms)
-                    .or_else(|| info.and_then(|i| i.msg(2)).and_then(timestamp_ms)),
-                workspace: workspace_from_json(&text(4)?).or_else(|| {
-                    raw.msg(9)
-                        .and_then(|w| w.text(1))
-                        .and_then(file_uri_to_path)
-                }),
-                source: text(5)?,
-                app_data_dir: text(6)?,
-                parent: Some(text(7)?).filter(|p| !p.is_empty()),
-                role: info
-                    .and_then(|i| i.msg(8))
-                    .and_then(|s| s.text(2))
-                    .map(str::to_owned),
-            },
-        );
-    }
-    drop(rows);
-    drop(stmt);
-    if has_table(&conn, "conversation_parents")? {
-        let mut stmt =
-            conn.prepare("SELECT conversation_id, parent_id FROM conversation_parents")?;
-        let mut rows = stmt.query([])?;
-        while let Some(r) = rows.next()? {
-            let (Some(id), Some(parent)) = (
-                r.get::<_, Option<String>>(0)?,
-                r.get::<_, Option<String>>(1)?,
-            ) else {
-                continue;
+         app_data_dir, parent_conversation_id, raw_summary FROM conversation_summaries \
+         WHERE conversation_id > ?1 ORDER BY conversation_id LIMIT ?2",
+        String::new(),
+        |r| {
+            let id: String = r.get(0)?;
+            let (title, preview, modified, workspace, source, app_data_dir, parent) =
+                (1, 2, 3, 4, 5, 6, 7);
+            let text = |i: usize| -> rusqlite::Result<String> {
+                Ok(r.get::<_, Option<String>>(i)
+                    .unwrap_or_default()
+                    .unwrap_or_default())
             };
-            if let Some(s) = out.get_mut(&id).filter(|_| !parent.is_empty()) {
-                s.parent = Some(parent);
-            }
-        }
+            Ok((
+                id,
+                (
+                    text(title)?,
+                    text(preview)?,
+                    text(modified)?,
+                    text(workspace)?,
+                    text(source)?,
+                    text(app_data_dir)?,
+                    text(parent)?,
+                    r.get::<_, Option<Vec<u8>>>(8)
+                        .unwrap_or_default()
+                        .unwrap_or_default(),
+                ),
+            ))
+        },
+        |id, (title, preview, modified, workspace, source, app_data_dir, parent, raw)| {
+            let raw = Msg(&raw);
+            let info = raw.msg(17);
+            out.insert(
+                id,
+                Summary {
+                    title,
+                    preview,
+                    updated_at: util::parse_time(&modified)
+                        .or_else(|| raw.msg(3).and_then(timestamp_ms)),
+                    created_at: raw
+                        .msg(7)
+                        .and_then(timestamp_ms)
+                        .or_else(|| info.and_then(|i| i.msg(2)).and_then(timestamp_ms)),
+                    workspace: workspace_from_json(&workspace).or_else(|| {
+                        raw.msg(9)
+                            .and_then(|w| w.text(1))
+                            .and_then(file_uri_to_path)
+                    }),
+                    source,
+                    app_data_dir,
+                    parent: Some(parent).filter(|p| !p.is_empty()),
+                    role: info
+                        .and_then(|i| i.msg(8))
+                        .and_then(|s| s.text(2))
+                        .map(str::to_owned),
+                },
+            );
+        },
+    )?;
+    if has_table(&conn, "conversation_parents")? {
+        batches(
+            &conn,
+            "SELECT conversation_id, parent_id FROM conversation_parents
+            WHERE conversation_id > ?1 ORDER BY conversation_id LIMIT ?2",
+            String::new(),
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+            |id, parent| {
+                if let Some(summary) = out.get_mut(&id) {
+                    if let Some(parent) = parent.filter(|parent| !parent.is_empty()) {
+                        summary.parent = Some(parent);
+                    }
+                }
+            },
+        )?;
     }
     Ok(out)
 }
@@ -264,20 +312,28 @@ fn cli_modes(root: &Path) -> HashMap<String, CliMode> {
 fn read_steps(path: &Path) -> rusqlite::Result<Vec<vetro_agent_api::ItemDraft>> {
     let conn = sqlite::open_readonly(path)?;
     let mut builder = steps::Builder::default();
-    let mut stmt = conn.prepare(
-        "SELECT idx, step_type, status, step_payload, error_details FROM steps ORDER BY idx",
+    batches(
+        &conn,
+        "SELECT idx, step_type, status, step_payload, error_details FROM steps
+         WHERE idx > ?1 ORDER BY idx LIMIT ?2",
+        i64::MIN,
+        |row| {
+            Ok((
+                row.get(0)?,
+                (
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get::<_, Option<Vec<u8>>>(3)
+                        .unwrap_or_default()
+                        .unwrap_or_default(),
+                    row.get::<_, Option<Vec<u8>>>(4).unwrap_or_default(),
+                ),
+            ))
+        },
+        |idx, (kind, status, payload, error)| {
+            builder.step(idx, kind, status, &payload, error.as_deref());
+        },
     )?;
-    let mut rows = stmt.query([])?;
-    while let Some(r) = rows.next()? {
-        let payload = r
-            .get_ref(3)?
-            .as_blob_or_null()
-            .ok()
-            .flatten()
-            .unwrap_or(&[]);
-        let error = r.get_ref(4)?.as_blob_or_null().ok().flatten();
-        builder.step(r.get(0)?, r.get(1)?, r.get(2)?, payload, error);
-    }
     Ok(builder.finish())
 }
 
@@ -327,7 +383,7 @@ impl Store {
     /// also lists conversations of the sibling store; those are left to that store.
     pub fn list(&self) -> Result<Vec<SessionRecord>> {
         let summaries =
-            read_summaries(&self.root.join("conversation_summaries.db")).unwrap_or_default();
+            read_summaries(&self.root.join("conversation_summaries.db")).map_err(read_error)?;
         let modes = match self.kind {
             StoreKind::Cli => cli_modes(&self.root),
             StoreKind::Desktop => HashMap::new(),
@@ -437,10 +493,7 @@ impl Store {
                 format!("conversation {conversation_id} not found"),
             ));
         }
-        // An immutable read can race with a checkpoint by the app; one retry sees the new state.
-        let items = read_steps(&path)
-            .or_else(|_| read_steps(&path))
-            .map_err(internal)?;
+        let items = read_steps(&path).map_err(read_error)?;
         Ok(Transcript { items })
     }
 }

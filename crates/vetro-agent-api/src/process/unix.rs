@@ -10,6 +10,9 @@ use tokio::process::{ChildStderr, ChildStdin, ChildStdout, Command};
 
 use super::SpawnSpec;
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod descendants;
+
 pub(super) struct Tree(Mutex<Option<PipeWriter>>);
 
 impl Tree {
@@ -54,10 +57,13 @@ pub(super) fn spawn(
         command.current_dir(cwd);
     }
     unsafe {
-        command.pre_exec(move || match libc::fork() {
-            -1 => Err(io::Error::last_os_error()),
-            0 => watch_parent(watchdog_fd.as_raw_fd(), max_fd as libc::c_int),
-            _ => Ok(()),
+        command.pre_exec(move || {
+            let leader = libc::getpid();
+            match libc::fork() {
+                -1 => Err(io::Error::last_os_error()),
+                0 => watch_parent(watchdog_fd.as_raw_fd(), max_fd as libc::c_int, leader),
+                _ => Ok(()),
+            }
         });
     }
     let mut child = command.spawn()?;
@@ -72,7 +78,7 @@ pub(super) fn spawn(
 }
 
 /// The pre-exec watchdog stays in the child group. EOF also detects SIGKILL of Vetro.
-unsafe fn watch_parent(watchdog_fd: libc::c_int, max_fd: libc::c_int) -> ! {
+unsafe fn watch_parent(watchdog_fd: libc::c_int, max_fd: libc::c_int, _leader: libc::pid_t) -> ! {
     if libc::dup2(watchdog_fd, libc::STDIN_FILENO) == -1 {
         libc::kill(0, libc::SIGKILL);
         libc::_exit(1);
@@ -81,13 +87,25 @@ unsafe fn watch_parent(watchdog_fd: libc::c_int, max_fd: libc::c_int) -> ! {
     let mut signals = std::mem::zeroed();
     libc::sigfillset(&mut signals);
     libc::sigprocmask(libc::SIG_SETMASK, &signals, std::ptr::null_mut());
-    let mut byte = 0u8;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let mut descendants = descendants::Tracker::new(_leader);
+    let mut lifetime = libc::pollfd {
+        fd: libc::STDIN_FILENO,
+        events: libc::POLLIN,
+        revents: 0,
+    };
     loop {
-        let read = libc::read(libc::STDIN_FILENO, (&mut byte as *mut u8).cast(), 1);
-        if read >= 0 || io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        descendants.refresh();
+        let ready = libc::poll(&mut lifetime, 1, 50);
+        if ready > 0
+            || (ready < 0 && io::Error::last_os_error().raw_os_error() != Some(libc::EINTR))
+        {
             break;
         }
     }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    descendants.terminate();
     libc::kill(0, libc::SIGKILL);
     libc::_exit(1);
 }

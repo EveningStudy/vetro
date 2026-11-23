@@ -9,7 +9,7 @@ mod session;
 use std::{
     collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, Weak},
+    sync::{Arc, Mutex, OnceLock, Weak},
     time::Duration,
 };
 
@@ -130,7 +130,7 @@ impl Agent for CodexAgent {
         };
         match self.app().await {
             Ok(app) => {
-                info.version.clone_from(&app.version);
+                info.version = app.version.get().cloned();
                 match app
                     .call("account/read", json!({ "refreshToken": false }))
                     .await
@@ -340,7 +340,7 @@ struct AppState {
 
 struct App {
     peer: Peer,
-    version: Option<String>,
+    version: OnceLock<String>,
     state: Mutex<AppState>,
 }
 
@@ -361,38 +361,65 @@ impl App {
         });
         let (process, stdout) = Process::spawn(spawn, Arc::new(log))
             .map_err(|error| unavailable(format!("Could not start Codex: {error}")))?;
-        let (peer, incoming) = Peer::new(process, stdout, Version::Bare);
-        let result = call(&peer, "initialize", json!({
+        let (peer, incoming) = Peer::new_ordered(process, stdout, Version::Bare);
+        let app = Arc::new(Self {
+            peer,
+            version: OnceLock::new(),
+            state: Mutex::default(),
+        });
+        tokio::spawn(Self::dispatch(Arc::downgrade(&app), incoming));
+        let result = app.call("initialize", json!({
             "clientInfo": {"name": "vetro", "title": "Vetro", "version": env!("CARGO_PKG_VERSION")},
             "capabilities": {"experimentalApi": true},
         })).await;
         let result = match result {
             Ok(result) => result,
             Err(mut error) => {
-                error.message.push_str(&peer.exit_detail().await);
+                error.message.push_str(&app.peer.exit_detail().await);
                 return Err(error);
             }
         };
-        if let Err(error) = peer.notify("initialized", None).await {
+        if let Err(error) = app.peer.notify("initialized", None).await {
             let mut error = transport_error(error);
-            error.message.push_str(&peer.exit_detail().await);
+            error.message.push_str(&app.peer.exit_detail().await);
             return Err(error);
         }
         let version = result["userAgent"]
             .as_str()
             .and_then(|agent| agent.split_whitespace().next()?.split_once('/'))
             .map(|(_, version)| version.to_owned());
-        let app = Arc::new(Self {
-            peer,
-            version,
-            state: Mutex::default(),
-        });
-        tokio::spawn(Self::dispatch(Arc::downgrade(&app), incoming));
+        if let Some(version) = version {
+            let _ = app.version.set(version);
+        }
         Ok(app)
     }
 
     async fn call(&self, method: &str, params: Value) -> Result<Value> {
         call(&self.peer, method, params).await
+    }
+
+    async fn call_ordered(
+        &self,
+        method: &str,
+        params: Value,
+        receive: impl FnOnce(&std::result::Result<Value, jsonrpc::Error>) + Send + 'static,
+    ) -> Result<Value> {
+        tokio::time::timeout(
+            TIMEOUT,
+            self.peer.request_with(method, Some(params), receive),
+        )
+        .await
+        .map_err(|_| unavailable(format!("Codex {method} timed out")))?
+        .map_err(transport_error)
+    }
+
+    fn live(&self, id: &str) -> Option<Arc<Live>> {
+        self.state
+            .lock()
+            .unwrap()
+            .threads
+            .get(id)
+            .and_then(Weak::upgrade)
     }
 
     async fn transcript(&self, thread_id: &str) -> Result<Transcript> {
@@ -480,6 +507,7 @@ impl App {
         while let Some(message) = incoming.recv().await {
             let Some(app) = app.upgrade() else { return };
             match message {
+                Incoming::Response { id, envelope } => app.peer.complete(id, envelope),
                 Incoming::Notification { method, params } => {
                     let params = params.unwrap_or_default();
                     let mut state = app.state.lock().unwrap();
@@ -544,6 +572,7 @@ impl App {
             }
         }
         if let Some(app) = app.upgrade() {
+            app.peer.finish_incoming();
             let status = tokio::time::timeout(Duration::from_millis(300), app.peer.wait()).await;
             app.close(Some(match status {
                 Ok(Ok(status)) => format!("Codex app-server exited ({status})"),

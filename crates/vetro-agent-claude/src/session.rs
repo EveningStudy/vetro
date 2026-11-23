@@ -137,7 +137,7 @@ impl ClaudeSession {
         Ok(())
     }
 
-    pub fn metadata(&self) -> (Value, AgentOptions) {
+    pub fn metadata(&self, selected: &BTreeMap<String, String>) -> (Value, AgentOptions) {
         let state = self.state.lock().unwrap();
         (
             json!({
@@ -148,7 +148,7 @@ impl ClaudeSession {
                 },
             }),
             AgentOptions {
-                options: state.options(),
+                options: state.options_for(selected),
                 commands: state.commands.clone(),
             },
         )
@@ -504,6 +504,12 @@ impl State {
     }
 
     fn options(&self) -> Vec<ConfigOption> {
+        self.options_for(&BTreeMap::new())
+    }
+
+    fn options_for(&self, selected: &BTreeMap<String, String>) -> Vec<ConfigOption> {
+        let current_model = selected.get("model").unwrap_or(&self.model);
+        let mode = selected.get("mode").unwrap_or(&self.mode);
         let mut options = Vec::new();
         let models = self.initialize["models"].as_array();
         if let Some(models) = models {
@@ -523,37 +529,49 @@ impl State {
                 "model",
                 "Model",
                 ConfigCategory::Model,
-                &self.model,
+                current_model,
                 choices,
             ));
             let model = models
                 .iter()
-                .find(|model| model["value"] == self.model)
+                .find(|model| model["value"] == *current_model)
                 .or_else(|| {
                     models
                         .iter()
-                        .find(|model| model["resolvedModel"] == self.model)
+                        .find(|model| model["resolvedModel"] == *current_model)
                 });
             let levels = model.and_then(|model| model["supportedEffortLevels"].as_array());
             if let Some(levels) = levels.filter(|levels| !levels.is_empty()) {
-                let choices = levels
+                let current = selected.get("effort").unwrap_or(&self.effort);
+                let default = model.and_then(|model| model["defaultEffortLevel"].as_str());
+                let effort_value = levels
+                    .iter()
+                    .find(|level| level.as_str() == Some(current))
+                    .and_then(Value::as_str)
+                    .or(default)
+                    .unwrap_or("default");
+                let mut choices: Vec<_> = levels
                     .iter()
                     .filter_map(Value::as_str)
                     .map(choice)
                     .collect();
+                if !choices.iter().any(|choice| choice.value == effort_value) {
+                    choices.insert(0, choice(effort_value));
+                }
                 let mut effort = option(
                     "effort",
                     "Effort",
                     ConfigCategory::ThoughtLevel,
-                    &self.effort,
+                    effort_value,
                     choices,
                 );
                 effort.description = Some("Applies when starting a session".into());
                 options.push(effort);
             }
         }
-        if !self.mode.is_empty() {
+        if !mode.is_empty() {
             let modes = [
+                "default",
                 "manual",
                 "acceptEdits",
                 "plan",
@@ -566,7 +584,7 @@ impl State {
                 "mode",
                 "Permission mode",
                 ConfigCategory::Mode,
-                &self.mode,
+                mode,
                 choices,
             ));
         }

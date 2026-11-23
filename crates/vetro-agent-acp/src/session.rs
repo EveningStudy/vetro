@@ -5,7 +5,7 @@ use std::{
         atomic::{AtomicU64, Ordering},
         Arc, Mutex, OnceLock,
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use serde_json::{json, Value};
@@ -38,6 +38,7 @@ pub(crate) struct AcpSession {
     steering: bool,
     pub can_close: bool,
     outbound: AsyncMutex<()>,
+    responses: AsyncMutex<()>,
     state: Mutex<State>,
     initial_options: OnceLock<AgentOptions>,
     log: Arc<WireLog>,
@@ -118,6 +119,7 @@ impl AcpSession {
             steering: capabilities.steering,
             can_close: capabilities.close,
             outbound: AsyncMutex::new(()),
+            responses: AsyncMutex::new(()),
             initial_options: OnceLock::new(),
             log,
             state: Mutex::new(State {
@@ -155,7 +157,12 @@ impl AcpSession {
         self.initial_options.get_or_init(|| self.options());
     }
 
-    async fn submit_prompt(self: &Arc<Self>, params: Value, retry: bool) -> Result<()> {
+    async fn submit_prompt(
+        self: &Arc<Self>,
+        params: Value,
+        turn_id: String,
+        retry: bool,
+    ) -> Result<()> {
         let session = Arc::downgrade(self);
         let retry_params = retry.then(|| params.clone());
         self.connection
@@ -167,27 +174,32 @@ impl AcpSession {
                     if error.code == -32000 {
                         session.connection.observe_auth("session/prompt", &reply);
                         tokio::spawn(async move {
-                            if matches!(session.connection.recover_auth().await, Ok(true))
-                                && session.submit_prompt_once(params).await.is_ok()
+                            if session.has_turn(&turn_id)
+                                && matches!(session.connection.recover_auth().await, Ok(true))
+                                && session.has_turn(&turn_id)
+                                && session
+                                    .submit_prompt_once(params, turn_id.clone())
+                                    .await
+                                    .is_ok()
                             {
                                 return;
                             }
-                            session.complete_prompt(reply);
+                            session.complete_prompt(&turn_id, reply);
                         });
                         return;
                     }
                 }
-                session.complete_prompt(reply);
+                session.complete_prompt(&turn_id, reply);
             })
             .await
     }
 
-    async fn submit_prompt_once(self: &Arc<Self>, params: Value) -> Result<()> {
+    async fn submit_prompt_once(self: &Arc<Self>, params: Value, turn_id: String) -> Result<()> {
         let session = Arc::downgrade(self);
         self.connection
             .submit("session/prompt", params, move |reply| {
                 if let Some(session) = session.upgrade() {
-                    session.complete_prompt(reply);
+                    session.complete_prompt(&turn_id, reply);
                 }
             })
             .await
@@ -325,9 +337,21 @@ impl AcpSession {
         Ok(None)
     }
 
-    fn complete_prompt(&self, reply: Reply) {
+    fn has_turn(&self, turn_id: &str) -> bool {
+        self.state
+            .lock()
+            .unwrap()
+            .turn
+            .as_ref()
+            .is_some_and(|turn| turn.id == turn_id)
+    }
+
+    fn complete_prompt(&self, turn_id: &str, reply: Reply) {
         self.connection.observe_auth("session/prompt", &reply);
         let mut state = self.state.lock().unwrap();
+        if state.turn.as_ref().is_none_or(|turn| turn.id != turn_id) {
+            return;
+        }
         if matches!(&reply, Err(Error::Remote(error)) if error.code == -32000) {
             state.emit(SessionEvent::AuthRequired);
         }
@@ -338,8 +362,6 @@ impl AcpSession {
         if turn.pending > 0 {
             return;
         }
-        state.flush_user();
-        state.end_message();
         let reason = match &reply {
             Ok(value) => match value["stopReason"].as_str() {
                 Some("cancelled" | "canceled") => StopReason::Cancelled,
@@ -365,6 +387,12 @@ impl AcpSession {
                 state.upsert(draft);
             }
         }
+        Self::finish_prompt(&mut state, reason);
+    }
+
+    fn finish_prompt(state: &mut State, reason: StopReason) {
+        state.flush_user();
+        state.end_message();
         let turn = state.turn.as_ref().unwrap();
         let draft = state.draft(
             format!("{}:end", turn.id),
@@ -393,6 +421,35 @@ impl AcpSession {
             let _ = self.respond(&id, RequestResolution::Cancelled).await;
         }
     }
+
+    async fn respond_pending(&self, id: &str, resolution: RequestResolution) -> Result<()> {
+        let _response = self.responses.lock().await;
+        let (wire_id, reply) = {
+            let state = self.state.lock().unwrap();
+            state.ensure_open()?;
+            let pending = state
+                .interactions
+                .get(id)
+                .ok_or_else(|| AgentError::new(ErrorCode::NotFound, "Unknown ACP interaction"))?;
+            let ItemKind::Request(request) = &pending.draft.kind else {
+                unreachable!()
+            };
+            (
+                pending.wire_id.clone(),
+                pending.protocol.reply(&request.body, &resolution)?,
+            )
+        };
+        self.connection.respond(wire_id, Ok(reply)).await?;
+        let mut state = self.state.lock().unwrap();
+        if let Some(mut pending) = state.interactions.remove(id) {
+            if let ItemKind::Request(request) = &mut pending.draft.kind {
+                request.resolution = Some(resolution);
+            }
+            state.upsert(pending.draft.clone());
+            state.status_after_input(false);
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -420,7 +477,7 @@ impl Session for AcpSession {
             .connection
             .session(&self.id)
             .ok_or_else(|| agent_error(Error::Closed))?;
-        {
+        let turn_id = {
             let mut state = self.state.lock().unwrap();
             state.ensure_open()?;
             if state.turn.is_some() && !self.steering {
@@ -444,18 +501,39 @@ impl Session for AcpSession {
                 });
             }
             state.status_after_input(false);
-        }
+            state.turn.as_ref().unwrap().id.clone()
+        };
         session
-            .submit_prompt(json!({ "sessionId": self.id, "prompt": prompt }), true)
+            .submit_prompt(
+                json!({ "sessionId": self.id, "prompt": prompt }),
+                turn_id,
+                true,
+            )
             .await
     }
 
     async fn interrupt(&self) -> Result<()> {
         let _outbound = self.outbound.lock().await;
-        self.state.lock().unwrap().ensure_open()?;
+        let turn_id = {
+            let state = self.state.lock().unwrap();
+            state.ensure_open()?;
+            state.turn.as_ref().map(|turn| turn.id.clone())
+        };
         self.connection
             .notify("session/cancel", json!({ "sessionId": self.id }))
             .await?;
+        if let (Some(turn_id), Some(session)) = (turn_id, self.connection.session(&self.id)) {
+            let session = Arc::downgrade(&session);
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                if let Some(session) = session.upgrade() {
+                    let mut state = session.state.lock().unwrap();
+                    if state.turn.as_ref().is_some_and(|turn| turn.id == turn_id) {
+                        Self::finish_prompt(&mut state, StopReason::Cancelled);
+                    }
+                }
+            });
+        }
         self.cancel_interactions().await;
         Ok(())
     }
@@ -493,26 +571,14 @@ impl Session for AcpSession {
     }
 
     async fn respond(&self, id: &str, resolution: RequestResolution) -> Result<()> {
-        let (pending, reply) = {
-            let mut state = self.state.lock().unwrap();
-            state.ensure_open()?;
-            let pending = state
-                .interactions
-                .get(id)
-                .ok_or_else(|| AgentError::new(ErrorCode::NotFound, "Unknown ACP interaction"))?;
-            let ItemKind::Request(request) = &pending.draft.kind else {
-                unreachable!()
-            };
-            let reply = pending.protocol.reply(&request.body, &resolution)?;
-            let mut pending = state.interactions.remove(id).unwrap();
-            if let ItemKind::Request(request) = &mut pending.draft.kind {
-                request.resolution = Some(resolution);
-            }
-            state.upsert(pending.draft.clone());
-            state.status_after_input(false);
-            (pending, reply)
-        };
-        self.connection.respond(pending.wire_id, Ok(reply)).await
+        let session = self
+            .connection
+            .session(&self.id)
+            .ok_or_else(|| agent_error(Error::Closed))?;
+        let id = id.to_owned();
+        tokio::spawn(async move { session.respond_pending(&id, resolution).await })
+            .await
+            .map_err(|error| AgentError::new(ErrorCode::Internal, error.to_string()))?
     }
 
     async fn detach(&self) {

@@ -149,9 +149,7 @@ impl Connection {
         if let Some(session) = dispatch.sessions.get(id).and_then(Weak::upgrade) {
             session.update(&params["update"]);
         } else if let Some(updates) = &mut dispatch.early_updates {
-            if updates.len() < 256 {
-                updates.push_back((id.to_owned(), params["update"].clone()));
-            }
+            updates.push_back((id.to_owned(), params["update"].clone()));
         }
     }
 

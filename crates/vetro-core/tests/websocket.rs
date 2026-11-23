@@ -117,6 +117,14 @@ fn fake_tailscale(port: &str) {
 }
 
 async fn exercise(path: &Path, cwd: &Path, fake_bin: &Path, marker_port: u16) {
+    fs::create_dir(path.join(".vetro")).unwrap();
+    fs::write(
+        path.join(".vetro/config.json"),
+        json!({
+            "agents": {"fake": {"enabled": true, "extraArgs": ["--fixture"], "env": {"CUSTOM": "local-value"}}},
+            "customAcpAgents": [{"id": "example", "name": "Example", "command": "example", "env": {"CUSTOM": "custom-value"}}]
+        }).to_string(),
+    ).unwrap();
     let fake = Arc::new(Fake {
         cwd: cwd.to_owned(),
         prompts: Default::default(),
@@ -204,7 +212,18 @@ async fn exercise(path: &Path, cwd: &Path, fake_bin: &Path, marker_port: u16) {
             .status,
         401
     );
-    assert_eq!(socket_error(addr, None, &origin).await, 401);
+    let mut unauthenticated = Client::connect(addr, "", &origin).await;
+    assert_eq!(
+        unauthenticated.request("threads.list", json!({})).await["error"]["code"],
+        "unauthorized"
+    );
+    assert_eq!(
+        unauthenticated.request("app.hello", hello()).await["error"]["code"],
+        "unauthorized"
+    );
+    unauthenticated
+        .wait_closed_within(Duration::from_secs(6))
+        .await;
     assert_eq!(
         http(
             addr,
@@ -226,17 +245,14 @@ async fn exercise(path: &Path, cwd: &Path, fake_bin: &Path, marker_port: u16) {
     )
     .await;
     assert_eq!(local.status, 200);
-    let cookie = local.cookie.unwrap();
-    assert_eq!(
-        socket_error(addr, Some(&cookie), "http://untrusted.test").await,
-        403
-    );
+    let session = local.body["session"].as_str().unwrap().to_owned();
+    assert_eq!(socket_error(addr, "http://untrusted.test").await, 403);
     assert_eq!(
         http(
             addr,
             "GET",
             "/api/auth/session",
-            &[("Cookie", &cookie)],
+            &[("Authorization", &format!("Bearer {session}"))],
             None
         )
         .await
@@ -244,8 +260,8 @@ async fn exercise(path: &Path, cwd: &Path, fake_bin: &Path, marker_port: u16) {
         false
     );
 
-    let mut first = Client::connect(addr, &cookie, &origin).await;
-    let mut second = Client::connect(addr, &cookie, &origin).await;
+    let mut first = Client::connect(addr, &session, &origin).await;
+    let mut second = Client::connect(addr, &session, &origin).await;
     assert_eq!(first.call("app.hello", hello()).await["protocolVersion"], 1);
     second.call("app.hello", hello()).await;
     let agents = first.call("agents.list", json!({})).await;
@@ -253,6 +269,15 @@ async fn exercise(path: &Path, cwd: &Path, fake_bin: &Path, marker_port: u16) {
     let options = first
         .call("agents.options", json!({"agentId": "fake", "cwd": cwd}))
         .await;
+    assert_eq!(options["needsSession"], true);
+    assert_eq!(fake.option_reads.load(Ordering::Relaxed), 0);
+    let options = first
+        .call(
+            "agents.options",
+            json!({"agentId": "fake", "cwd": cwd, "prepare": true}),
+        )
+        .await;
+    assert_eq!(options["needsSession"], false);
     assert_eq!(options["options"][0]["currentValue"], "native");
     let remote_headers = [("Host", REMOTE_HOST), ("Origin", REMOTE_ORIGIN)];
     assert_eq!(
@@ -288,7 +313,11 @@ async fn exercise(path: &Path, cwd: &Path, fake_bin: &Path, marker_port: u16) {
         .status,
         403
     );
-    assert_eq!(socket_error(addr, Some(&cookie), REMOTE_ORIGIN).await, 401);
+    let mut wrong_host = Client::connect(addr, &session, REMOTE_ORIGIN).await;
+    assert_eq!(
+        wrong_host.request("app.hello", hello()).await["error"]["code"],
+        "unauthorized"
+    );
     let pairing = first.call("remote.createPairing", json!({})).await;
     assert_eq!(
         pairing["url"],
@@ -307,11 +336,8 @@ async fn exercise(path: &Path, cwd: &Path, fake_bin: &Path, marker_port: u16) {
     )
     .await;
     assert_eq!(paired.status, 200);
-    assert!(paired.cookie_attributes.contains("; Secure"));
-    assert!(paired.cookie_attributes.contains("; HttpOnly"));
-    assert!(paired.cookie_attributes.contains("; SameSite=Strict"));
-    let paired_cookie = paired.cookie.unwrap();
-    let token = paired_cookie.split_once('.').unwrap().1;
+    let paired_session = paired.body["session"].as_str().unwrap();
+    let token = paired_session.split_once('.').unwrap().1;
     let persisted = fs::read_to_string(path.join(".vetro/state.json")).unwrap();
     assert!(!persisted.contains(token));
     assert!(persisted.contains("sha256:"));
@@ -327,10 +353,36 @@ async fn exercise(path: &Path, cwd: &Path, fake_bin: &Path, marker_port: u16) {
         .status,
         401
     );
-    let mut remote = Client::connect(addr, &paired_cookie, REMOTE_ORIGIN).await;
+    let mut remote = Client::connect(addr, paired_session, REMOTE_ORIGIN).await;
     assert_eq!(
         remote.call("app.hello", hello()).await["remoteClient"],
         true
+    );
+    let local_settings = first.call("settings.get", json!({})).await;
+    let remote_settings = remote.call("settings.get", json!({})).await;
+    assert_eq!(
+        local_settings["agents"]["fake"]["env"]["CUSTOM"],
+        "local-value"
+    );
+    assert_eq!(remote_settings["agents"]["fake"]["env"]["CUSTOM"], "***");
+    assert_eq!(
+        remote_settings["customAcpAgents"][0]["env"]["CUSTOM"],
+        "***"
+    );
+    assert_eq!(
+        remote_settings["agents"]["fake"]["extraArgs"],
+        json!(["--fixture"])
+    );
+    first
+        .call("prefs.set", json!({"prefs": {"theme": "dark"}}))
+        .await;
+    assert!(remote.call("prefs.get", json!({})).await["prefs"].is_null());
+    remote
+        .call("prefs.set", json!({"prefs": {"theme": "light"}}))
+        .await;
+    assert_eq!(
+        second.call("prefs.get", json!({})).await["prefs"]["theme"],
+        "dark"
     );
     let devices = remote.call("remote.status", json!({})).await;
     assert_eq!(devices["devices"][0]["current"], true);
@@ -347,6 +399,13 @@ async fn exercise(path: &Path, cwd: &Path, fake_bin: &Path, marker_port: u16) {
         ("settings.update", json!({"patch": {}})),
         ("fs.list", json!({"path": path})),
         ("fs.find", json!({"cwd": path, "query": "sentinel"})),
+        ("agents.options", json!({"agentId": "fake", "cwd": path})),
+        ("agents.authenticate", json!({})),
+        ("projects.add", json!({"path": cwd})),
+        (
+            "threads.start",
+            json!({"agentId": "fake", "cwd": path, "content": [], "options": {}}),
+        ),
     ] {
         assert_eq!(
             remote.request(method, params).await["error"]["code"],
@@ -354,6 +413,12 @@ async fn exercise(path: &Path, cwd: &Path, fake_bin: &Path, marker_port: u16) {
         );
     }
     assert!(remote.call("fs.list", json!({"path": cwd})).await["parent"].is_null());
+    assert_eq!(
+        remote
+            .call("agents.options", json!({"agentId": "fake", "cwd": cwd}))
+            .await["needsSession"],
+        false
+    );
     first
         .call(
             "remote.revokeDevice",
@@ -361,9 +426,10 @@ async fn exercise(path: &Path, cwd: &Path, fake_bin: &Path, marker_port: u16) {
         )
         .await;
     remote.wait_closed().await;
+    let mut revoked = Client::connect(addr, paired_session, REMOTE_ORIGIN).await;
     assert_eq!(
-        socket_error(addr, Some(&paired_cookie), REMOTE_ORIGIN).await,
-        401
+        revoked.request("app.hello", hello()).await["error"]["code"],
+        "unauthorized"
     );
     for _ in 0..8 {
         assert_eq!(
@@ -380,11 +446,47 @@ async fn exercise(path: &Path, cwd: &Path, fake_bin: &Path, marker_port: u16) {
         );
     }
     assert_eq!(
-        http(addr, "POST", "/api/auth/pair", &remote_headers, Some(pair))
-            .await
-            .status,
+        http(
+            addr,
+            "POST",
+            "/api/auth/pair",
+            &remote_headers,
+            Some(pair.clone())
+        )
+        .await
+        .status,
         429
     );
+    let other_peer = [
+        remote_headers[0],
+        remote_headers[1],
+        ("X-Forwarded-For", "100.64.0.5"),
+    ];
+    assert_eq!(
+        http(addr, "POST", "/api/auth/pair", &other_peer, Some(pair))
+            .await
+            .status,
+        401
+    );
+    let replacement = first.call("remote.createPairing", json!({})).await;
+    let replacement_device = http(
+        addr,
+        "POST",
+        "/api/auth/pair",
+        &remote_headers,
+        Some(json!({"code": replacement["code"], "deviceName": "Replacement"})),
+    )
+    .await;
+    assert_eq!(replacement_device.status, 200);
+    let replacement_id = replacement_device.body["session"]
+        .as_str()
+        .unwrap()
+        .split_once('.')
+        .unwrap()
+        .0;
+    first
+        .call("remote.revokeDevice", json!({"deviceId": replacement_id}))
+        .await;
     let disabled = first
         .call(
             "remote.set",
@@ -500,7 +602,7 @@ async fn exercise(path: &Path, cwd: &Path, fake_bin: &Path, marker_port: u16) {
         .await;
     let original = second.call("threads.open", json!({"threadId": id})).await;
     drop(second);
-    let mut second = Client::connect(addr, &cookie, &origin).await;
+    let mut second = Client::connect(addr, &session, &origin).await;
     second.call("app.hello", hello()).await;
     let reopened = second.call("threads.open", json!({"threadId": id})).await;
     assert_eq!(original, reopened);
@@ -645,6 +747,24 @@ async fn exercise(path: &Path, cwd: &Path, fake_bin: &Path, marker_port: u16) {
         .call("search.threads", json!({"query": "Renamed"}))
         .await;
     assert_eq!(hits["hits"][0]["snippet"], "<mark>Renamed</mark>");
+    first.call("projects.add", json!({"path": path})).await;
+    first
+        .call("projects.update", json!({"path": path, "hidden": true}))
+        .await;
+    assert_eq!(
+        first
+            .call("search.threads", json!({"query": "Renamed", "limit": 1}))
+            .await["hits"],
+        json!([])
+    );
+    let hidden = first
+        .call(
+            "search.threads",
+            json!({"query": "Renamed", "includeHidden": true}),
+        )
+        .await;
+    assert_eq!(hidden["hits"][0]["thread"]["id"], "fake:history");
+    first.call("projects.remove", json!({"path": path})).await;
     first
         .call(
             "threads.update",
@@ -739,7 +859,7 @@ async fn exercise(path: &Path, cwd: &Path, fake_bin: &Path, marker_port: u16) {
     assert_eq!(home.local_token(), local_token);
     assert_eq!(fake.option_reads.load(Ordering::Relaxed), 1);
     let state = fs::read_to_string(home.root().join("state.json")).unwrap();
-    assert!(!state.contains(cookie.split_once('=').unwrap().1));
+    assert!(!state.contains(&session));
     assert_eq!(
         serde_json::from_str::<Value>(&state).unwrap()["threads"][id]["options"]["model"],
         "updated"
@@ -752,9 +872,17 @@ async fn exercise(path: &Path, cwd: &Path, fake_bin: &Path, marker_port: u16) {
     let serving = tokio::spawn(restarted.serve(async {
         let _ = shutdown.await;
     }));
-    let mut resumed =
-        Client::connect(restarted_addr, &cookie, &format!("http://{restarted_addr}")).await;
+    let mut resumed = Client::connect(
+        restarted_addr,
+        &session,
+        &format!("http://{restarted_addr}"),
+    )
+    .await;
     resumed.call("app.hello", hello()).await;
+    assert_eq!(
+        resumed.call("prefs.get", json!({})).await["prefs"]["theme"],
+        "dark"
+    );
     resumed
         .call("agents.options", json!({"agentId": "fake", "cwd": cwd}))
         .await;
@@ -771,17 +899,17 @@ struct Client {
     socket: WebSocketStream<MaybeTlsStream<TcpStream>>,
     next_id: u64,
     events: VecDeque<Value>,
+    session: String,
 }
 
 impl Client {
-    async fn connect(addr: SocketAddr, cookie: &str, origin: &str) -> Self {
-        let (socket, _) = connect_async(ws_request(addr, Some(cookie), origin))
-            .await
-            .unwrap();
+    async fn connect(addr: SocketAddr, session: &str, origin: &str) -> Self {
+        let (socket, _) = connect_async(ws_request(addr, origin)).await.unwrap();
         Self {
             socket,
             next_id: 0,
             events: VecDeque::new(),
+            session: session.into(),
         }
     }
 
@@ -791,7 +919,11 @@ impl Client {
     }
 
     async fn wait_closed(&mut self) {
-        tokio::time::timeout(Duration::from_secs(2), async {
+        self.wait_closed_within(Duration::from_secs(2)).await;
+    }
+
+    async fn wait_closed_within(&mut self, timeout: Duration) {
+        tokio::time::timeout(timeout, async {
             while let Some(Ok(message)) = self.socket.next().await {
                 if matches!(message, Message::Close(_)) {
                     break;
@@ -807,7 +939,10 @@ impl Client {
         self.recv_response(id).await
     }
 
-    async fn send_request(&mut self, method: &str, params: Value) -> u64 {
+    async fn send_request(&mut self, method: &str, mut params: Value) -> u64 {
+        if method == "app.hello" {
+            params["session"] = json!(self.session);
+        }
         self.next_id += 1;
         let id = self.next_id;
         self.socket
@@ -877,7 +1012,6 @@ impl Client {
 
 fn ws_request(
     addr: SocketAddr,
-    cookie: Option<&str>,
     origin: &str,
 ) -> tokio_tungstenite::tungstenite::handshake::client::Request {
     let mut request = format!("ws://{addr}/api/ws").into_client_request().unwrap();
@@ -889,19 +1023,11 @@ fn ws_request(
             .headers_mut()
             .insert("host", HeaderValue::from_static(REMOTE_HOST));
     }
-    if let Some(cookie) = cookie {
-        request
-            .headers_mut()
-            .insert("cookie", HeaderValue::from_str(cookie).unwrap());
-    }
     request
 }
 
-async fn socket_error(addr: SocketAddr, cookie: Option<&str>, origin: &str) -> u16 {
-    match connect_async(ws_request(addr, cookie, origin))
-        .await
-        .unwrap_err()
-    {
+async fn socket_error(addr: SocketAddr, origin: &str) -> u16 {
+    match connect_async(ws_request(addr, origin)).await.unwrap_err() {
         tokio_tungstenite::tungstenite::Error::Http(response) => response.status().as_u16(),
         error => panic!("Unexpected WebSocket error: {error}"),
     }
@@ -909,8 +1035,6 @@ async fn socket_error(addr: SocketAddr, cookie: Option<&str>, origin: &str) -> u
 
 struct HttpReply {
     status: u16,
-    cookie: Option<String>,
-    cookie_attributes: String,
     body: Value,
 }
 
@@ -943,19 +1067,9 @@ async fn http(
     let data = String::from_utf8(data).unwrap();
     let (headers, body) = data.split_once("\r\n\r\n").unwrap();
     let status = headers.split_whitespace().nth(1).unwrap().parse().unwrap();
-    let cookie_header = headers
-        .lines()
-        .find_map(|line| line.strip_prefix("set-cookie: "))
-        .unwrap_or_default();
-    let cookie = (!cookie_header.is_empty())
-        .then(|| cookie_header.split(';').next().unwrap())
-        .map(str::to_owned);
+    assert!(!headers.to_ascii_lowercase().contains("\r\nset-cookie:"));
     HttpReply {
         status,
-        cookie,
-        cookie_attributes: cookie_header
-            .split_once(';')
-            .map_or(String::new(), |(_, attributes)| format!(";{attributes}")),
         body: serde_json::from_str(body).unwrap_or(Value::Null),
     }
 }

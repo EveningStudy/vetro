@@ -16,6 +16,25 @@ use crate::{steps::UNKNOWN_STEP_PREFIX, wire::enc::Enc, Store};
 
 const T0: i64 = 1_790_000_000_000;
 
+#[test]
+fn wal_without_shared_memory_is_busy_instead_of_stale() {
+    let root = TempDir::new("busy-wal");
+    let path = root.0.join("history.db");
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch("CREATE TABLE history(text)")
+        .unwrap();
+    let wal = super::sibling(&path, "-wal");
+    fs::write(&wal, b"unavailable WAL").unwrap();
+    let error = super::sqlite::open_readonly(&path).unwrap_err();
+    assert_eq!(
+        error.sqlite_error_code(),
+        Some(rusqlite::ErrorCode::DatabaseBusy)
+    );
+    assert!(!super::sibling(&path, "-shm").exists());
+    assert_eq!(fs::read(wal).unwrap(), b"unavailable WAL");
+}
+
 type StepRow = (i64, i64, i64, Vec<u8>, Option<Vec<u8>>);
 type SummaryRow<'a> = (
     &'a str,
@@ -746,7 +765,7 @@ fn reads_uncheckpointed_frames_of_a_live_writer_without_disturbing_it() {
 }
 
 #[test]
-fn wal_without_shm_falls_back_without_creating_files() {
+fn wal_without_shm_defers_without_creating_files() {
     let tmp = TempDir::new("orphan-wal");
     let root = tmp.0.join("antigravity");
     fs::create_dir_all(root.join("conversations")).unwrap();
@@ -773,8 +792,8 @@ fn wal_without_shm_falls_back_without_creating_files() {
     drop(writer);
 
     let before = snapshot(&root);
-    let items = Store::open(&root).read("5678-8").unwrap().items;
+    let error = Store::open(&root).read("5678-8").unwrap_err();
+    assert_eq!(error.code, vetro_proto::rpc::ErrorCode::Busy);
     assert_eq!(snapshot(&root), before);
     assert!(!root.join("conversations/5678-8.db-shm").exists());
-    assert_eq!(items.len(), 1, "without a -shm only the main file is read");
 }
