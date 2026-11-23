@@ -32,7 +32,7 @@ Everything Vetro writes is under `~/.vetro` (`VETRO_HOME` overrides):
 
 ## Agent adapters
 
-All adapters implement one trait and emit `vetro_proto::ThreadEvent`s. Each adapter records every byte it sends and receives in the thread's wire log; that log is the evidence for rule 1 in `AGENTS.md` and is shown in the UI.
+Adapters implement `vetro_agent_api::Agent` and emit `SessionEvent`s. The core assigns item ordinals and produces the UI's `vetro_proto::ThreadEvent`s. The shared process transport records the spawn and stdio lines for the UI's raw view. Sessions multiplexed on the same process share its log.
 
 Detection: a binary is looked up in `Settings.agents[id].binaryPath`, then `PATH`, then well-known install locations (npm global shims are resolved to the real executable; the Claude desktop app's bundled `claude` and Devin Desktop's bundled `devin` are fallbacks). Detection never installs or downloads anything.
 
