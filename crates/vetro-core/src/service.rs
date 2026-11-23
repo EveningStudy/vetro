@@ -636,6 +636,11 @@ impl Core {
             .into_iter()
             .find(|project| project.path == path)
             .ok_or_else(|| not_found("Unknown project"))?;
+        if project.thread_count > 0 {
+            return Err(bad_request(
+                "Sessions still point at this folder, so it stays listed. Hide it instead.",
+            ));
+        }
         let removed = self.home.change_state(|state| {
             if state
                 .projects
@@ -649,11 +654,7 @@ impl Core {
             }
         })?;
         if !removed {
-            return Err(bad_request(if project.thread_count > 0 {
-                "A project discovered from sessions can only be hidden"
-            } else {
-                "Only manually added projects can be removed"
-            }));
+            return Err(bad_request("Only manually added projects can be removed"));
         }
         self.publish_projects();
         Ok(())
