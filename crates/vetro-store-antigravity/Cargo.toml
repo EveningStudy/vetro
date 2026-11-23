@@ -1,0 +1,14 @@
+[package]
+name = "vetro-store-antigravity"
+description = "Read-only reader for Antigravity's local conversation store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rusqlite = { version = "0.43", default-features = false, features = ["bundled"] }
+serde_json.workspace = true
+vetro-agent-api = { version = "0.1.0", path = "../vetro-agent-api" }
+vetro-proto = { version = "0.1.0", path = "../vetro-proto" }

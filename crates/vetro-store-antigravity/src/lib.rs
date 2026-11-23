@@ -1,0 +1,446 @@
+//! Read-only access to the conversation store that Antigravity keeps on disk: the desktop app
+//! under `~/.gemini/antigravity` and the CLI under `~/.gemini/antigravity-cli` (same format).
+//!
+//! Nothing here writes, creates or deletes a file; see [`sqlite`] for how that is enforced.
+
+use std::{
+    collections::{HashMap, HashSet},
+    fs,
+    path::{Path, PathBuf},
+    time::UNIX_EPOCH,
+};
+
+use rusqlite::{Connection, OptionalExtension};
+use vetro_agent_api::{AgentError, Result, SessionRecord, Transcript};
+use vetro_proto::{rpc::ErrorCode, ThreadSource};
+
+use crate::wire::{timestamp_ms, Msg};
+
+pub mod sqlite;
+pub mod steps;
+#[cfg(test)]
+mod store_tests;
+mod util;
+pub mod wire;
+
+pub use util::file_uri_to_path;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoreKind {
+    /// `~/.gemini/antigravity`, written by the desktop app.
+    Desktop,
+    /// `~/.gemini/antigravity-cli`, written by `agy` (TUI, `-p` and `acp`).
+    Cli,
+}
+
+#[derive(Debug, Clone)]
+pub struct Store {
+    root: PathBuf,
+    kind: StoreKind,
+}
+
+#[derive(Default)]
+struct Summary {
+    title: String,
+    preview: String,
+    updated_at: Option<i64>,
+    created_at: Option<i64>,
+    workspace: Option<PathBuf>,
+    source: String,
+    app_data_dir: String,
+    parent: Option<String>,
+    role: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CliMode {
+    Print,
+    Acp,
+    Interactive,
+}
+
+fn internal(e: impl std::fmt::Display) -> AgentError {
+    AgentError::new(ErrorCode::Internal, format!("antigravity store: {e}"))
+}
+
+fn valid_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+fn mtime_ms(path: &Path) -> Option<i64> {
+    let t = fs::metadata(path).ok()?.modified().ok()?;
+    i64::try_from(t.duration_since(UNIX_EPOCH).ok()?.as_millis()).ok()
+}
+
+fn sibling(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(suffix);
+    path.with_file_name(name)
+}
+
+fn workspace_from_json(raw: &str) -> Option<PathBuf> {
+    let uris: Vec<String> = serde_json::from_str(raw).ok()?;
+    uris.iter().find_map(|u| file_uri_to_path(u))
+}
+
+fn has_table(conn: &Connection, name: &str) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+        [name],
+        |r| r.get::<_, i64>(0),
+    )
+    .map(|n| n > 0)
+}
+
+fn read_summaries(path: &Path) -> rusqlite::Result<HashMap<String, Summary>> {
+    let mut out = HashMap::new();
+    if !path.is_file() {
+        return Ok(out);
+    }
+    let conn = sqlite::open_readonly(path)?;
+    if !has_table(&conn, "conversation_summaries")? {
+        return Ok(out);
+    }
+    let mut stmt = conn.prepare(
+        "SELECT conversation_id, title, preview, last_modified_time, workspace_uris, source, \
+         app_data_dir, parent_conversation_id, raw_summary FROM conversation_summaries",
+    )?;
+    let mut rows = stmt.query([])?;
+    while let Some(r) = rows.next()? {
+        let Some(id) = r.get::<_, Option<String>>(0)? else {
+            continue;
+        };
+        let text = |i: usize| -> rusqlite::Result<String> {
+            Ok(r.get::<_, Option<String>>(i)
+                .unwrap_or_default()
+                .unwrap_or_default())
+        };
+        let raw = r
+            .get_ref(8)?
+            .as_blob_or_null()
+            .ok()
+            .flatten()
+            .unwrap_or(&[]);
+        let raw = Msg(raw);
+        let info = raw.msg(17);
+        out.insert(
+            id,
+            Summary {
+                title: text(1)?,
+                preview: text(2)?,
+                updated_at: util::parse_time(&text(3)?)
+                    .or_else(|| raw.msg(3).and_then(timestamp_ms)),
+                created_at: raw
+                    .msg(7)
+                    .and_then(timestamp_ms)
+                    .or_else(|| info.and_then(|i| i.msg(2)).and_then(timestamp_ms)),
+                workspace: workspace_from_json(&text(4)?).or_else(|| {
+                    raw.msg(9)
+                        .and_then(|w| w.text(1))
+                        .and_then(file_uri_to_path)
+                }),
+                source: text(5)?,
+                app_data_dir: text(6)?,
+                parent: Some(text(7)?).filter(|p| !p.is_empty()),
+                role: info
+                    .and_then(|i| i.msg(8))
+                    .and_then(|s| s.text(2))
+                    .map(str::to_owned),
+            },
+        );
+    }
+    drop(rows);
+    drop(stmt);
+    if has_table(&conn, "conversation_parents")? {
+        let mut stmt =
+            conn.prepare("SELECT conversation_id, parent_id FROM conversation_parents")?;
+        let mut rows = stmt.query([])?;
+        while let Some(r) = rows.next()? {
+            let (Some(id), Some(parent)) = (
+                r.get::<_, Option<String>>(0)?,
+                r.get::<_, Option<String>>(1)?,
+            ) else {
+                continue;
+            };
+            if let Some(s) = out.get_mut(&id).filter(|_| !parent.is_empty()) {
+                s.parent = Some(parent);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Facts that only the conversation file itself has: used when the summary row is missing or
+/// incomplete.
+#[derive(Default)]
+struct FileFacts {
+    created_at: Option<i64>,
+    workspace: Option<PathBuf>,
+    first_input: Option<String>,
+}
+
+fn read_file_facts(path: &Path) -> rusqlite::Result<FileFacts> {
+    let conn = sqlite::open_readonly(path)?;
+    let mut facts = FileFacts::default();
+    if has_table(&conn, "trajectory_metadata_blob")? {
+        let blob: Option<Vec<u8>> = conn
+            .query_row(
+                "SELECT data FROM trajectory_metadata_blob WHERE id = 'main'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten();
+        if let Some(blob) = blob {
+            let m = Msg(&blob);
+            facts.created_at = m.msg(2).and_then(timestamp_ms);
+            facts.workspace = m
+                .msg(1)
+                .and_then(|w| w.text(1))
+                .or_else(|| m.text(7))
+                .and_then(file_uri_to_path);
+        }
+    }
+    if has_table(&conn, "steps")? {
+        let payload: Option<Vec<u8>> = conn
+            .query_row(
+                "SELECT step_payload FROM steps WHERE step_type = ?1 ORDER BY idx LIMIT 1",
+                [steps::STEP_USER_INPUT],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten();
+        facts.first_input = payload.and_then(|p| {
+            let input = Msg(&p).msg(19)?;
+            input
+                .text(2)
+                .or_else(|| input.msgs(3).find_map(|i| i.text(1)))
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty())
+        });
+    }
+    Ok(facts)
+}
+
+/// Which CLI conversations were created by which kind of `agy` run, from the CLI's own logs.
+fn cli_modes(root: &Path) -> HashMap<String, CliMode> {
+    let mut out = HashMap::new();
+    let Ok(dir) = fs::read_dir(root.join("log")) else {
+        return out;
+    };
+    for entry in dir.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.ends_with(".log") {
+            continue;
+        }
+        let Ok(bytes) = fs::read(entry.path()) else {
+            continue;
+        };
+        let text = String::from_utf8_lossy(&bytes);
+        let mode = if name.starts_with("acp-server") {
+            CliMode::Acp
+        } else if text.contains("printmode.go") || text.contains("Print mode:") {
+            CliMode::Print
+        } else {
+            CliMode::Interactive
+        };
+        for (pos, _) in text.match_indices("Created conversation ") {
+            let id: String = text[pos + 21..]
+                .chars()
+                .take_while(|c| c.is_ascii_hexdigit() || *c == '-')
+                .collect();
+            if !id.is_empty() {
+                out.entry(id).or_insert(mode);
+            }
+        }
+    }
+    out
+}
+
+fn read_steps(path: &Path) -> rusqlite::Result<Vec<vetro_agent_api::ItemDraft>> {
+    let conn = sqlite::open_readonly(path)?;
+    let mut builder = steps::Builder::default();
+    let mut stmt = conn.prepare(
+        "SELECT idx, step_type, status, step_payload, error_details FROM steps ORDER BY idx",
+    )?;
+    let mut rows = stmt.query([])?;
+    while let Some(r) = rows.next()? {
+        let payload = r
+            .get_ref(3)?
+            .as_blob_or_null()
+            .ok()
+            .flatten()
+            .unwrap_or(&[]);
+        let error = r.get_ref(4)?.as_blob_or_null().ok().flatten();
+        builder.step(r.get(0)?, r.get(1)?, r.get(2)?, payload, error);
+    }
+    Ok(builder.finish())
+}
+
+fn shorten(s: &str, max: usize) -> String {
+    let line = s
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim();
+    match line.char_indices().nth(max) {
+        Some((i, _)) => format!("{}…", &line[..i]),
+        None => line.to_owned(),
+    }
+}
+
+impl Store {
+    /// Never creates anything; a missing root simply lists nothing.
+    pub fn open(root: impl Into<PathBuf>) -> Store {
+        let root = root.into();
+        let kind = match root.file_name().and_then(|n| n.to_str()) {
+            Some(n) if n.ends_with("-cli") => StoreKind::Cli,
+            _ => StoreKind::Desktop,
+        };
+        Store { root, kind }
+    }
+
+    pub fn with_kind(root: impl Into<PathBuf>, kind: StoreKind) -> Store {
+        Store {
+            root: root.into(),
+            kind,
+        }
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn kind(&self) -> StoreKind {
+        self.kind
+    }
+
+    fn conversation_path(&self, id: &str) -> PathBuf {
+        self.root.join("conversations").join(format!("{id}.db"))
+    }
+
+    /// All conversations whose file lives in this store, newest first. The summaries database
+    /// also lists conversations of the sibling store; those are left to that store.
+    pub fn list(&self) -> Result<Vec<SessionRecord>> {
+        let summaries =
+            read_summaries(&self.root.join("conversation_summaries.db")).unwrap_or_default();
+        let modes = match self.kind {
+            StoreKind::Cli => cli_modes(&self.root),
+            StoreKind::Desktop => HashMap::new(),
+        };
+        let dir = match fs::read_dir(self.root.join("conversations")) {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(internal(e)),
+        };
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
+        for entry in dir.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Some(id) = name.strip_suffix(".db").filter(|id| valid_id(id)) else {
+                continue;
+            };
+            if !seen.insert(id.to_owned()) {
+                continue;
+            }
+            let path = entry.path();
+            let summary = summaries.get(id);
+            let needs_facts = summary.is_none_or(|s| {
+                s.workspace.is_none()
+                    || s.created_at.is_none()
+                    || (s.title.is_empty() && s.role.is_none())
+            });
+            let facts = if needs_facts {
+                read_file_facts(&path).unwrap_or_default()
+            } else {
+                FileFacts::default()
+            };
+            let empty = Summary::default();
+            let s = summary.unwrap_or(&empty);
+            let wal = sibling(&path, "-wal");
+            let wal_time = fs::metadata(&wal)
+                .ok()
+                .filter(|m| m.len() > 0)
+                .and_then(|_| mtime_ms(&wal));
+            let file_time = mtime_ms(&path).max(wal_time);
+            let preview = Some(s.preview.trim())
+                .filter(|p| !p.is_empty())
+                .map(str::to_owned)
+                .or_else(|| facts.first_input.as_deref().map(|t| shorten(t, 200)));
+            let title = Some(s.title.trim())
+                .filter(|t| !t.is_empty())
+                .map(str::to_owned)
+                .or_else(|| s.role.clone())
+                .or_else(|| preview.as_deref().map(|p| shorten(p, 80)))
+                .unwrap_or_else(|| "Untitled conversation".into());
+            let mode = modes.get(id).copied();
+            let source = match self.kind {
+                StoreKind::Desktop => ThreadSource::Desktop,
+                StoreKind::Cli if mode == Some(CliMode::Print) => ThreadSource::Exec,
+                StoreKind::Cli => ThreadSource::Cli,
+            };
+            let base = Some(s.source.as_str())
+                .filter(|v| !v.is_empty())
+                .or(Some(s.app_data_dir.as_str()).filter(|v| !v.is_empty()))
+                .map(str::to_owned)
+                .unwrap_or_else(|| {
+                    self.root
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned()
+                });
+            let origin = match mode {
+                Some(CliMode::Print) => format!("{base} print"),
+                Some(CliMode::Acp) => format!("{base} acp"),
+                _ => base,
+            };
+            out.push(SessionRecord {
+                native_id: id.to_owned(),
+                title,
+                preview,
+                cwd: s.workspace.clone().or(facts.workspace),
+                created_at: s.created_at.or(facts.created_at),
+                updated_at: s.updated_at.or(file_time).or(s.created_at).unwrap_or(0),
+                source,
+                origin: Some(origin),
+                model: None,
+                resumable: false,
+                parent_native_id: s.parent.clone(),
+            });
+        }
+        out.sort_by(|a, b| {
+            b.updated_at
+                .cmp(&a.updated_at)
+                .then_with(|| a.native_id.cmp(&b.native_id))
+        });
+        Ok(out)
+    }
+
+    /// The full transcript of one conversation, oldest first. Steps are decoded one row at a
+    /// time; only the extracted items are kept.
+    pub fn read(&self, conversation_id: &str) -> Result<Transcript> {
+        if !valid_id(conversation_id) {
+            return Err(AgentError::new(
+                ErrorCode::BadRequest,
+                "invalid conversation id",
+            ));
+        }
+        let path = self.conversation_path(conversation_id);
+        if !path.is_file() {
+            return Err(AgentError::new(
+                ErrorCode::NotFound,
+                format!("conversation {conversation_id} not found"),
+            ));
+        }
+        // An immutable read can race with a checkpoint by the app; one retry sees the new state.
+        let items = read_steps(&path)
+            .or_else(|_| read_steps(&path))
+            .map_err(internal)?;
+        Ok(Transcript { items })
+    }
+}
