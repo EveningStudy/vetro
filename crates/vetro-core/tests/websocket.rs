@@ -35,11 +35,14 @@ fn main() {
         return;
     }
     let temp = tempfile::tempdir().unwrap();
-    // macOS temp directories sit behind a symlink (/var -> /private/var).
-    let resolved = if cfg!(windows) {
-        temp.path().to_path_buf()
-    } else {
-        temp.path().canonicalize().unwrap()
+    // Temp paths can be spelled through a symlink (macOS) or an 8.3 short name (Windows).
+    let canonical = temp.path().canonicalize().unwrap();
+    let resolved = match canonical
+        .to_str()
+        .and_then(|text| text.strip_prefix(r"\\?\"))
+    {
+        Some(plain) => std::path::PathBuf::from(plain),
+        None => canonical,
     };
     let path = resolved.as_path();
     std::env::set_var("HOME", path);
