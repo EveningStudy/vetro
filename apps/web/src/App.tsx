@@ -5,7 +5,7 @@ import { PairingPage } from "./components/PairingPage";
 import { Shell } from "./components/Shell";
 import { TooltipProvider } from "./components/ui/overlay";
 import { Spinner } from "./components/ui/primitives";
-import { startSync } from "./state/store";
+import { startSync, useStore } from "./state/store";
 
 type AuthState = "checking" | "ok" | "pair" | "error";
 
@@ -22,6 +22,7 @@ export function App() {
   const t = useT();
   const lang = useLang();
   const [auth, setAuth] = useState<AuthState>("checking");
+  const authLost = useStore((s) => s.authLost);
 
   useEffect(() => {
     document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
@@ -48,6 +49,7 @@ export function App() {
       </div>
     );
   if (auth === "pair") return <PairingPage onPaired={() => setAuth("ok")} />;
+  if (authLost) return <PairingPage onPaired={() => location.reload()} />;
   if (auth === "error")
     return (
       <div className="flex h-dvh flex-col items-center justify-center gap-3 text-sm text-muted-foreground">

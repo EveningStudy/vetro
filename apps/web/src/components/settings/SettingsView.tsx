@@ -16,7 +16,7 @@ import { type ReactNode, useEffect, useState } from "react";
 import { client } from "~/api/client";
 import type { AgentInfo, AgentSettings, Pairing, Settings } from "~/api/types";
 import { useT } from "~/i18n";
-import { relativeTime } from "~/lib/format";
+import { relativeTime, shortVersion } from "~/lib/format";
 import { cn } from "~/lib/utils";
 import { type LanguagePref, type ThemePref, setLanguage, setTheme, usePrefs } from "~/state/prefs";
 import { type SettingsSection, actions, useStore } from "~/state/store";
@@ -96,6 +96,10 @@ function Row({ label, hint, children }: { label: ReactNode; hint?: ReactNode; ch
       {children ? <div className="flex shrink-0 items-center gap-2">{children}</div> : null}
     </div>
   );
+}
+
+export function displayPath(path: string | null) {
+  return path?.startsWith("\\\\?\\") ? path.slice(4) : (path ?? "");
 }
 
 function useSettings() {
@@ -218,19 +222,20 @@ function AgentCard({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-sm font-medium">{agent.name}</span>
-            {agent.version ? <span className="text-xs tabular-nums text-muted-foreground">{agent.version}</span> : null}
+            {agent.version ? <span className="text-xs tabular-nums text-muted-foreground" title={agent.version}>{shortVersion(agent.version)}</span> : null}
             {custom ? <Badge variant="outline">{t("settings.customAgent")}</Badge> : null}
             {agent.installed ? authBadge : <Badge variant="error">{t("settings.notInstalled")}</Badge>}
           </div>
           <div className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground" title={agent.path ?? undefined}>
-            {agent.path ?? agent.error ?? "—"}
+            {displayPath(agent.path) || "—"}
           </div>
+          {agent.error ? <div className="mt-0.5 text-xs text-destructive-foreground">{agent.error}</div> : null}
         </div>
         <Switch checked={current.enabled} aria-label={t("settings.enabled")} onCheckedChange={(enabled) => void onSave({ agents: { [agent.id]: { ...current, enabled } } })} />
       </div>
-      {agent.installed && agent.auth.state === "required" ? (
-        <div className="flex flex-wrap items-center gap-2 bg-warning-surface/50 px-4 py-2.5">
-          <span className="me-auto text-xs text-muted-foreground">{t("composer.signInHint", { agent: agent.name })}</span>
+      {agent.installed && agent.auth.state !== "ok" && agent.auth.methods.length > 0 ? (
+        <div className={cn("flex flex-wrap items-center gap-2 px-4 py-2.5", agent.auth.state === "required" && "bg-warning-surface/50")}>
+          <span className="me-auto text-xs text-muted-foreground">{t(agent.auth.state === "required" ? "composer.signInHint" : "settings.signInOptional", { agent: agent.name })}</span>
           {agent.auth.methods.map((method, index) => (
             <Button
               key={method.id}
@@ -241,6 +246,8 @@ function AgentCard({
                 setSigning(method.id);
                 client()
                   .request("agents.authenticate", { agentId: agent.id, methodId: method.id })
+                  .then(() => client().request("agents.refresh", {}))
+                  .then((result) => useStore.setState({ agents: result.agents }))
                   .catch((error) => toast.error(errorMessage(error)))
                   .finally(() => setSigning(null));
               }}

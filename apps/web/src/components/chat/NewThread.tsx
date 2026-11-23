@@ -1,19 +1,19 @@
-import { ChevronDownIcon, FolderIcon, FolderPlusIcon, KeyRoundIcon, LogInIcon } from "lucide-react";
+import { ChevronDownIcon, KeyRoundIcon, LogInIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { client } from "~/api/client";
 import type { AgentInfo, ConfigOption, SlashCommand } from "~/api/types";
 import { useT } from "~/i18n";
-import { tildePath } from "~/lib/format";
-import { cn } from "~/lib/utils";
+import { shortVersion } from "~/lib/format";
 import { actions, useStore } from "~/state/store";
 import { errorMessage, toast } from "~/state/toast";
 import { AgentIcon } from "../AgentIcon";
 import { FolderBrowser } from "../FolderBrowser";
 import { MobileSidebarButton } from "../Shell";
 import { Button } from "../ui/button";
-import { Menu, MenuGroupLabel, MenuItem, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuSeparator, MenuTrigger } from "../ui/overlay";
+import { Menu, MenuGroupLabel, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from "../ui/overlay";
 import { Spinner } from "../ui/primitives";
 import { Composer } from "./Composer";
+import { ProjectPicker } from "./ProjectPicker";
 import { composerControlClass } from "./OptionPicker";
 
 const LAST_AGENT = "vetro:last-agent";
@@ -132,33 +132,7 @@ export function NewThread({ projectPath, agentId: routeAgent }: { projectPath: s
           }
           below={
             <div className="flex items-center gap-1 px-1 pt-2 text-muted-foreground">
-              <Menu>
-                <MenuTrigger className={cn(composerControlClass, "max-w-full font-normal text-muted-foreground")}>
-                  <FolderIcon />
-                  <span className="min-w-0 truncate">{project?.name ?? (cwd ? tildePath(cwd, home) : t("composer.chooseProject"))}</span>
-                  {effectiveCwd ? <span className="hidden min-w-0 truncate font-mono text-[11px] text-muted-foreground/70 sm:inline">{tildePath(effectiveCwd, home)}</span> : null}
-                  <ChevronDownIcon className="size-3 opacity-70" />
-                </MenuTrigger>
-                <MenuPopup align="start" className="w-80">
-                  <MenuGroupLabel>{t("composer.project")}</MenuGroupLabel>
-                  <MenuRadioGroup value={effectiveCwd ?? ""} onValueChange={(value) => setCwd(String(value))}>
-                    {visibleProjects.map((p) => (
-                      <MenuRadioItem key={p.path} value={p.path} disabled={!p.exists}>
-                        <FolderIcon />
-                        <span className="flex min-w-0 flex-col">
-                          <span className="truncate">{p.name}</span>
-                          <span className="truncate font-mono text-[11px] text-muted-foreground">{tildePath(p.path, home)}</span>
-                        </span>
-                      </MenuRadioItem>
-                    ))}
-                  </MenuRadioGroup>
-                  <MenuSeparator />
-                  <MenuItem onClick={() => setBrowsing(true)}>
-                    <FolderPlusIcon />
-                    {t("composer.addFolder")}
-                  </MenuItem>
-                </MenuPopup>
-              </Menu>
+              <ProjectPicker projects={visibleProjects} value={effectiveCwd} home={home} onChange={setCwd} onAddFolder={() => setBrowsing(true)} />
             </div>
           }
         />
@@ -188,7 +162,7 @@ function AgentPicker({ agents, current, onChange }: { agents: AgentInfo[]; curre
                 <span className="flex min-w-0 flex-col">
                   <span className="flex items-center gap-1.5">
                     <span className="truncate">{agent.name}</span>
-                    {agent.version ? <span className="text-xs text-muted-foreground tabular-nums">{agent.version}</span> : null}
+                    {agent.version ? <span className="truncate text-xs text-muted-foreground tabular-nums" title={agent.version}>{shortVersion(agent.version)}</span> : null}
                   </span>
                   {unavailable ? (
                     <span className="text-xs text-muted-foreground">{agent.error ?? t("composer.unavailable")}</span>
@@ -210,7 +184,7 @@ function AgentPicker({ agents, current, onChange }: { agents: AgentInfo[]; curre
   );
 }
 
-export function SignInCard({ agent }: { agent: AgentInfo }) {
+export function SignInCard({ agent, onDone }: { agent: AgentInfo; onDone?: () => void }) {
   const t = useT();
   const [pending, setPending] = useState<string | null>(null);
   return (
@@ -233,7 +207,10 @@ export function SignInCard({ agent }: { agent: AgentInfo }) {
                   client()
                     .request("agents.authenticate", { agentId: agent.id, methodId: method.id })
                     .then(() => client().request("agents.refresh", {}))
-                    .then((result) => useStore.setState({ agents: result.agents }))
+                    .then((result) => {
+                      useStore.setState({ agents: result.agents });
+                      onDone?.();
+                    })
                     .catch((error) => toast.error(errorMessage(error)))
                     .finally(() => setPending(null));
                 }}

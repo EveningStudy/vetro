@@ -170,7 +170,7 @@ export function Composer(props: ComposerProps) {
   };
 
   const showStop = props.running && !hasContent && props.onStop;
-  const contextUsed = props.usage?.lastTurn?.contextUsed ?? props.usage?.total?.contextUsed ?? null;
+  const contextUsed = props.usage?.lastTurn?.contextUsed ?? props.usage?.lastTurn?.input ?? null;
   const contextWindow = props.usage?.lastTurn?.contextWindow ?? props.usage?.total?.contextWindow ?? null;
 
   return (

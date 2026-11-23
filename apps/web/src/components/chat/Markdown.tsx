@@ -173,6 +173,6 @@ function listItemInline(tokens: Token[], keyPrefix: string): ReactNode {
 }
 
 export const Markdown = memo(function Markdown({ text, className }: { text: string; className?: string }) {
-  const tokens = useMemo(() => Lexer.lex(text, { gfm: true, breaks: false }), [text]);
+  const tokens = useMemo(() => Lexer.lex(text, { gfm: true, breaks: true }), [text]);
   return <div className={cn("chat-markdown", className)}>{blocks(tokens)}</div>;
 });

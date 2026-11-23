@@ -48,6 +48,9 @@ export function PairingPage({ onPaired }: { onPaired: () => void }) {
           <div>
             <h1 className="text-lg font-semibold">{t("pair.title")}</h1>
             <p className="mt-1 text-sm text-muted-foreground">{t("pair.body")}</p>
+            {/^(127\.0\.0\.1|localhost|\[::1\])$/.test(location.hostname) ? (
+              <p className="mt-2 text-xs text-muted-foreground">{t("pair.local")}</p>
+            ) : null}
           </div>
         </div>
         <div className="flex flex-col gap-1.5">

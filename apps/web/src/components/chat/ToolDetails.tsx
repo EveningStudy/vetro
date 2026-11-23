@@ -2,7 +2,9 @@ import { useMemo } from "react";
 import type { JsonValue, ToolContent } from "~/api/types";
 import { useT } from "~/i18n";
 import { cn } from "~/lib/utils";
+import { relativeToCwd } from "~/lib/format";
 import { useHighlighter } from "./highlight";
+import { useThreadCwd } from "./threadContext";
 
 const panel = "min-w-0 overflow-hidden rounded-lg border bg-muted/60 dark:bg-white/[0.02]";
 const mono = "font-mono text-xs leading-relaxed";
@@ -35,6 +37,7 @@ export function TerminalBlock({ command, output, exitCode, running }: { command:
 type DiffLine = { kind: "add" | "del" | "ctx" | "hunk"; text: string };
 
 function parseUnified(unified: string): DiffLine[] {
+  if (!unified.split("\n").some((line) => line.startsWith("@@"))) return unified.split("\n").map((text) => ({ kind: "add", text }));
   return unified
     .split("\n")
     .filter((line) => !line.startsWith("--- ") && !line.startsWith("+++ ") && !line.startsWith("diff --git") && !line.startsWith("index "))
@@ -97,6 +100,7 @@ function languageOf(path: string) {
 export function DiffBlock({ block }: { block: Extract<ToolContent, { type: "diff" }> }) {
   const t = useT();
   const highlight = useHighlighter();
+  const cwd = useThreadCwd();
   const lines = useMemo(() => diffLines(block), [block]);
   const lang = languageOf(block.path);
   const additions = lines.filter((line) => line.kind === "add").length;
@@ -104,7 +108,9 @@ export function DiffBlock({ block }: { block: Extract<ToolContent, { type: "diff
   return (
     <div className={panel}>
       <div className="flex items-center gap-2 border-b px-3 py-1.5 text-xs">
-        <span className="min-w-0 flex-1 truncate font-mono text-foreground">{block.path}</span>
+        <span className="min-w-0 flex-1 truncate font-mono text-foreground" title={block.path}>
+          {relativeToCwd(block.path, cwd)}
+        </span>
         {block.oldText === null && !block.unified ? <span className="text-muted-foreground">{t("item.newFile")}</span> : null}
         <span className="shrink-0 font-mono tabular-nums">
           <span className="text-diff-addition-foreground">+{additions}</span>{" "}

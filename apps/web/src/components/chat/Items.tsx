@@ -159,6 +159,31 @@ export const Reasoning = memo(function Reasoning({ item }: { item: ItemOf<"reaso
   );
 });
 
+const SHELL_WRAPPER =
+  /^"?(?:[^"]*[\\/])?(?:pwsh|powershell|bash|sh|zsh|cmd)(?:\.exe)?"?\s+(?:-(?:NoProfile|NoLogo|NonInteractive)\s+)*(?:-Command|-c|-lc|\/c)\s+([\s\S]+)$/i;
+
+/** Agents often run commands through a shell wrapper; show the command the user cares about. */
+export function unwrapShell(command: string) {
+  const match = SHELL_WRAPPER.exec(command.trim());
+  if (!match) return command;
+  const inner = match[1]!.trim();
+  const quote = inner[0];
+  return (quote === '"' || quote === "'") && inner.endsWith(quote) && inner.length > 1 ? inner.slice(1, -1) : inner;
+}
+
+function toolTitle(item: ItemOf<"tool_call">) {
+  if (item.kind === "execute") {
+    const lines = unwrapShell(item.title).split("\n").filter((line) => line.trim());
+    return lines.length > 1 ? `${lines[0]} …` : (lines[0] ?? item.title);
+  }
+  const diffs = item.content.filter((block) => block.type === "diff");
+  if (item.kind === "edit" && diffs.length > 0 && !/[./\\]/.test(item.title)) {
+    const names = diffs.map((block) => (block as { path: string }).path.split(/[\\/]/).at(-1) ?? block.path);
+    return `${item.title} · ${names.slice(0, 3).join(", ")}${names.length > 3 ? ` +${names.length - 3}` : ""}`;
+  }
+  return item.title;
+}
+
 function toolSummary(item: ItemOf<"tool_call">) {
   const stats = diffStats(item.content);
   if (stats.additions + stats.deletions === 0) return null;
@@ -185,8 +210,8 @@ export const ToolCallRow = memo(function ToolCallRow({ item, expandChildren }: {
         expanded={open}
         onToggle={expandable ? () => setOpen(!open) : undefined}
         label={
-          <span className={cn(failed ? "text-destructive" : "text-secondary-label", running && "live-tool-shine")}>
-            {item.title}
+          <span title={item.title} className={cn(failed ? "text-destructive-foreground" : "text-secondary-label", running && "live-tool-shine")}>
+            {toolTitle(item)}
           </span>
         }
         trailing={
@@ -203,7 +228,7 @@ export const ToolCallRow = memo(function ToolCallRow({ item, expandChildren }: {
             {item.content.map((block, index) => {
               switch (block.type) {
                 case "terminal":
-                  return <TerminalBlock key={index} command={block.command} output={block.output} exitCode={block.exitCode} running={running} />;
+                  return <TerminalBlock key={index} command={block.command && unwrapShell(block.command)} output={block.output} exitCode={block.exitCode} running={running} />;
                 case "diff":
                   return <DiffBlock key={index} block={block} />;
                 case "text":

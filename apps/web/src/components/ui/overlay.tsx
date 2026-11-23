@@ -79,9 +79,9 @@ export function MenuItem({ className, destructive, ...props }: MenuPrimitive.Ite
   );
 }
 
-export function MenuRadioItem({ className, children, ...props }: MenuPrimitive.RadioItem.Props) {
+export function MenuRadioItem({ className, children, closeOnClick = true, ...props }: MenuPrimitive.RadioItem.Props) {
   return (
-    <MenuPrimitive.RadioItem className={cn(itemClass, "pe-7 relative", className)} {...props}>
+    <MenuPrimitive.RadioItem closeOnClick={closeOnClick} className={cn(itemClass, "pe-7 relative", className)} {...props}>
       {children}
       <MenuPrimitive.RadioItemIndicator className="absolute end-2 flex">
         <CheckIcon className="size-3.5" />

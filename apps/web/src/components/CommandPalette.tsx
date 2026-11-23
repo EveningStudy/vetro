@@ -7,7 +7,7 @@ import { useT } from "~/i18n";
 import { relativeTime } from "~/lib/format";
 import { cn } from "~/lib/utils";
 import { setTheme } from "~/state/prefs";
-import { actions, useStore } from "~/state/store";
+import { actions, useHiddenFilter, useStore } from "~/state/store";
 import { AgentIcon } from "./AgentIcon";
 import { Kbd, Spinner } from "./ui/primitives";
 
@@ -28,6 +28,7 @@ export function CommandPalette() {
   const t = useT();
   const open = useStore((s) => s.paletteOpen);
   const threads = useStore((s) => s.threads);
+  const visible = useHiddenFilter();
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<SearchHit[] | null>(null);
   const [searching, setSearching] = useState(false);
@@ -74,9 +75,9 @@ export function CommandPalette() {
       meta: relativeTime(thread.updatedAt, t),
       run: () => openThread(thread),
     });
-    if (hits !== null) return [{ label: t("palette.results"), entries: hits.map((hit) => threadEntry(hit.thread, <Snippet html={hit.snippet} />)) }];
+    if (hits !== null) return [{ label: t("palette.results"), entries: hits.filter((hit) => visible(hit.thread)).map((hit) => threadEntry(hit.thread, <Snippet html={hit.snippet} />)) }];
     const recent = Object.values(threads)
-      .filter((thread) => !thread.archived)
+      .filter((thread) => !thread.archived && visible(thread))
       .sort((a, b) => b.updatedAt - a.updatedAt)
       .slice(0, 8)
       .map((thread) => threadEntry(thread, thread.cwd ? <span className="font-mono text-[11px]">{thread.cwd}</span> : undefined));
@@ -114,7 +115,7 @@ export function CommandPalette() {
       { label: t("palette.recent"), entries: recent },
       { label: t("palette.actions"), entries: commands },
     ];
-  }, [hits, threads, t]);
+  }, [hits, threads, t, visible]);
 
   const flat = sections.flatMap((section) => section.entries);
   useEffect(() => setActive(0), [hits, query]);

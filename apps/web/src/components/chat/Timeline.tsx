@@ -5,6 +5,7 @@ import { useT } from "~/i18n";
 import { actions, useStore } from "~/state/store";
 import { Button } from "../ui/button";
 import { Spinner } from "../ui/primitives";
+import { ThreadCwdContext } from "./threadContext";
 import { AgentMessage, NoticeRow, PlanCard, Reasoning, RequestItem, ToolCallRow, TurnEnd, UserMessage } from "./Items";
 
 const INITIAL_WINDOW = 120;
@@ -62,18 +63,20 @@ function TimelineRows({
   threadId: string;
   expandChildren: boolean;
 }) {
+  const cwd = useStore((s) => s.open[threadId]?.summary.cwd ?? null);
+  const rows = items.filter((item) => item.type !== "agent_message" || item.streaming || item.text.trim() !== "");
   return (
-    <>
-      {items.map((item, index) => (
+    <ThreadCwdContext value={cwd}>
+      {rows.map((item, index) => (
         <div
           key={item.id}
           data-item-id={item.id}
-          className={spacing(items[index - 1], item)}
+          className={spacing(rows[index - 1], item)}
         >
           <ItemView item={item} threadId={threadId} expandChildren={expandChildren} />
         </div>
       ))}
-    </>
+    </ThreadCwdContext>
   );
 }
 

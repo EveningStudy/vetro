@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { client } from "~/api/client";
+import { authApi, client } from "~/api/client";
 import type { ConnectionStatus } from "~/api/protocol";
 import type {
   AgentInfo,
@@ -42,6 +42,7 @@ export interface Filters {
   agentIds: string[];
   sources: ThreadSource[];
   showArchived: boolean;
+  showHidden: boolean;
 }
 
 interface State {
@@ -60,6 +61,7 @@ interface State {
   paletteOpen: boolean;
   mobileSidebarOpen: boolean;
   drafts: Record<string, string>;
+  authLost: boolean;
 }
 
 const COLLAPSED_KEY = "vetro:collapsed-projects";
@@ -113,12 +115,13 @@ export const useStore = create<State>(() => ({
   open: {},
   remote: null,
   route: routeFromLocation(),
-  filters: readJson<Filters>(FILTERS_KEY, { agentIds: [], sources: [], showArchived: false }),
+  filters: readJson<Filters>(FILTERS_KEY, { agentIds: [], sources: [], showArchived: false, showHidden: false }),
   collapsedProjects: readJson<Record<string, boolean>>(COLLAPSED_KEY, {}),
   rawPanelOpen: new URLSearchParams(location.search).get("panel") === "raw",
   paletteOpen: new URLSearchParams(location.search).get("palette") === "1",
   mobileSidebarOpen: new URLSearchParams(location.search).get("sidebar") === "1",
   drafts: {},
+  authLost: false,
 }));
 
 const set = useStore.setState;
@@ -247,6 +250,12 @@ export function startSync() {
   api.onEvent(handleEvent);
   api.onStatus((status, { info, reconnected }) => {
     set({ connection: status, ...(info ? { app: info } : {}) });
+    if (status === "closed") {
+      authApi()
+        .session()
+        .then((session) => session === null && set({ authLost: true }))
+        .catch(() => undefined);
+    }
     if (status !== "open") return;
     void loadLists().catch((error) => toast.error(errorMessage(error)));
     if (reconnected) for (const id of Object.keys(get().open)) void actions.openThread(id, true);
@@ -425,3 +434,15 @@ export const actions = {
     set({ drafts: { ...get().drafts, [key]: text } });
   },
 };
+
+function normalizePath(path: string | null) {
+  return (path ?? "").replace(/[\\/]+$/, "").toLowerCase();
+}
+
+/** Threads that live in a project the user hid stay out of lists and search unless shown. */
+export function useHiddenFilter() {
+  const projects = useStore((s) => s.projects);
+  const showHidden = useStore((s) => s.filters.showHidden);
+  const hidden = new Set(projects.filter((project) => project.hidden).map((project) => normalizePath(project.path)));
+  return (thread: ThreadSummary) => showHidden || !hidden.has(normalizePath(thread.cwd));
+}

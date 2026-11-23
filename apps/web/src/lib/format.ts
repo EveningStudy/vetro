@@ -55,3 +55,10 @@ export function relativeToCwd(path: string, cwd: string | null | undefined) {
   const root = cwd.replace(/\\/g, "/").replace(/\/$/, "");
   return normalized.toLowerCase().startsWith(`${root.toLowerCase()}/`) ? normalized.slice(root.length + 1) : normalized;
 }
+
+/** Agents report versions as `name 1.2.3 (hash)` or plain `1.2.3`; show the number. */
+export function shortVersion(version: string | null | undefined) {
+  if (!version) return "";
+  const match = /\d+(?:\.\d+)+(?:[-+][\w.]+)?/.exec(version);
+  return match ? match[0] : version;
+}

@@ -14,9 +14,10 @@ import {
   SettingsIcon,
   SquarePenIcon,
   CornerDownRightIcon,
+  EyeIcon,
   EyeOffIcon,
 } from "lucide-react";
-import { memo, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Project, ThreadSource, ThreadSummary } from "~/api/types";
 import { useT } from "~/i18n";
 import { relativeTime } from "~/lib/format";
@@ -100,6 +101,14 @@ function StatusLabel({ thread }: { thread: ThreadSummary }) {
   return null;
 }
 
+const ROW_HEIGHT = { project: 40, thread: 37, nested: 33, more: 29, empty: 29 } as const;
+
+type SidebarRow =
+  | { kind: "project"; key: string; project: Pick<Project, "path" | "name" | "exists" | "pinned" | "hidden">; suffix?: string; count: number; collapsed: boolean; attention: string | null }
+  | { kind: "thread"; key: string; thread: ThreadSummary; nested: boolean }
+  | { kind: "more"; key: string; path: string; hidden: number; expanded: boolean }
+  | { kind: "empty"; key: string; text: string };
+
 const ThreadRow = memo(function ThreadRow({
   thread,
   active,
@@ -112,83 +121,53 @@ const ThreadRow = memo(function ThreadRow({
   now: number;
 }) {
   const t = useT();
-  const status = <StatusLabel thread={thread} />;
   const busy = thread.status !== "idle";
   return (
-    <li className="list-none [content-visibility:auto] [contain-intrinsic-size:auto_--spacing(9)]">
-      <button
-        type="button"
-        aria-current={active ? "page" : undefined}
-        onClick={() => actions.navigate({ view: "thread", threadId: thread.id })}
+    <button
+      type="button"
+      aria-current={active ? "page" : undefined}
+      onClick={() => actions.navigate({ view: "thread", threadId: thread.id })}
+      className={cn(
+        rowBase,
+        "pe-2.5",
+        nested ? "h-8 ps-9" : "h-9 ps-3",
+        active
+          ? "bg-sidebar-row-active text-sidebar-foreground light:ring-1 light:ring-inset light:ring-sidebar-border/70"
+          : "text-sidebar-foreground hover:bg-sidebar-row-hover",
+      )}
+    >
+      {nested ? <CornerDownRightIcon className="-ms-4 size-3 shrink-0 text-sidebar-muted-foreground/70" /> : null}
+      <span
         className={cn(
-          rowBase,
-          "h-9 pe-2.5",
-          nested ? "h-8 ps-9" : "ps-3",
-          active
-            ? "bg-sidebar-row-active text-sidebar-foreground light:ring-1 light:ring-inset light:ring-sidebar-border/70"
-            : "text-sidebar-foreground hover:bg-sidebar-row-hover",
+          "flex shrink-0 items-center transition-[opacity,filter]",
+          !active && !busy && "opacity-60 grayscale group-hover/sidebar-row:opacity-100 group-hover/sidebar-row:grayscale-0",
         )}
       >
-        {nested ? (
-          <CornerDownRightIcon className="-ms-4 size-3 shrink-0 text-sidebar-muted-foreground/70" />
-        ) : null}
-        <span
-          className={cn(
-            "flex shrink-0 items-center transition-[opacity,filter]",
-            !active && !busy && "opacity-60 grayscale group-hover/sidebar-row:opacity-100 group-hover/sidebar-row:grayscale-0",
-          )}
-        >
-          <AgentIcon agentId={thread.agentId} className={nested ? "size-3.5" : "size-4"} />
-        </span>
-        <span
-          className={cn(
-            "min-w-0 flex-1 truncate text-start",
-            nested ? "text-[13px]" : "text-sm",
-            active || busy ? "font-medium text-sidebar-foreground" : "text-sidebar-foreground/80 group-hover/sidebar-row:text-sidebar-foreground",
-            thread.archived && "italic",
-          )}
-        >
-          {thread.title}
-        </span>
-        {thread.archived ? <ArchiveIcon className="size-3 shrink-0 text-sidebar-muted-foreground" /> : null}
-        <span className="ml-auto flex h-6 shrink-0 items-center justify-end tabular-nums text-secondary-label text-xs">
-          {busy ? status : relativeTime(thread.updatedAt, t, now)}
-        </span>
-      </button>
-    </li>
+        <AgentIcon agentId={thread.agentId} className={nested ? "size-3.5" : "size-4"} />
+      </span>
+      <span
+        className={cn(
+          "min-w-0 flex-1 truncate text-start",
+          nested ? "text-[13px]" : "text-sm",
+          active || busy ? "font-medium text-sidebar-foreground" : "text-sidebar-foreground/80 group-hover/sidebar-row:text-sidebar-foreground",
+          thread.archived && "italic",
+        )}
+      >
+        {thread.title}
+      </span>
+      {thread.archived ? <ArchiveIcon className="size-3 shrink-0 text-sidebar-muted-foreground" /> : null}
+      <span className="ml-auto flex h-6 shrink-0 items-center justify-end tabular-nums text-secondary-label text-xs">
+        {busy ? <StatusLabel thread={thread} /> : relativeTime(thread.updatedAt, t, now)}
+      </span>
+    </button>
   );
 });
 
-function ProjectGroup({
-  project,
-  threads,
-  childMap,
-  activeId,
-  now,
-}: {
-  project: Pick<Project, "path" | "name" | "exists" | "pinned">;
-  threads: ThreadSummary[];
-  childMap: Map<string, ThreadSummary[]>;
-  activeId: string | null;
-  now: number;
-}) {
+const ProjectHeader = memo(function ProjectHeader({ row }: { row: Extract<SidebarRow, { kind: "project" }> }) {
   const t = useT();
-  const collapsed = useStore((s) => !!s.collapsedProjects[project.path]);
-  const [expanded, setExpanded] = useState(false);
-  const activeIndex = threads.findIndex((thread) => thread.id === activeId || childMap.get(thread.id)?.some((c) => c.id === activeId));
-  const limit = expanded ? threads.length : Math.max(PAGE, activeIndex + 1);
-  const visible = threads.slice(0, limit);
-  const hidden = threads.length - visible.length;
-  const attention = collapsed
-    ? threads.some((thread) => thread.status === "awaiting_input")
-      ? "bg-warning"
-      : threads.some((thread) => thread.status === "running")
-        ? "bg-info"
-        : null
-    : null;
-  const isOther = project.path === "";
+  const { project, collapsed, count, attention, suffix } = row;
   return (
-    <li className="group/project-folder relative mt-2 list-none first:mt-0">
+    <div className="group/project-folder relative pt-2">
       <button
         type="button"
         aria-expanded={!collapsed}
@@ -201,19 +180,19 @@ function ProjectGroup({
         ) : (
           <FolderXIcon className="size-4 shrink-0 text-sidebar-muted-foreground/70" />
         )}
-        <span className={cn("min-w-0 flex-1 truncate text-sm font-medium text-sidebar-foreground/90", !project.exists && "text-sidebar-muted-foreground")}>
+        <span className={cn("min-w-0 flex-1 truncate text-sm font-medium text-sidebar-foreground/90", (!project.exists || project.hidden) && "text-sidebar-muted-foreground")}>
           {project.name}
+          {suffix ? <span className="ms-1.5 font-normal text-xs text-sidebar-muted-foreground">{suffix}</span> : null}
         </span>
+        {project.hidden ? <EyeOffIcon className="size-3 shrink-0 text-sidebar-muted-foreground" /> : null}
         {attention ? <span className={cn("size-1.5 shrink-0 rounded-full", attention)} /> : null}
-        {collapsed && threads.length > 0 ? (
-          <span className="shrink-0 text-xs tabular-nums text-sidebar-muted-foreground group-hover/project-folder:invisible pointer-coarse:invisible">
-            {threads.length}
-          </span>
+        {collapsed && count > 0 ? (
+          <span className="shrink-0 text-xs tabular-nums text-sidebar-muted-foreground group-hover/project-folder:invisible pointer-coarse:invisible">{count}</span>
         ) : null}
         <ChevronDownIcon className={cn("size-3 shrink-0 text-sidebar-muted-foreground transition-transform", collapsed && "-rotate-90")} />
       </button>
-      {isOther ? null : (
-        <span className="absolute top-1 right-6 flex items-center gap-0.5 opacity-0 focus-within:opacity-100 group-hover/project-folder:opacity-100 pointer-coarse:opacity-100">
+      {project.path === "" ? null : (
+        <span className="absolute top-3 right-6 flex items-center gap-0.5 opacity-0 focus-within:opacity-100 group-hover/project-folder:opacity-100 pointer-coarse:opacity-100">
           <Menu>
             <MenuTrigger render={<Button size="icon-xs" variant="ghost-muted" aria-label={t("thread.more")} />}>
               <MoreHorizontalIcon />
@@ -223,9 +202,9 @@ function ProjectGroup({
                 {project.pinned ? <PinOffIcon /> : <PinIcon />}
                 {project.pinned ? t("sidebar.unpin") : t("sidebar.pin")}
               </MenuItem>
-              <MenuItem onClick={() => void actions.updateProject(project.path, { hidden: true })}>
-                <EyeOffIcon />
-                {t("sidebar.hide")}
+              <MenuItem onClick={() => void actions.updateProject(project.path, { hidden: !project.hidden })}>
+                {project.hidden ? <EyeIcon /> : <EyeOffIcon />}
+                {project.hidden ? t("sidebar.unhide") : t("sidebar.hide")}
               </MenuItem>
             </MenuPopup>
           </Menu>
@@ -241,59 +220,105 @@ function ProjectGroup({
           </Tip>
         </span>
       )}
-      {collapsed ? null : (
-        <ul className="mt-0.5 flex flex-col gap-px">
-          {visible.length === 0 ? (
-            <li className="list-none px-3 py-1.5 ps-9 text-xs text-sidebar-muted-foreground">
-              {project.exists ? t("sidebar.noThreads") : t("sidebar.missing")}
-            </li>
-          ) : null}
-          {visible.map((thread) => (
-            <ThreadWithChildren key={thread.id} thread={thread} childThreads={childMap.get(thread.id)} activeId={activeId} now={now} />
+    </div>
+  );
+});
+
+/** The sidebar can hold hundreds of projects and threads; only the rows near the viewport are
+ * rendered. Every row kind has a fixed height, so offsets are exact. */
+function VirtualRows({
+  rows,
+  activeId,
+  now,
+  onToggleMore,
+}: {
+  rows: SidebarRow[];
+  activeId: string | null;
+  now: number;
+  onToggleMore: (path: string) => void;
+}) {
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const [view, setView] = useState({ top: 0, height: 800 });
+  const offsets = useMemo(() => {
+    const list = [0];
+    for (const row of rows) list.push(list.at(-1)! + rowHeight(row));
+    return list;
+  }, [rows]);
+
+  useEffect(() => {
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+    const update = () => setView({ top: scroller.scrollTop, height: scroller.clientHeight });
+    const observer = new ResizeObserver(update);
+    observer.observe(scroller);
+    update();
+    return () => observer.disconnect();
+  }, []);
+
+  const overscan = 600;
+  const start = Math.max(0, upperBound(offsets, view.top - overscan) - 1);
+  const end = Math.min(rows.length, upperBound(offsets, view.top + view.height + overscan));
+  return (
+    <div
+      ref={scrollerRef}
+      onScroll={(event) => setView({ top: event.currentTarget.scrollTop, height: event.currentTarget.clientHeight })}
+      className="min-h-0 flex-1 overflow-y-auto px-2 pb-2 [scrollbar-gutter:stable]"
+    >
+      <div style={{ height: offsets.at(-1), position: "relative" }}>
+        <div style={{ transform: `translateY(${offsets[start]}px)` }}>
+          {rows.slice(start, end).map((row) => (
+            <div key={row.key} style={{ height: rowHeight(row) }} className={row.kind === "thread" ? "pb-px" : undefined}>
+              {row.kind === "project" ? (
+                <ProjectHeader row={row} />
+              ) : row.kind === "thread" ? (
+                <ThreadRow thread={row.thread} nested={row.nested} active={row.thread.id === activeId} now={now} />
+              ) : row.kind === "more" ? (
+                <MoreRow row={row} onToggle={onToggleMore} />
+              ) : (
+                <div className="flex h-full items-center ps-9 text-xs text-sidebar-muted-foreground">{row.text}</div>
+              )}
+            </div>
           ))}
-          {hidden > 0 || expanded ? (
-            <li className="list-none">
-              <button
-                type="button"
-                onClick={() => setExpanded(!expanded)}
-                className="h-7 w-full rounded-md ps-9 text-left text-xs text-sidebar-muted-foreground hover:bg-sidebar-row-hover hover:text-sidebar-foreground"
-              >
-                {expanded ? t("sidebar.showLess") : t("sidebar.showMore", { n: hidden })}
-              </button>
-            </li>
-          ) : null}
-        </ul>
-      )}
-    </li>
+        </div>
+      </div>
+    </div>
   );
 }
 
-function ThreadWithChildren({
-  thread,
-  childThreads,
-  activeId,
-  now,
-}: {
-  thread: ThreadSummary;
-  childThreads: ThreadSummary[] | undefined;
-  activeId: string | null;
-  now: number;
-}) {
+function MoreRow({ row, onToggle }: { row: Extract<SidebarRow, { kind: "more" }>; onToggle: (path: string) => void }) {
+  const t = useT();
   return (
-    <>
-      <ThreadRow thread={thread} active={thread.id === activeId} now={now} />
-      {childThreads?.map((child) => (
-        <ThreadRow key={child.id} thread={child} active={child.id === activeId} nested now={now} />
-      ))}
-    </>
+    <button
+      type="button"
+      onClick={() => onToggle(row.path)}
+      className="h-7 w-full rounded-md ps-9 text-left text-xs text-sidebar-muted-foreground hover:bg-sidebar-row-hover hover:text-sidebar-foreground"
+    >
+      {row.expanded ? t("sidebar.showLess") : t("sidebar.showMore", { n: row.hidden })}
+    </button>
   );
+}
+
+function rowHeight(row: SidebarRow) {
+  return row.kind === "thread" ? (row.nested ? ROW_HEIGHT.nested : ROW_HEIGHT.thread) : ROW_HEIGHT[row.kind];
+}
+
+function upperBound(offsets: number[], value: number) {
+  let low = 0;
+  let high = offsets.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if (offsets[middle]! <= value) low = middle + 1;
+    else high = middle;
+  }
+  return low;
 }
 
 function FilterMenu() {
   const t = useT();
   const filters = useStore((s) => s.filters);
   const agents = useStore((s) => s.agents);
-  const active = filters.agentIds.length + filters.sources.length + (filters.showArchived ? 1 : 0);
+  const hiddenCount = useStore((s) => s.projects.filter((p) => p.hidden).length);
+  const active = filters.agentIds.length + filters.sources.length + (filters.showArchived ? 1 : 0) + (filters.showHidden ? 1 : 0);
   const toggle = <T extends string>(list: T[], value: T) => (list.includes(value) ? list.filter((v) => v !== value) : [...list, value]);
   return (
     <Menu>
@@ -344,8 +369,16 @@ function FilterMenu() {
         >
           {t("sidebar.showArchived")}
         </MenuCheckboxItem>
+        <MenuCheckboxItem
+          checked={filters.showHidden}
+          onCheckedChange={(checked) => actions.setFilters({ showHidden: checked })}
+          closeOnClick={false}
+        >
+          {t("sidebar.showHidden")}
+          {hiddenCount > 0 ? <span className="ms-auto text-xs tabular-nums text-muted-foreground">{hiddenCount}</span> : null}
+        </MenuCheckboxItem>
         {active > 0 ? (
-          <MenuItem onClick={() => actions.setFilters({ agentIds: [], sources: [], showArchived: false })}>
+          <MenuItem onClick={() => actions.setFilters({ agentIds: [], sources: [], showArchived: false, showHidden: false })}>
             {t("sidebar.clearFilters")}
           </MenuItem>
         ) : null}
@@ -389,14 +422,60 @@ export function SidebarContent() {
       byProject.set(key, [...(byProject.get(key) ?? []), thread]);
     }
     const visibleProjects = projects
-      .filter((project) => !project.hidden)
+      .filter((project) => filters.showHidden || !project.hidden)
       .sort((a, b) => Number(b.pinned) - Number(a.pinned) || (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0));
     const known = new Set(projects.map((project) => normalize(project.path)));
     const other = [...byProject.entries()].filter(([key]) => !known.has(key)).flatMap(([, list]) => list);
-    return { visibleProjects, byProject, children, other };
+    const nameCounts = new Map<string, number>();
+    for (const project of visibleProjects) nameCounts.set(project.name.toLowerCase(), (nameCounts.get(project.name.toLowerCase()) ?? 0) + 1);
+    const suffixes = new Map<string, string>();
+    for (const project of visibleProjects) {
+      if ((nameCounts.get(project.name.toLowerCase()) ?? 0) < 2) continue;
+      const parts = project.path.split(/[\\/]/).filter(Boolean);
+      suffixes.set(project.path, parts.at(-2) ?? "");
+    }
+    return { visibleProjects, byProject, children, other, suffixes };
   }, [threads, projects, filters]);
 
   const filtering = filters.agentIds.length > 0 || filters.sources.length > 0;
+  const collapsedProjects = useStore((s) => s.collapsedProjects);
+  const [expandedMore, setExpandedMore] = useState<Record<string, boolean>>({});
+  const toggleMore = useCallback((path: string) => setExpandedMore((current) => ({ ...current, [path]: !current[path] })), []);
+
+  const rows = useMemo(() => {
+    const out: SidebarRow[] = [];
+    const add = (project: Extract<SidebarRow, { kind: "project" }>["project"], list: ThreadSummary[], suffix?: string) => {
+      if (filtering && list.length === 0) return;
+      const collapsed = !!collapsedProjects[project.path];
+      const attention = !collapsed
+        ? null
+        : list.some((thread) => thread.status === "awaiting_input")
+          ? "bg-warning"
+          : list.some((thread) => thread.status === "running")
+            ? "bg-info"
+            : null;
+      out.push({ kind: "project", key: `p:${project.path}`, project, suffix, count: list.length, collapsed, attention });
+      if (collapsed) return;
+      if (list.length === 0) {
+        out.push({ kind: "empty", key: `e:${project.path}`, text: project.exists ? t("sidebar.noThreads") : t("sidebar.missing") });
+        return;
+      }
+      const expanded = !!expandedMore[project.path];
+      const activeIndex = list.findIndex(
+        (thread) => thread.id === activeId || groups.children.get(thread.id)?.some((child) => child.id === activeId),
+      );
+      const limit = expanded ? list.length : Math.max(PAGE, activeIndex + 1);
+      for (const thread of list.slice(0, limit)) {
+        out.push({ kind: "thread", key: `t:${thread.id}`, thread, nested: false });
+        for (const child of groups.children.get(thread.id) ?? []) out.push({ kind: "thread", key: `c:${child.id}`, thread: child, nested: true });
+      }
+      const hidden = list.length - Math.min(limit, list.length);
+      if (hidden > 0 || expanded) out.push({ kind: "more", key: `m:${project.path}`, path: project.path, hidden, expanded });
+    };
+    for (const project of groups.visibleProjects) add(project, groups.byProject.get(normalize(project.path)) ?? [], groups.suffixes.get(project.path));
+    if (groups.other.length > 0) add({ path: "", name: t("sidebar.other"), exists: true, pinned: false, hidden: false }, groups.other);
+    return out;
+  }, [groups, collapsedProjects, expandedMore, activeId, filtering, t]);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -421,41 +500,16 @@ export function SidebarContent() {
           }
         />
       </div>
-      <nav className="min-h-0 flex-1 overflow-y-auto px-2 pb-2 [scrollbar-gutter:stable]">
-        <div className="px-(--sidebar-row-content-inset) pt-1 pb-1.5 text-xs font-medium text-sidebar-muted-foreground">
-          {t("sidebar.projects")}
+      <div className="shrink-0 px-(--sidebar-row-content-inset) pt-1 pb-0.5 ps-[calc(var(--sidebar-row-content-inset)+0.5rem)] text-xs font-medium text-sidebar-muted-foreground">
+        {t("sidebar.projects")}
+      </div>
+      {rows.length === 0 ? (
+        <div className="min-h-0 flex-1 px-4 py-2 text-xs text-sidebar-muted-foreground">
+          {filtering ? t("sidebar.noMatches") : t("sidebar.noProjects")}
         </div>
-        <ul>
-          {groups.visibleProjects.length === 0 && groups.other.length === 0 ? (
-            <li className="list-none px-3 py-2 text-xs text-sidebar-muted-foreground">
-              {filtering ? t("sidebar.noMatches") : t("sidebar.noProjects")}
-            </li>
-          ) : null}
-          {groups.visibleProjects.map((project) => {
-            const list = groups.byProject.get(normalize(project.path)) ?? [];
-            if (filtering && list.length === 0) return null;
-            return (
-              <ProjectGroup
-                key={project.path}
-                project={project}
-                threads={list}
-                childMap={groups.children}
-                activeId={activeId}
-                now={now}
-              />
-            );
-          })}
-          {groups.other.length > 0 ? (
-            <ProjectGroup
-              project={{ path: "", name: t("sidebar.other"), exists: true, pinned: false }}
-              threads={groups.other}
-              childMap={groups.children}
-              activeId={activeId}
-              now={now}
-            />
-          ) : null}
-        </ul>
-      </nav>
+      ) : (
+        <VirtualRows rows={rows} activeId={activeId} now={now} onToggleMore={toggleMore} />
+      )}
       <div className="shrink-0 px-2 pt-1 pb-[calc(0.5rem+env(safe-area-inset-bottom))]">
         <SidebarAction
           icon={SettingsIcon}

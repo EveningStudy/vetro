@@ -22,7 +22,10 @@ import { MobileSidebarButton } from "../Shell";
 import { Button } from "../ui/button";
 import { Dialog, DialogDescription, DialogPopup, DialogTitle, Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger, Tip } from "../ui/overlay";
 import { Badge, Input, Spinner } from "../ui/primitives";
+import { RpcFailure } from "~/api/protocol";
 import { Composer } from "./Composer";
+import { SignInCard } from "./NewThread";
+import { prepare } from "./OptionPicker";
 import { sourceLabel } from "./sourceLabel";
 import { Timeline } from "./Timeline";
 
@@ -31,21 +34,35 @@ export function ThreadView({ threadId }: { threadId: string }) {
   const thread = useStore((s) => s.open[threadId]);
   const summary = useStore((s) => s.threads[threadId] ?? s.open[threadId]?.summary);
   const rawOpen = useStore((s) => s.rawPanelOpen);
-  const [failed, setFailed] = useState(false);
+  const [failure, setFailure] = useState<unknown>(null);
+  const [attempt, setAttempt] = useState(0);
+  const agent = useStore((s) => s.agents.find((a) => a.id === (summary?.agentId ?? threadId.split(":")[0])));
 
   useEffect(() => {
-    setFailed(false);
+    setFailure(null);
     actions.retain(threadId);
-    actions.openThread(threadId).catch(() => setFailed(true));
+    actions.openThread(threadId).catch((error: unknown) => setFailure(error ?? true));
     return () => actions.release(threadId);
-  }, [threadId]);
+  }, [threadId, attempt]);
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         {summary ? <ThreadHeader thread={thread} threadId={threadId} /> : <BareHeader />}
-        {failed && !thread ? (
-          <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">{t("thread.notFound")}</div>
+        {failure && !thread ? (
+          <div className="flex flex-1 flex-col items-center justify-center gap-3 px-(--workspace-gutter) text-sm text-muted-foreground">
+            {needsAuth(failure) && agent ? (
+              <SignInCard agent={agent} onDone={() => setAttempt((n) => n + 1)} />
+            ) : (
+              <>
+                <span>{t("thread.notFound")}</span>
+                {failure instanceof RpcFailure ? <span className="max-w-lg text-center text-xs">{failure.message}</span> : null}
+                <Button size="sm" variant="outline" onClick={() => setAttempt((n) => n + 1)}>
+                  {t("common.retry")}
+                </Button>
+              </>
+            )}
+          </div>
         ) : (
           <>
             <Timeline threadId={threadId} />
@@ -78,7 +95,7 @@ function ThreadHeader({ thread, threadId }: { thread: OpenThread | undefined; th
   const rawOpen = useStore((s) => s.rawPanelOpen);
   const [renaming, setRenaming] = useState(false);
   const modelOption = thread?.options.find((option) => option.category === "model");
-  const model = modelOption?.choices.find((choice) => choice.value === modelOption.currentValue)?.name ?? summary.model;
+  const model = (modelOption && prepare(modelOption).find((choice) => choice.value === modelOption.currentValue)?.label) ?? summary.model;
 
   return (
     <header className="flex h-(--workspace-topbar-height) shrink-0 items-center gap-2 px-(--workspace-gutter)">
@@ -227,7 +244,11 @@ function ThreadComposer({ thread }: { thread: OpenThread }) {
   const agent = useStore((s) => s.agents.find((a) => a.id === summary.agentId));
   const agentName = agent?.name ?? summary.agentId;
   const running = summary.status === "running" || summary.status === "awaiting_input";
+  const [signIn, setSignIn] = useState(false);
+  const needsSignIn = agent && (signIn || agent.auth.state === "required") && agent.auth.methods.length > 0;
   return (
+    <>
+    {needsSignIn ? <SignInCard agent={agent} onDone={() => setSignIn(false)} /> : null}
     <Composer
       draftKey={summary.id}
       agentName={agentName}
@@ -235,7 +256,12 @@ function ThreadComposer({ thread }: { thread: OpenThread }) {
       options={thread.options}
       commands={thread.commands}
       onOptionChange={(optionId, value) => void actions.setOption(summary.id, optionId, value)}
-      onSubmit={(content) => actions.send(summary.id, content)}
+      onSubmit={(content) =>
+        actions.send(summary.id, content).catch((error: unknown) => {
+          if (needsAuth(error)) setSignIn(true);
+          throw error;
+        })
+      }
       onStop={() => void actions.interrupt(summary.id)}
       running={running}
       midTurnInput={agent?.capabilities.midTurnInput}
@@ -245,5 +271,10 @@ function ThreadComposer({ thread }: { thread: OpenThread }) {
       usage={thread.usage}
       autoFocus
     />
+    </>
   );
+}
+
+function needsAuth(error: unknown) {
+  return error instanceof RpcFailure && (error.code === "auth_required" || /authenticat/i.test(error.message));
 }

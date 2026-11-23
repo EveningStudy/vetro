@@ -26,5 +26,6 @@ export function sourceLabel(thread: ThreadSummary, agentName: string | undefined
   if (thread.source === "vetro") return "Vetro";
   if (thread.source === "exec") return execCommands[thread.agentId] ?? `${thread.agentId} exec`;
   if (origin && /[A-Z ]/.test(origin)) return origin;
+  if (thread.source === "unknown") return agentName ?? thread.agentId;
   return `${agentName ?? thread.agentId} ${t(`source.${thread.source}`)}`;
 }
