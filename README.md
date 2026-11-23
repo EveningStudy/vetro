@@ -32,7 +32,7 @@ Every change to Vetro has to keep these rules (see [AGENTS.md](AGENTS.md)):
 1. **Zero injection.** The agent receives exactly what you typed. Vetro adds no system prompts, developer instructions, skills, MCP servers, tools, wrapper text or replayed history. Model, mode and thinking-level choices go through the agent's own switches, and only when you change them.
 2. **Zero footprint.** Vetro writes only under `~/.vetro`. It never creates, modifies or deletes anything in `~/.claude`, `~/.codex`, `~/.gemini`, `~/.agents`, Devin's folders or your projects. Other tools' databases are opened read-only. (The agents still write their own sessions and logs, as they do in the terminal.)
 3. **Native runtimes only.** Vetro launches the binaries it finds on your machine. It never downloads an agent and never reads, copies, forwards or stores credentials. You sign in through each agent's own flow.
-4. **No orphans.** Every child process dies when Vetro exits: a Job Object on Windows, a process group on Unix.
+4. **No orphans.** Every child process dies when Vetro exits: a Job Object on Windows; on macOS and Linux a watchdog that kills the process group and the descendants it tracks.
 5. **Light.** One Rust process. No Node, no Electron and no bundled browser at runtime. Idle agent processes are released and resumed when you need them again.
 6. **Same rules for every agent.** No agent gets special restrictions or special features in the UI.
 
@@ -55,7 +55,7 @@ Vetro never handles credentials. When an agent needs you to sign in, Vetro offer
 - **One sidebar for every session.** Vetro lists every session each agent has stored, including sessions you created in the vendors' own desktop apps and CLIs. Continue a session where the agent allows it; otherwise it opens read-only.
 - **Full-text search** across titles and messages, in English and Chinese.
 - **Links between agents.** When one agent runs another agent's CLI (for example, Claude Code calling `codex exec`), the child session appears under the tool call that started it and updates live.
-- **Raw log.** Each thread can show every byte Vetro sent to the agent and every line it got back, including the command line used to start the agent.
+- **Raw log.** Each thread can show what Vetro sent to the agent process and what came back, including the command line used to start the agent. The log is kept up to a size limit; the oldest entries are dropped first.
 - **Permission requests and questions** from the agent, answered in place.
 - **Model, mode and thinking-level pickers** whose options come from the agent itself.
 - **Remote access** over your own Tailscale network, with device pairing. The server only listens on `127.0.0.1`.
@@ -80,12 +80,12 @@ Measured on Windows 11 on 2026-11-23, version 0.1.0:
 
 | | Size |
 |---|---|
-| Windows installer | 3.1 MB |
-| Desktop executable | 9.5 MB |
-| Headless binary (`vetro`) | 6.0 MB |
-| Vetro process at idle | about 38 MB working set (14 MB private) |
-| macOS dmg | 4.9 MB |
-| Linux deb | 5.0 MB |
+| Windows installer | 3.4 MB |
+| Desktop executable | 10.3 MB |
+| Headless binary (`vetro`) | 6.9 MB |
+| Vetro process at idle | about 40 MB working set (18 MB private) |
+| macOS dmg | 5.3 MB |
+| Linux deb | 5.4 MB |
 
 The window uses the system WebView (WebView2 on Windows, WKWebView on macOS, WebKitGTK on Linux), so no browser is bundled. The core is Rust, the shell is Tauri 2, and the UI is React.
 
@@ -109,14 +109,16 @@ You do not have to take the rules on trust.
 <!-- STATUS:BEGIN -->
 ## Status
 
-Version 0.1.0 is the first build and has not been published yet.
+Version 0.1.0 is the first build and has not been published yet. Checked on 2026-11-23:
 
 | Platform or agent | Verified |
 |---|---|
-| Windows desktop | Live sessions with Codex, Claude Code and Devin |
-| Antigravity | Connection, session list and stored history. A live reply has not been verified yet (the test account's quota was exhausted). |
-| macOS | The app builds and runs; Codex verified live |
-| Linux | Builds (deb, AppImage) |
+| Windows 11 desktop | Live sessions with Codex, Claude Code and Devin; stored history of all four agents; a Claude Code session running `codex exec` shown as a linked child; installer builds. |
+| Antigravity | Connection over `agy acp`, session list, stored history of the desktop app and the CLI. A live reply has not been verified yet: the test account's quota was exhausted (HTTP 429), and the error was shown as the agent reported it. |
+| Remote access | A Mac reached the Windows host over Tailscale: pairing, listing and the limits for remote devices. Not yet tried on a phone. |
+| macOS (Apple Silicon) | The app builds and runs; Codex verified live; no child process left after a hard kill. Only Codex was installed on the test Mac. The window itself was not inspected. |
+| Linux (x86_64) | deb and AppImage build; the core ran a full session with a test ACP agent, and no child process was left after a hard kill. No vendor agent was installed on the test machine, and the window was not inspected. |
+| Not verified | Device-code sign-in, image input, questions asked by a real agent, Intel Macs, ARM Linux. |
 <!-- STATUS:END -->
 
 ## Getting started
