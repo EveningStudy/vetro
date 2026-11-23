@@ -78,6 +78,11 @@ fn app_server() {
                 assert_eq!(params, &json!({"refreshToken": false}));
                 json!({"account": {"type": "chatgpt", "planType": "pro"}, "requiresOpenaiAuth": true})
             }
+            "account/login/start" => {
+                assert_eq!(params, &json!({"type": "chatgptDeviceCode"}));
+                json!({"type": "chatgptDeviceCode", "loginId": "fake-login", "userCode": "fake-code",
+                    "verificationUrl": "https://example.test/device"})
+            }
             "account/rateLimits/read" => {
                 json!({"rateLimits": {"limitId": "main", "limitName": "Main",
                 "primary": {"usedPercent": 7, "windowDurationMins": 300, "resetsAt": 60}}})
@@ -264,7 +269,18 @@ async fn test_adapter() {
     assert_eq!(info.version.as_deref(), Some("0.169.0"));
     assert_eq!(info.auth.state, AuthState::Ok);
     assert_eq!(info.auth.methods[0].id, "chatgpt");
-    let options = agent.options(None).await.unwrap().options;
+    let auth = agent.authenticate("chatgptDeviceCode").await.unwrap();
+    assert_eq!(auth.code.as_deref(), Some("fake-code"));
+    assert_eq!(auth.url.as_deref(), Some("https://example.test/device"));
+    let options = agent.options(None, &BTreeMap::new()).await.unwrap().options;
+    let choices = BTreeMap::from([("model".into(), "alternative".into())]);
+    let preview = agent.options(None, &choices).await.unwrap();
+    let effort = preview
+        .options
+        .iter()
+        .find(|option| option.id == "effort")
+        .unwrap();
+    assert_eq!(effort.choices[0].value, "high");
     assert!(options
         .iter()
         .any(|option| option.id == "model" && option.choices.len() == 2));
@@ -309,6 +325,9 @@ async fn test_adapter() {
         .await
         .unwrap();
     assert!(Arc::ptr_eq(&first.wire_log(), &second.wire_log()));
+    assert!(first.wire_log().snapshot().iter().all(|entry| {
+        !entry.text.contains("fake-code") && !entry.text.contains("https://example.test/device")
+    }));
     let (sink, _) = mpsc::unbounded_channel();
     let third = agent
         .start(

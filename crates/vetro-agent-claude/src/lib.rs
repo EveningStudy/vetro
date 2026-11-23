@@ -10,7 +10,10 @@ use vetro_agent_api::{
     async_trait, process::SpawnSpec, Agent, AgentError, AgentOptions, EventSink, Result, Session,
     SessionPage, StartRequest, Transcript,
 };
-use vetro_proto::{rpc::ErrorCode, AgentAuth, AgentCapabilities, AgentInfo, AgentKind, AuthState};
+use vetro_proto::{
+    rpc::{AuthenticateResult, ErrorCode},
+    AgentAuth, AgentCapabilities, AgentInfo, AgentKind, AuthState,
+};
 
 mod events;
 mod history;
@@ -164,14 +167,18 @@ impl Agent for ClaudeAgent {
         }
     }
 
-    async fn authenticate(&self, _method_id: &str) -> Result<()> {
+    async fn authenticate(&self, _method_id: &str) -> Result<AuthenticateResult> {
         Err(AgentError::new(
             ErrorCode::AuthRequired,
             "Sign in using Claude Code's native terminal: claude auth login",
         ))
     }
 
-    async fn options(&self, cwd: Option<&Path>) -> Result<AgentOptions> {
+    async fn options(
+        &self,
+        cwd: Option<&Path>,
+        _: &BTreeMap<String, String>,
+    ) -> Result<AgentOptions> {
         self.probe(cwd).await.map(|(_, options)| options)
     }
 

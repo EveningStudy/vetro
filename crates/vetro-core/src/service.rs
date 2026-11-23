@@ -61,17 +61,14 @@ impl Core {
             let minutes = self.home.settings().idle_release_minutes;
             let idle = (minutes != 0).then(|| Duration::from_secs(u64::from(minutes) * 60));
             self.sessions.maintenance(idle).await;
-            if let Some(idle) = idle {
-                self.registry
-                    .release_idle(
-                        idle,
-                        |id| self.sessions.has_live(id),
-                        |id| {
-                            self.history_authenticated.write().unwrap().remove(id);
-                        },
-                    )
-                    .await;
-            }
+            self.registry
+                .release_idle(
+                    |id| self.sessions.has_live(id),
+                    |id| {
+                        self.history_authenticated.write().unwrap().remove(id);
+                    },
+                )
+                .await;
         }
     }
 
@@ -184,7 +181,7 @@ impl Core {
             })
     }
 
-    pub async fn authenticate(&self, params: AuthenticateParams) -> Result<()> {
+    pub async fn authenticate(&self, params: AuthenticateParams) -> Result<AuthenticateResult> {
         self.check_agent_enabled(&params.agent_id)?;
         let agent = self.registry.get(&params.agent_id)?;
         let result = {
@@ -198,10 +195,12 @@ impl Core {
             }
             result
         };
-        self.auth_result(&params.agent_id, result).await?;
+        let result = self.auth_result(&params.agent_id, result).await?;
         self.request_history_refresh();
-        self.set_agent_auth(&params.agent_id, AuthState::Ok).await;
-        Ok(())
+        if params.agent_id != "codex" {
+            self.set_agent_auth(&params.agent_id, AuthState::Ok).await;
+        }
+        Ok(result)
     }
 
     pub(crate) async fn auth_result<T>(&self, id: &str, result: Result<T>) -> Result<T> {
@@ -239,7 +238,9 @@ impl Core {
             .map(Path::new)
             .map(files::directory)
             .transpose()?;
-        let key = serde_json::to_string(&(&params.agent_id, cwd.as_ref())).map_err(internal)?;
+        let selected = params.selected.unwrap_or_default();
+        let key = serde_json::to_string(&(&params.agent_id, cwd.as_ref(), &selected))
+            .map_err(internal)?;
         if let Some(cached) = self
             .home
             .read_state(|state| state.options.get(&key).cloned())
@@ -248,7 +249,7 @@ impl Core {
         }
         let result = {
             let _guard = self.registry.enter(agent.id(), true).await;
-            agent.options(cwd.as_deref()).await
+            agent.options(cwd.as_deref(), &selected).await
         };
         let options = self.auth_result(agent.id(), result).await?;
         let result = AgentOptionsResult {

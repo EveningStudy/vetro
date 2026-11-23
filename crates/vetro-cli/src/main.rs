@@ -129,11 +129,13 @@ async fn show_thread(
                 .map(|method| method.id)
                 .ok_or("No authentication methods available")?,
         };
-        core.authenticate(AuthenticateParams {
-            agent_id: agent.into(),
-            method_id: method,
-        })
-        .await?;
+        probe::show_auth(
+            core.authenticate(AuthenticateParams {
+                agent_id: agent.into(),
+                method_id: method,
+            })
+            .await?,
+        );
     }
     core.refresh_history().await;
     let thread = core.open_thread(id, limit).await?;

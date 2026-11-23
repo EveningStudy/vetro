@@ -37,7 +37,8 @@ pub(crate) struct State {
 
 #[derive(Clone, Deserialize, Serialize)]
 pub(crate) struct Device {
-    pub secret: String,
+    #[serde(rename = "tokenHash", alias = "secret")]
+    pub token_hash: String,
     pub details: RemoteDevice,
 }
 
@@ -95,8 +96,17 @@ impl Home {
         };
         let state_path = root.join("state.json");
         let mut state: State = read(&state_path)?.unwrap_or_default();
-        if state.local_token.is_empty() {
+        let mut changed = state.local_token.is_empty();
+        if changed {
             state.local_token = secret(32)?;
+        }
+        for device in state.devices.values_mut() {
+            if !device.token_hash.starts_with("sha256:") {
+                device.token_hash = device_token_hash(&device.token_hash);
+                changed = true;
+            }
+        }
+        if changed {
             write(&state_path, &state)?;
         }
         Ok(Self {
@@ -219,6 +229,10 @@ pub(crate) fn secret(size: usize) -> Result<String> {
 
 pub(crate) fn equal(left: &str, right: &str) -> bool {
     bool::from(left.as_bytes().ct_eq(right.as_bytes()))
+}
+
+pub(crate) fn device_token_hash(token: &str) -> String {
+    format!("sha256:{:x}", Sha256::digest(token.as_bytes()))
 }
 
 fn read<T: DeserializeOwned>(path: &Path) -> Result<Option<T>> {

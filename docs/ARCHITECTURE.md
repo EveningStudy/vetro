@@ -76,7 +76,7 @@ One generic ACP v1 client (`agent-client-protocol` crate or a small hand-written
 - A thread id is `<agentId>:<nativeSessionId>`. Threads exist whether or not Vetro started them; attaching a live native session to one makes it `live`.
 - Each open thread keeps its items in memory and an event log with a per-thread `seq`. Clients open a thread, get the newest page of items plus the current `seq`, then receive `thread.event`s. After a reconnect the client opens the thread again and replaces its copy.
 - Sending to a thread that is not live resumes the native session first (`thread/resume`, `--resume`, `session/load` or `session/resume`). If the agent cannot resume it, the thread is read-only (`resumable: false`).
-- Agent processes with no running turn and no open request are stopped after `idleReleaseMinutes`; the next message resumes the session. A thread waiting on a permission request is never released.
+- The `idleReleaseMinutes` setting controls live sessions with no running turn or open request. A thread waiting on a permission request stays live. An agent process with no live session or call in flight is released after about a minute regardless of that setting. Later calls restart it on demand. Dormant protocol history polls slow down to about once a minute. File changes and open history threads still trigger timely refreshes.
 - All children are in one Windows Job Object (`KILL_ON_JOB_CLOSE`) or Unix process group and are killed when the core exits, also on panic or kill of the parent.
 
 ## History (read-only)
@@ -113,8 +113,9 @@ Matching prefers exact evidence, then prompts, then matching directories and exe
 
 ## Server and remote access
 
-- The server binds `127.0.0.1` only. Remote devices reach it through `tailscale serve` (or any reverse proxy the user runs); Vetro never listens on other interfaces and never opens firewall ports.
-- Every request needs a session cookie. The desktop window gets it by exchanging the local token from `state.json`; a new device gets it by entering a one-time pairing code shown on the desktop. Check `Origin` and `Host` on every request and on the WebSocket upgrade.
+- The server binds only to `127.0.0.1`. The desktop client can explicitly enable remote access and start Tailscale Serve on HTTPS port `8443` for the machine's Tailscale DNS name. Vetro runs a process-scoped Serve entry in the background. Disabling remote access or exiting removes that entry. Vetro refuses to take an occupied port `8443`.
+- All HTTP routes and WebSocket upgrades check `Host` and any supplied `Origin`. Loopback is always accepted. The machine's Tailscale DNS name on HTTPS port `8443` is accepted only while remote access is enabled.
+- The desktop exchanges its local token for a loopback cookie. Remote devices exchange a single-use, 10-minute code for a `Secure`, `HttpOnly`, `SameSite=Strict` cookie. Exchanges are rate-limited and device tokens are stored as hashes. Disabling remote access or revoking a device closes its remote sockets.
 - HTTP endpoints: `GET /api/health`, `POST /api/auth/local`, `POST /api/auth/pair`, `GET /api/ws`, and the static UI with SPA fallback. Everything else goes over the WebSocket (see `docs/API.md`).
 - The UI is embedded in the binary from `apps/web/dist`. In development `VETRO_WEB_DIR` serves it from disk, and the Vite dev server proxies `/api` to the core.
 

@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, HashSet},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 use vetro_agent_acp::AcpAgent;
@@ -9,7 +9,7 @@ use vetro_agent_api::{
     async_trait, Agent, AgentOptions, EventSink, Result, Session, SessionPage, SessionRecord,
     StartRequest, Transcript,
 };
-use vetro_proto::AgentInfo;
+use vetro_proto::{rpc::AuthenticateResult, AgentInfo};
 use vetro_store_antigravity::Store;
 
 use crate::{bad_request, internal};
@@ -17,6 +17,7 @@ use crate::{bad_request, internal};
 pub(super) struct Antigravity {
     acp: AcpAgent,
     roots: [PathBuf; 2],
+    acp_records: Mutex<Vec<SessionRecord>>,
 }
 
 impl Antigravity {
@@ -25,6 +26,7 @@ impl Antigravity {
         Self {
             acp,
             roots: [gemini.join("antigravity"), gemini.join("antigravity-cli")],
+            acp_records: Mutex::default(),
         }
     }
 
@@ -44,6 +46,59 @@ impl Antigravity {
             cursor = Some(next);
         }
     }
+
+    async fn list_combined(&self, use_acp: bool) -> Result<SessionPage> {
+        let roots = self.roots.clone();
+        let disk = tokio::task::spawn_blocking(move || roots.map(|root| Store::open(root).list()));
+        let acp = if use_acp {
+            self.acp_list().await.map(Some)
+        } else {
+            Ok(None)
+        };
+        if let Ok(Some(records)) = &acp {
+            self.acp_records.lock().unwrap().clone_from(records);
+        }
+        let mut sessions: BTreeMap<_, _> = self
+            .acp_records
+            .lock()
+            .unwrap()
+            .iter()
+            .cloned()
+            .map(|record| (record.native_id.clone(), record))
+            .collect();
+        let mut disk_error = None;
+        for result in disk.await.map_err(internal)? {
+            match result {
+                Ok(records) => {
+                    for mut record in records {
+                        if let Some(acp) = sessions.get(&record.native_id) {
+                            record.resumable = acp.resumable;
+                            record.model = record.model.or_else(|| acp.model.clone());
+                            record.updated_at = record.updated_at.max(acp.updated_at);
+                        }
+                        sessions.insert(record.native_id.clone(), record);
+                    }
+                }
+                Err(error) => disk_error = Some(error),
+            }
+        }
+        if let Err(error) = acp {
+            if sessions.is_empty() {
+                return Err(disk_error.unwrap_or(error));
+            }
+        }
+        let mut sessions: Vec<_> = sessions.into_values().collect();
+        sessions.sort_by(|left, right| {
+            right
+                .updated_at
+                .cmp(&left.updated_at)
+                .then_with(|| left.native_id.cmp(&right.native_id))
+        });
+        Ok(SessionPage {
+            sessions,
+            next_cursor: None,
+        })
+    }
 }
 
 #[async_trait]
@@ -58,68 +113,40 @@ impl Agent for Antigravity {
         info
     }
 
-    async fn authenticate(&self, method_id: &str) -> Result<()> {
+    async fn authenticate(&self, method_id: &str) -> Result<AuthenticateResult> {
         self.acp.authenticate(method_id).await
     }
 
-    async fn options(&self, cwd: Option<&Path>) -> Result<AgentOptions> {
-        self.acp.options(cwd).await
+    async fn options(
+        &self,
+        cwd: Option<&Path>,
+        selected: &BTreeMap<String, String>,
+    ) -> Result<AgentOptions> {
+        self.acp.options(cwd, selected).await
     }
 
     async fn list(&self, cursor: Option<String>) -> Result<SessionPage> {
         if cursor.is_some() {
             return Err(bad_request("Antigravity does not return a list cursor"));
         }
-        let roots = self.roots.clone();
-        let disk = tokio::task::spawn_blocking(move || {
-            roots
-                .into_iter()
-                .map(|root| Store::open(root).list())
-                .collect::<Vec<_>>()
-        });
-        let (acp, disk) = tokio::join!(self.acp_list(), disk);
-        let disk = disk.map_err(internal)?;
-        let mut disk_error = None;
-        let mut disk_rows = Vec::new();
-        for result in disk {
-            match result {
-                Ok(rows) => disk_rows.extend(rows),
-                Err(error) => disk_error = Some(error),
-            }
-        }
-        let mut sessions: BTreeMap<_, _> = match acp {
-            Ok(rows) => rows
-                .into_iter()
-                .map(|record| (record.native_id.clone(), record))
-                .collect(),
-            Err(error) if disk_rows.is_empty() => return Err(disk_error.unwrap_or(error)),
-            Err(_) => BTreeMap::new(),
-        };
-        for mut record in disk_rows {
-            if let Some(acp) = sessions.remove(&record.native_id) {
-                record.resumable = acp.resumable;
-                record.model = record.model.or(acp.model);
-                record.updated_at = record.updated_at.max(acp.updated_at);
-            }
-            sessions.insert(record.native_id.clone(), record);
-        }
-        let mut sessions: Vec<_> = sessions.into_values().collect();
-        sessions.sort_by(|left, right| {
-            right
-                .updated_at
-                .cmp(&left.updated_at)
-                .then_with(|| left.native_id.cmp(&right.native_id))
-        });
-        Ok(SessionPage {
-            sessions,
-            next_cursor: None,
-        })
+        self.list_combined(true).await
+    }
+
+    async fn list_without_runtime(&self) -> Result<Option<SessionPage>> {
+        self.list_combined(false).await.map(Some)
     }
 
     async fn read(&self, native_id: &str, cwd: Option<&Path>) -> Result<Transcript> {
+        match self.read_without_runtime(native_id).await? {
+            Some(transcript) => Ok(transcript),
+            None => self.acp.read(native_id, cwd).await,
+        }
+    }
+
+    async fn read_without_runtime(&self, native_id: &str) -> Result<Option<Transcript>> {
         let roots = self.roots.clone();
         let id = native_id.to_owned();
-        let stored = tokio::task::spawn_blocking(move || {
+        tokio::task::spawn_blocking(move || {
             roots.into_iter().find_map(|root| {
                 Store::open(root)
                     .read(&id)
@@ -128,11 +155,7 @@ impl Agent for Antigravity {
             })
         })
         .await
-        .map_err(internal)?;
-        match stored {
-            Some(transcript) => Ok(transcript),
-            None => self.acp.read(native_id, cwd).await,
-        }
+        .map_err(internal)
     }
 
     async fn start(&self, req: StartRequest, sink: EventSink) -> Result<Arc<dyn Session>> {

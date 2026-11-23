@@ -6,7 +6,7 @@ use std::{
 
 use tokio::sync::mpsc;
 use vetro_proto::{
-    rpc::{ErrorCode, RpcError},
+    rpc::{AuthenticateResult, ErrorCode, RpcError},
     AgentInfo, ConfigOption, ContentBlock, ItemKind, RequestResolution, SlashCommand, ThreadSource,
     ThreadStatus, ThreadUsage,
 };
@@ -14,6 +14,7 @@ use vetro_proto::{
 pub use async_trait::async_trait;
 pub use wirelog::WireLog;
 
+pub mod detection;
 pub mod jsonrpc;
 pub mod process;
 pub mod wirelog;
@@ -119,11 +120,21 @@ pub struct StartRequest {
 pub trait Agent: Send + Sync + 'static {
     fn id(&self) -> &str;
     async fn info(&self) -> AgentInfo;
-    async fn authenticate(&self, method_id: &str) -> Result<()>;
-    async fn options(&self, cwd: Option<&Path>) -> Result<AgentOptions>;
+    async fn authenticate(&self, method_id: &str) -> Result<AuthenticateResult>;
+    async fn options(
+        &self,
+        cwd: Option<&Path>,
+        selected: &BTreeMap<String, String>,
+    ) -> Result<AgentOptions>;
     async fn list(&self, cursor: Option<String>) -> Result<SessionPage>;
+    async fn list_without_runtime(&self) -> Result<Option<SessionPage>> {
+        Ok(None)
+    }
     /// Read stored items without creating a live Vetro session.
     async fn read(&self, native_id: &str, cwd: Option<&Path>) -> Result<Transcript>;
+    async fn read_without_runtime(&self, _native_id: &str) -> Result<Option<Transcript>> {
+        Ok(None)
+    }
     /// Create a native session and submit the first prompt.
     async fn start(&self, req: StartRequest, sink: EventSink) -> Result<Arc<dyn Session>>;
     async fn attach(

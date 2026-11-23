@@ -25,7 +25,7 @@ Unknown fields must be ignored by both sides. Timestamps are milliseconds since 
 | `agents.authenticate` | `AuthenticateParams` | `AuthenticateResult` | Runs the agent's own sign-in method. The result carries a URL and code when the flow continues in a browser elsewhere. |
 | `agents.options` | `AgentOptionsParams` | `AgentOptionsResult` | Options and slash commands for a new thread, from the agent (cached). |
 | `projects.list` | `Empty` | `ProjectsResult` | Includes hidden projects. Missing directories sort last. |
-| `projects.add` | `ProjectAddParams` | `Project` | Adds a folder to Vetro's list only. |
+| `projects.add` | `ProjectAddParams` | `Project` | Desktop client only. Adds a folder to Vetro's list. |
 | `projects.update` | `ProjectUpdateParams` | `Project` | Vetro-local name, pin, hide. |
 | `threads.list` | `ThreadsListParams` | `ThreadsListResult` | Newest first, paged. Linked children appear when `includeChildren` is true or `parentId` is supplied. |
 | `threads.open` | `ThreadOpenParams` | `ThreadOpenResult` | Loads items and subscribes to `thread.event`. |
@@ -40,14 +40,14 @@ Unknown fields must be ignored by both sides. Timestamps are milliseconds since 
 | `threads.detach` | `ThreadIdParams` | `Empty` | Releases the agent process for this thread. |
 | `threads.raw` | `ThreadRawParams` | `ThreadRawResult` | Wire log. |
 | `search.threads` | `SearchParams` | `SearchResult` | Literal, case-insensitive full-text phrase search over titles and user and agent messages. Supports Chinese substrings. Returns one ranked hit per unarchived thread, with a matching snippet. Snippet text is HTML-escaped and matches use `<mark>` tags. |
-| `fs.list` | `FsListParams` | `FsListResult` | Folder picker. Read-only. |
-| `fs.find` | `FsFindParams` | `FsFindResult` | File mentions. Read-only. |
+| `fs.list` | `FsListParams` | `FsListResult` | Read-only folder picker. Remote clients are limited to known project roots. |
+| `fs.find` | `FsFindParams` | `FsFindResult` | Read-only file mentions. Remote clients are limited to known project roots. |
 | `settings.get` | `Empty` | `Settings` | |
-| `settings.update` | `SettingsUpdateParams` | `Settings` | |
+| `settings.update` | `SettingsUpdateParams` | `Settings` | Desktop client only. |
 | `remote.status` | `Empty` | `RemoteStatus` | |
 | `remote.set` | `RemoteSetParams` | `RemoteStatus` | Desktop client only. |
 | `remote.createPairing` | `Empty` | `Pairing` | Desktop client only. |
-| `remote.revokeDevice` | `RemoteRevokeParams` | `RemoteStatus` | |
+| `remote.revokeDevice` | `RemoteRevokeParams` | `RemoteStatus` | Remote clients can revoke their own device. |
 
 ## Events
 

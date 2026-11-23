@@ -31,6 +31,7 @@ use crate::{home::secret, internal, Core};
 
 mod auth;
 mod rpc;
+mod tailscale;
 
 include!(concat!(env!("OUT_DIR"), "/assets.rs"));
 
@@ -50,6 +51,12 @@ struct HttpState {
     address: SocketAddr,
     web_dir: Option<PathBuf>,
     stopping: watch::Receiver<bool>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RequestHost {
+    Local,
+    Remote,
 }
 
 impl Server {
@@ -92,6 +99,7 @@ impl Server {
         shutdown: impl Future<Output = ()> + Send + 'static,
     ) -> io::Result<()> {
         let core = self.state.core.clone();
+        let state = self.state.clone();
         let app = Router::new()
             .route("/api/health", get(health))
             .route("/api/auth/local", post(auth::local))
@@ -99,7 +107,7 @@ impl Server {
             .route("/api/auth/session", get(auth::session))
             .route("/api/ws", get(upgrade))
             .fallback(static_ui)
-            .layer(middleware::from_fn(check_origin))
+            .layer(middleware::from_fn_with_state(state.clone(), check_origin))
             .with_state(self.state);
         let history = tokio::spawn(core.clone().history_worker());
         let sessions = tokio::spawn(core.clone().session_worker());
@@ -109,6 +117,7 @@ impl Server {
                 self.stop.send_replace(true);
             })
             .await;
+        state.auth.stop().await;
         history.abort();
         sessions.abort();
         let _ = history.await;
@@ -150,17 +159,25 @@ async fn health() -> Json<serde_json::Value> {
     Json(json!({"ok": true, "version": env!("CARGO_PKG_VERSION")}))
 }
 
-async fn check_origin(request: Request, next: Next) -> Response {
+async fn check_origin(
+    State(state): State<Arc<HttpState>>,
+    mut request: Request,
+    next: Next,
+) -> Response {
     let headers = request.headers();
     let Some(host) = authority(headers) else {
         return StatusCode::FORBIDDEN.into_response();
     };
-    if !matches!(
+    let kind = if matches!(
         host.host().to_ascii_lowercase().as_str(),
         "localhost" | "127.0.0.1" | "[::1]"
     ) {
+        RequestHost::Local
+    } else if state.auth.allows(&host) {
+        RequestHost::Remote
+    } else {
         return StatusCode::FORBIDDEN.into_response();
-    }
+    };
     if let Some(origin) = headers.get(header::ORIGIN) {
         let same_origin = origin
             .to_str()
@@ -168,6 +185,7 @@ async fn check_origin(request: Request, next: Next) -> Response {
             .and_then(|value| value.parse::<Uri>().ok())
             .is_some_and(|origin| {
                 matches!(origin.scheme_str(), Some("http" | "https"))
+                    && (kind == RequestHost::Local || origin.scheme_str() == Some("https"))
                     && origin
                         .path_and_query()
                         .is_none_or(|path| path.as_str() == "/")
@@ -179,6 +197,7 @@ async fn check_origin(request: Request, next: Next) -> Response {
             return StatusCode::FORBIDDEN.into_response();
         }
     }
+    request.extensions_mut().insert(kind);
     next.run(request).await
 }
 
@@ -192,10 +211,11 @@ fn authority(headers: &HeaderMap) -> Option<Authority> {
 
 async fn upgrade(
     State(state): State<Arc<HttpState>>,
+    axum::Extension(host): axum::Extension<RequestHost>,
     headers: HeaderMap,
     upgrade: WebSocketUpgrade,
 ) -> Response {
-    let Some(client) = state.auth.client(&state.core.home, &headers) else {
+    let Some(client) = state.auth.client(&state, &headers, host) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
     upgrade
@@ -207,11 +227,14 @@ async fn websocket(mut socket: WebSocket, state: Arc<HttpState>, client: auth::C
     let mut connection = rpc::Connection::default();
     let mut events = state.core.events.subscribe();
     let mut stopping = state.stopping.clone();
+    let invalidated = client.invalidated(&state, state.auth.changes());
+    tokio::pin!(invalidated);
     if *stopping.borrow() {
         return;
     }
     loop {
         let message = tokio::select! {
+            _ = &mut invalidated => break,
             _ = stopping.changed() => break,
             incoming = socket.recv() => {
                 let Some(Ok(incoming)) = incoming else { break };
@@ -220,10 +243,11 @@ async fn websocket(mut socket: WebSocket, state: Arc<HttpState>, client: auth::C
                         let Ok(request) = serde_json::from_str::<RpcRequest>(&text) else {
                             break;
                         };
-                        if !client.valid(&state.core.home) {
+                        if !client.valid(&state) {
                             break;
                         }
                         let response = tokio::select! {
+                            _ = &mut invalidated => break,
                             _ = stopping.changed() => break,
                             response = rpc::dispatch(&state, &client, &mut connection, request) => response,
                         };
@@ -238,7 +262,7 @@ async fn websocket(mut socket: WebSocket, state: Arc<HttpState>, client: auth::C
                     Ok(event) => event,
                     Err(broadcast::error::RecvError::Lagged(_) | broadcast::error::RecvError::Closed) => break,
                 };
-                if !client.valid(&state.core.home) {
+                if !client.valid(&state) {
                     break;
                 }
                 if !connection.accepts(&event) {
@@ -255,6 +279,7 @@ async fn websocket(mut socket: WebSocket, state: Arc<HttpState>, client: auth::C
         };
         let Ok(message) = message else { break };
         let sent = tokio::select! {
+            _ = &mut invalidated => break,
             _ = stopping.changed() => break,
             sent = tokio::time::timeout(Duration::from_secs(10), socket.send(Message::Text(message.into()))) => sent,
         };

@@ -891,6 +891,7 @@ fn prompt_blocks(content: &[ContentBlock]) -> Result<Vec<Value>> {
     }
     content
         .iter()
+        .filter(|block| !matches!(block, ContentBlock::File { .. }))
         .map(|block| match block {
             ContentBlock::Text { text } => Ok(json!({"type":"text","text":text})),
             ContentBlock::Image {
@@ -910,9 +911,7 @@ fn prompt_blocks(content: &[ContentBlock]) -> Result<Vec<Value>> {
             ContentBlock::Image { .. } => Err(bad_request(
                 "Claude images require base64 data or an HTTP URL",
             )),
-            ContentBlock::File { .. } => Err(bad_request(
-                "Claude stream-json has no structured local file mention",
-            )),
+            ContentBlock::File { .. } => unreachable!(),
         })
         .collect()
 }

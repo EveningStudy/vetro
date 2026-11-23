@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -7,7 +8,10 @@ use std::{
 };
 
 use vetro_agent_api::*;
-use vetro_proto::{rpc::ErrorCode, *};
+use vetro_proto::{
+    rpc::{AuthenticateResult, ErrorCode},
+    *,
+};
 
 pub(crate) struct Fake {
     pub cwd: PathBuf,
@@ -52,13 +56,17 @@ impl Agent for Fake {
         }
     }
 
-    async fn authenticate(&self, method_id: &str) -> Result<()> {
+    async fn authenticate(&self, method_id: &str) -> Result<AuthenticateResult> {
         assert_eq!(method_id, "fake-login");
         self.authenticated.store(true, Ordering::Relaxed);
-        Ok(())
+        Ok(AuthenticateResult::default())
     }
 
-    async fn options(&self, _: Option<&Path>) -> Result<AgentOptions> {
+    async fn options(
+        &self,
+        _: Option<&Path>,
+        _: &BTreeMap<String, String>,
+    ) -> Result<AgentOptions> {
         Ok(AgentOptions {
             options: vec![model("native")],
             commands: Vec::new(),

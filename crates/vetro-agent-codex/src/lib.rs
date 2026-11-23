@@ -24,7 +24,8 @@ use vetro_agent_api::{
     Transcript, WireLog,
 };
 use vetro_proto::{
-    rpc::ErrorCode, AgentAuth, AgentCapabilities, AgentInfo, AgentKind, AuthMethod, AuthState,
+    rpc::{AuthenticateResult, ErrorCode},
+    AgentAuth, AgentCapabilities, AgentInfo, AgentKind, AuthMethod, AuthState,
 };
 
 pub use binary::resolve_binary;
@@ -45,17 +46,27 @@ const TIMEOUT: Duration = Duration::from_secs(60);
 
 pub struct CodexAgent {
     spec: Option<SpawnSpec>,
+    missing_binary_message: &'static str,
     app: AsyncMutex<Option<Arc<App>>>,
 }
 
 impl CodexAgent {
     pub fn new(binary: Option<PathBuf>) -> Self {
-        Self::from_spec(resolve_binary(binary.as_deref()).map(SpawnSpec::new))
+        Self::from_config(binary.as_deref(), SpawnSpec::new)
+    }
+
+    pub fn from_config(binary: Option<&Path>, spec: impl FnOnce(PathBuf) -> SpawnSpec) -> Self {
+        let mut agent = Self::from_spec(resolve_binary(binary).map(spec));
+        if agent.spec.is_none() {
+            agent.missing_binary_message = binary::missing_binary_message(binary);
+        }
+        agent
     }
 
     pub fn from_spec(spec: Option<SpawnSpec>) -> Self {
         Self {
             spec,
+            missing_binary_message: "Codex executable not found",
             app: AsyncMutex::new(None),
         }
     }
@@ -71,7 +82,7 @@ impl CodexAgent {
         let spec = self
             .spec
             .as_ref()
-            .ok_or_else(|| unavailable("Codex executable not found"))?;
+            .ok_or_else(|| unavailable(self.missing_binary_message))?;
         let app = App::start(spec.clone()).await?;
         *slot = Some(Arc::clone(&app));
         Ok(app)
@@ -147,7 +158,7 @@ impl Agent for CodexAgent {
         info
     }
 
-    async fn authenticate(&self, method_id: &str) -> Result<()> {
+    async fn authenticate(&self, method_id: &str) -> Result<AuthenticateResult> {
         let app = self.app().await?;
         if !auth_methods(&app.requirements().await)
             .iter()
@@ -158,6 +169,17 @@ impl Agent for CodexAgent {
         let response = app
             .call("account/login/start", json!({ "type": method_id }))
             .await?;
+        if method_id == "chatgptDeviceCode" {
+            let url = mapping::string(&response, "verificationUrl")
+                .ok_or_else(|| unavailable("Codex did not return a verification URL"))?;
+            let code = mapping::string(&response, "userCode")
+                .ok_or_else(|| unavailable("Codex did not return a sign-in code"))?;
+            return Ok(AuthenticateResult {
+                message: Some("Enter the code in your browser to sign in with ChatGPT".into()),
+                url: Some(url),
+                code: Some(code),
+            });
+        }
         let url = response["authUrl"]
             .as_str()
             .ok_or_else(|| unavailable("Codex did not return a browser sign-in URL"))?;
@@ -169,15 +191,20 @@ impl Agent for CodexAgent {
             }
             return Err(error);
         }
-        Ok(())
+        Ok(AuthenticateResult {
+            message: Some("Finish signing in with ChatGPT in your browser".into()),
+            ..Default::default()
+        })
     }
 
-    async fn options(&self, cwd: Option<&Path>) -> Result<AgentOptions> {
+    async fn options(
+        &self,
+        cwd: Option<&Path>,
+        selected: &BTreeMap<String, String>,
+    ) -> Result<AgentOptions> {
         let app = self.app().await?;
         Ok(AgentOptions {
-            options: catalog::Catalog::load(&app, cwd)
-                .await?
-                .options(&BTreeMap::new()),
+            options: catalog::Catalog::load(&app, cwd).await?.options(selected),
             commands: Vec::new(),
         })
     }
@@ -278,11 +305,18 @@ fn auth_methods(requirements: &Value) -> Vec<AuthMethod> {
     {
         return Vec::new();
     }
-    vec![AuthMethod {
-        id: "chatgpt".into(),
-        name: "Sign in with ChatGPT".into(),
-        description: Some("Continue in your browser".into()),
-    }]
+    vec![
+        AuthMethod {
+            id: "chatgpt".into(),
+            name: "Sign in with ChatGPT".into(),
+            description: Some("Continue in your browser".into()),
+        },
+        AuthMethod {
+            id: "chatgptDeviceCode".into(),
+            name: "Sign in with a device code".into(),
+            description: Some("Continue in a browser on any device".into()),
+        },
+    ]
 }
 
 #[derive(Default)]
@@ -302,7 +336,19 @@ struct App {
 impl App {
     async fn start(mut spawn: SpawnSpec) -> Result<Arc<Self>> {
         spawn.args.insert(0, "app-server".into());
-        let (process, stdout) = Process::spawn(spawn, Arc::new(WireLog::default()))
+        let log = WireLog::default().with_filter(|text| {
+            if !text.contains("\"userCode\"") && !text.contains("\"authUrl\"") {
+                return true;
+            }
+            let login_response = serde_json::from_str::<Value>(text)
+                .ok()
+                .is_some_and(|message| {
+                    let result = &message["result"];
+                    result.get("authUrl").is_some() || result.get("userCode").is_some()
+                });
+            !login_response
+        });
+        let (process, stdout) = Process::spawn(spawn, Arc::new(log))
             .map_err(|error| unavailable(format!("Could not start Codex: {error}")))?;
         let (peer, incoming) = Peer::new(process, stdout, Version::Bare);
         let result = call(&peer, "initialize", json!({

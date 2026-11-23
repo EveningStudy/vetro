@@ -1,4 +1,8 @@
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
@@ -102,15 +106,15 @@ async fn call(
             core.request_history_refresh();
             output(AgentsResult { agents })
         }
-        "agents.authenticate" => {
-            core.authenticate(parse(params)?).await?;
-            empty()
-        }
+        "agents.authenticate" => output(core.authenticate(parse(params)?).await?),
         "agents.options" => output(core.agent_options(parse(params)?).await?),
         "projects.list" => output(ProjectsResult {
             projects: core.projects()?,
         }),
-        "projects.add" => output(core.add_project(parse(params)?)?),
+        "projects.add" => {
+            client.desktop()?;
+            output(core.add_project(parse(params)?)?)
+        }
         "projects.update" => output(core.update_project(parse(params)?)?),
         "threads.list" => output(core.threads(parse(params)?)?),
         "threads.open" => {
@@ -183,6 +187,21 @@ async fn call(
                 .path
                 .map(PathBuf::from)
                 .unwrap_or_else(|| core.home.user_home().to_owned());
+            if client.remote() {
+                let path = remote_path(state, &path)?;
+                let roots = core.projects()?;
+                let mut result = tokio::task::spawn_blocking(move || files::list(&path))
+                    .await
+                    .map_err(internal)??;
+                if result
+                    .parent
+                    .as_ref()
+                    .is_some_and(|parent| !in_project(Path::new(parent), &roots))
+                {
+                    result.parent = None;
+                }
+                return output(result);
+            }
             output(
                 tokio::task::spawn_blocking(move || files::list(&path))
                     .await
@@ -190,20 +209,46 @@ async fn call(
             )
         }
         "fs.find" => {
-            let params: FsFindParams = parse(params)?;
+            let mut params: FsFindParams = parse(params)?;
+            if client.remote() {
+                params.cwd = remote_path(state, Path::new(&params.cwd))?
+                    .to_string_lossy()
+                    .into_owned();
+            }
             output(
                 tokio::task::spawn_blocking(move || files::find(params))
                     .await
                     .map_err(internal)??,
             )
         }
-        "settings.get" => output(core.home.settings()),
-        "settings.update" => output(core.update_settings(parse(params)?)?),
-        "remote.status" => output(auth::status(state, client)),
+        "settings.get" => {
+            let mut settings = core.home.settings();
+            if client.remote() {
+                for agent in settings.agents.values_mut() {
+                    agent.env.clear();
+                }
+                for agent in &mut settings.custom_acp_agents {
+                    agent.env.clear();
+                }
+            }
+            output(settings)
+        }
+        "settings.update" => {
+            client.desktop()?;
+            output(core.update_settings(parse(params)?)?)
+        }
+        "remote.status" => {
+            state.auth.refresh().await;
+            output(auth::status(state, client))
+        }
         "remote.set" => {
             client.desktop()?;
-            let _: RemoteSetParams = parse(params)?;
-            output(auth::status(state, client))
+            state.auth.set(state.address, parse(params)?).await?;
+            let status = auth::status(state, client);
+            core.publish(ServerEvent::RemoteUpdated {
+                status: status.clone(),
+            });
+            output(status)
         }
         "remote.createPairing" => {
             client.desktop()?;
@@ -218,6 +263,29 @@ async fn call(
             format!("Unknown RPC method: {method}"),
         )),
     }
+}
+
+fn in_project(path: &Path, projects: &[vetro_proto::Project]) -> bool {
+    let Ok(path) = std::fs::canonicalize(path) else {
+        return false;
+    };
+    projects.iter().any(|project| {
+        std::fs::canonicalize(&project.path).is_ok_and(|root| path.starts_with(root))
+    })
+}
+
+fn remote_path(state: &HttpState, path: &Path) -> Result<PathBuf> {
+    let forbidden = || {
+        AgentError::new(
+            ErrorCode::Unauthorized,
+            "Path is outside known project roots",
+        )
+    };
+    let path = files::directory(path).map_err(|_| forbidden())?;
+    if !in_project(&path, &state.core.projects()?) {
+        return Err(forbidden());
+    }
+    Ok(path)
 }
 
 fn parse<T: DeserializeOwned>(params: Value) -> Result<T> {

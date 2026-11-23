@@ -290,16 +290,20 @@ async fn suites() {
     );
     assert_eq!(agent.info().await.auth.state, AuthState::Unknown);
     assert_eq!(
-        agent.options(None).await.unwrap_err().code,
+        agent
+            .options(None, &BTreeMap::new())
+            .await
+            .unwrap_err()
+            .code,
         ErrorCode::AuthRequired
     );
     assert_eq!(agent.info().await.auth.state, AuthState::Required);
     agent.authenticate("test").await.unwrap();
     assert_eq!(agent.info().await.auth.state, AuthState::Ok);
-    let options = agent.options(None).await.unwrap();
+    let options = agent.options(None, &BTreeMap::new()).await.unwrap();
     assert_eq!(options.options[0].choices[0].group.as_deref(), Some("Fast"));
     assert_eq!(options.commands[0].name, "help");
-    agent.options(None).await.unwrap();
+    agent.options(None, &BTreeMap::new()).await.unwrap();
 
     let (sink, mut events) = mpsc::unbounded_channel();
     let session = agent
@@ -431,7 +435,7 @@ async fn suites() {
     ) {}
     assert_eq!(agent.info().await.auth.state, AuthState::Unknown);
     agent.authenticate("test").await.unwrap();
-    agent.options(None).await.unwrap();
+    agent.options(None, &BTreeMap::new()).await.unwrap();
     agent.shutdown().await;
 
     let mut spec = SpawnSpec::new(env::current_exe().unwrap());

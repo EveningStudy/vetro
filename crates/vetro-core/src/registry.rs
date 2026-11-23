@@ -13,6 +13,8 @@ use vetro_proto::{
     AgentAuth, AgentCapabilities, AgentInfo, AgentKind, AuthState,
 };
 
+const WARM_IDLE: Duration = Duration::from_secs(60);
+
 #[cfg(feature = "antigravity-store")]
 mod antigravity;
 #[cfg(any(feature = "claude", feature = "acp"))]
@@ -31,7 +33,8 @@ struct Entry {
 }
 
 struct Activity {
-    last_user_action: Instant,
+    warm_since: Instant,
+    last_release: Option<Instant>,
     in_use: bool,
     release_requested: bool,
 }
@@ -52,7 +55,8 @@ impl Registry {
                     agent,
                     access: Arc::new(RwLock::new(())),
                     activity: Mutex::new(Activity {
-                        last_user_action: Instant::now(),
+                        warm_since: Instant::now(),
+                        last_release: None,
                         in_use: false,
                         release_requested: false,
                     }),
@@ -111,8 +115,11 @@ impl Registry {
         let entry = &self.agents[id];
         let guard = entry.access.clone().read_owned().await;
         let mut activity = entry.activity.lock().unwrap();
+        if user_action || (!activity.in_use && activity.last_release.is_none()) {
+            activity.warm_since = Instant::now();
+        }
         if user_action {
-            activity.last_user_action = Instant::now();
+            activity.last_release = None;
             activity.release_requested = false;
         }
         activity.in_use = true;
@@ -123,9 +130,17 @@ impl Registry {
         self.agents[id].activity.lock().unwrap().release_requested = true;
     }
 
+    pub(crate) fn background_poll_due(&self, id: &str) -> bool {
+        self.agents[id]
+            .activity
+            .lock()
+            .unwrap()
+            .last_release
+            .is_none_or(|released| released.elapsed() >= WARM_IDLE)
+    }
+
     pub(crate) async fn release_idle(
         &self,
-        idle: Duration,
         has_live_thread: impl Fn(&str) -> bool,
         released: impl Fn(&str),
     ) {
@@ -136,7 +151,9 @@ impl Registry {
             let release = {
                 let activity = entry.activity.lock().unwrap();
                 activity.in_use
-                    && (activity.release_requested || activity.last_user_action.elapsed() >= idle)
+                    && (activity.release_requested
+                        || activity.last_release.is_some()
+                        || activity.warm_since.elapsed() >= WARM_IDLE)
             };
             if release
                 && !has_live_thread(id)
@@ -144,7 +161,10 @@ impl Registry {
                     .await
                     .is_ok()
             {
-                entry.activity.lock().unwrap().in_use = false;
+                let mut activity = entry.activity.lock().unwrap();
+                activity.in_use = false;
+                activity.release_requested = false;
+                activity.last_release = Some(Instant::now());
                 released(id);
             }
         }
@@ -183,9 +203,10 @@ fn built_ins(_settings: &Settings) -> Vec<Arc<dyn Agent>> {
     #[cfg(feature = "codex")]
     {
         let config = _settings.agents.get("codex");
-        let spec = vetro_agent_codex::resolve_binary(binary_override(config))
-            .map(|path| launch_spec(path, config));
-        agents.push(Arc::new(vetro_agent_codex::CodexAgent::from_spec(spec)));
+        agents.push(Arc::new(vetro_agent_codex::CodexAgent::from_config(
+            binary_override(config),
+            |path| launch_spec(path, config),
+        )));
     }
     #[cfg(feature = "acp")]
     {

@@ -97,6 +97,13 @@ impl Sessions {
             state.summary.agent_id == agent_id && state.session.is_some()
         })
     }
+
+    pub(crate) fn has_open(&self, agent_id: &str) -> bool {
+        self.0.lock().unwrap().values().any(|thread| {
+            Arc::strong_count(thread) > 1
+                && thread.state.lock().unwrap().summary.agent_id == agent_id
+        })
+    }
 }
 
 impl Core {

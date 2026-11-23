@@ -20,6 +20,7 @@ struct LogState {
 pub struct WireLog {
     max_bytes: usize,
     state: Mutex<LogState>,
+    filter: fn(&str) -> bool,
 }
 
 impl Default for WireLog {
@@ -41,6 +42,7 @@ impl WireLog {
     fn build(max_bytes: usize, file: Option<File>) -> Self {
         Self {
             max_bytes,
+            filter: |_| true,
             state: Mutex::new(LogState {
                 entries: VecDeque::new(),
                 bytes: 0,
@@ -48,6 +50,11 @@ impl WireLog {
                 file_error: None,
             }),
         }
+    }
+
+    pub fn with_filter(mut self, filter: fn(&str) -> bool) -> Self {
+        self.filter = filter;
+        self
     }
 
     pub fn snapshot(&self) -> Vec<RawEntry> {
@@ -59,6 +66,9 @@ impl WireLog {
     }
 
     pub(crate) fn record(&self, direction: RawDirection, mut text: String) {
+        if !(self.filter)(&text) {
+            return;
+        }
         let mut state = self.state.lock().unwrap();
         text.shrink_to_fit();
         let entry = RawEntry {

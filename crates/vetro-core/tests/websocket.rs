@@ -26,7 +26,14 @@ use tokio_tungstenite::{
 use vetro_agent_api::Agent;
 use vetro_core::{home::Home, registry::Registry, server::Server, Core};
 
+const REMOTE_HOST: &str = "vetro.example.test:8443";
+const REMOTE_ORIGIN: &str = "https://vetro.example.test:8443";
+
 fn main() {
+    if let Some(port) = std::env::var_os("VETRO_TEST_TAILSCALE_PORT") {
+        fake_tailscale(port.to_str().unwrap());
+        return;
+    }
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path();
     std::env::set_var("HOME", path);
@@ -43,15 +50,29 @@ fn main() {
         fs::write(path.join(agent_dir).join("sentinel"), agent_dir).unwrap();
     }
     fs::write(path.join(".claude/fake-transcript"), "\n\n").unwrap();
+    let fake_bin = path.join("bin");
+    fs::create_dir(&fake_bin).unwrap();
+    let exe = if cfg!(windows) {
+        "tailscale.exe"
+    } else {
+        "tailscale"
+    };
+    fs::copy(std::env::current_exe().unwrap(), fake_bin.join(exe)).unwrap();
+    let marker = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let marker_port = marker.local_addr().unwrap().port();
+    drop(marker);
     let before = tree(path);
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .unwrap()
         .block_on(async {
-            tokio::time::timeout(Duration::from_secs(25), exercise(path, &cwd))
-                .await
-                .unwrap();
+            tokio::time::timeout(
+                Duration::from_secs(30),
+                exercise(path, &cwd, &fake_bin, marker_port),
+            )
+            .await
+            .unwrap();
         });
     assert_eq!(before, tree(path));
     assert!(path.join(".vetro/config.json").exists());
@@ -60,7 +81,42 @@ fn main() {
     assert!(path.join(".vetro/index.db").is_file());
 }
 
-async fn exercise(path: &Path, cwd: &Path) {
+fn fake_tailscale(port: &str) {
+    let args: Vec<_> = std::env::args().skip(1).collect();
+    let args: Vec<_> = args.iter().map(String::as_str).collect();
+    let marker = format!("127.0.0.1:{port}");
+    match args.as_slice() {
+        ["status", "--json"] => println!(
+            "{}",
+            json!({"BackendState": "Running", "Self": {"DNSName": "vetro.example.test."}})
+        ),
+        ["serve", "status", "--json"] => {
+            let existing = json!({"TCP":{"443":{"HTTPS":true}}});
+            if let Ok(mut connection) = std::net::TcpStream::connect(marker) {
+                use std::io::Read;
+                let mut target = String::new();
+                connection.read_to_string(&mut target).unwrap();
+                let mut status = existing;
+                status["Foreground"] = json!({"vetro":{
+                    "TCP":{"8443":{"HTTPS":true}},
+                    "Web":{(REMOTE_HOST):{"Handlers":{"/":{"Proxy":target}}}}
+                }});
+                println!("{status}");
+            } else {
+                println!("{existing}");
+            }
+        }
+        ["serve", "--https=8443", target] => {
+            let signal = std::net::TcpListener::bind(marker).unwrap();
+            for mut connection in signal.incoming().flatten() {
+                connection.write_all(target.as_bytes()).unwrap();
+            }
+        }
+        _ => panic!("Unexpected fake Tailscale invocation: {args:?}"),
+    }
+}
+
+async fn exercise(path: &Path, cwd: &Path, fake_bin: &Path, marker_port: u16) {
     let fake = Arc::new(Fake {
         cwd: cwd.to_owned(),
         prompts: Default::default(),
@@ -100,7 +156,17 @@ async fn exercise(path: &Path, cwd: &Path) {
     assert_eq!(core.threads(Default::default()).unwrap().threads.len(), 2);
     core.refresh_history().await;
     assert_eq!(fake.reads.load(Ordering::Relaxed), 6);
+    let paths = std::env::var_os("PATH").unwrap_or_default();
+    std::env::set_var(
+        "PATH",
+        std::env::join_paths(
+            std::iter::once(fake_bin.to_owned()).chain(std::env::split_paths(&paths)),
+        )
+        .unwrap(),
+    );
+    std::env::set_var("VETRO_TEST_TAILSCALE_PORT", marker_port.to_string());
     let server = Server::bind(core, Some(0)).await.unwrap();
+    std::env::set_var("PATH", paths);
     let addr = server.address();
     assert_eq!(addr.ip().to_string(), "127.0.0.1");
     assert_eq!(
@@ -187,39 +253,158 @@ async fn exercise(path: &Path, cwd: &Path) {
         .call("agents.options", json!({"agentId": "fake", "cwd": cwd}))
         .await;
     assert_eq!(options["options"][0]["currentValue"], "native");
+    let remote_headers = [("Host", REMOTE_HOST), ("Origin", REMOTE_ORIGIN)];
+    assert_eq!(
+        http(addr, "GET", "/api/health", &remote_headers, None)
+            .await
+            .status,
+        403
+    );
+    let before = first.call("remote.status", json!({})).await;
+    assert_eq!(before["enabled"], false);
+    assert_eq!(before["tailscale"]["running"], true);
+    let settings = json!({"enabled": true, "tailscaleServe": true});
+    let enabled = first.call("remote.set", settings.clone()).await;
+    assert_eq!(enabled["tailscale"]["serveUrl"], REMOTE_ORIGIN);
+    assert_eq!(
+        http(addr, "GET", "/api/health", &remote_headers, None)
+            .await
+            .status,
+        200
+    );
+    assert_eq!(
+        http(
+            addr,
+            "GET",
+            "/api/health",
+            &[
+                ("Host", REMOTE_HOST),
+                ("Origin", "http://vetro.example.test:8443")
+            ],
+            None
+        )
+        .await
+        .status,
+        403
+    );
+    assert_eq!(socket_error(addr, Some(&cookie), REMOTE_ORIGIN).await, 401);
     let pairing = first.call("remote.createPairing", json!({})).await;
+    assert_eq!(
+        pairing["url"],
+        format!(
+            "{REMOTE_ORIGIN}/#pair={}",
+            pairing["code"].as_str().unwrap()
+        )
+    );
     let pair = json!({"code": pairing["code"], "deviceName": "Test device"});
     let paired = http(
         addr,
         "POST",
         "/api/auth/pair",
-        &[("Origin", &origin)],
+        &remote_headers,
         Some(pair.clone()),
     )
     .await;
     assert_eq!(paired.status, 200);
+    assert!(paired.cookie_attributes.contains("; Secure"));
+    assert!(paired.cookie_attributes.contains("; HttpOnly"));
+    assert!(paired.cookie_attributes.contains("; SameSite=Strict"));
     let paired_cookie = paired.cookie.unwrap();
+    let token = paired_cookie.split_once('.').unwrap().1;
+    let persisted = fs::read_to_string(path.join(".vetro/state.json")).unwrap();
+    assert!(!persisted.contains(token));
+    assert!(persisted.contains("sha256:"));
     assert_eq!(
-        http(addr, "POST", "/api/auth/pair", &[], Some(pair))
-            .await
-            .status,
+        http(
+            addr,
+            "POST",
+            "/api/auth/pair",
+            &remote_headers,
+            Some(pair.clone())
+        )
+        .await
+        .status,
         401
     );
-    let mut remote = Client::connect(addr, &paired_cookie, &origin).await;
+    let mut remote = Client::connect(addr, &paired_cookie, REMOTE_ORIGIN).await;
     assert_eq!(
         remote.call("app.hello", hello()).await["remoteClient"],
         true
     );
     let devices = remote.call("remote.status", json!({})).await;
     assert_eq!(devices["devices"][0]["current"], true);
+    assert_eq!(
+        remote.call("threads.list", json!({})).await["threads"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    for (method, params) in [
+        ("remote.set", settings.clone()),
+        ("remote.createPairing", json!({})),
+        ("settings.update", json!({"patch": {}})),
+        ("fs.list", json!({"path": path})),
+        ("fs.find", json!({"cwd": path, "query": "sentinel"})),
+    ] {
+        assert_eq!(
+            remote.request(method, params).await["error"]["code"],
+            "unauthorized"
+        );
+    }
+    assert!(remote.call("fs.list", json!({"path": cwd})).await["parent"].is_null());
     first
         .call(
             "remote.revokeDevice",
             json!({"deviceId": devices["devices"][0]["id"]}),
         )
         .await;
-    assert_eq!(socket_error(addr, Some(&paired_cookie), &origin).await, 401);
-    drop(remote);
+    remote.wait_closed().await;
+    assert_eq!(
+        socket_error(addr, Some(&paired_cookie), REMOTE_ORIGIN).await,
+        401
+    );
+    for _ in 0..8 {
+        assert_eq!(
+            http(
+                addr,
+                "POST",
+                "/api/auth/pair",
+                &remote_headers,
+                Some(pair.clone())
+            )
+            .await
+            .status,
+            401
+        );
+    }
+    assert_eq!(
+        http(addr, "POST", "/api/auth/pair", &remote_headers, Some(pair))
+            .await
+            .status,
+        429
+    );
+    let disabled = first
+        .call(
+            "remote.set",
+            json!({"enabled": false, "tailscaleServe": true}),
+        )
+        .await;
+    assert_eq!(disabled, before);
+    let marker = format!("127.0.0.1:{marker_port}");
+    assert!(std::net::TcpStream::connect(&marker).is_err());
+    let occupied = std::net::TcpListener::bind(&marker).unwrap();
+    let occupier = std::thread::spawn(move || {
+        let (mut socket, _) = occupied.accept().unwrap();
+        socket.write_all(b"http://127.0.0.1:1").unwrap();
+    });
+    assert_eq!(
+        first.request("remote.set", settings.clone()).await["error"]["code"],
+        "bad_request"
+    );
+    occupier.join().unwrap();
+    assert_eq!(first.call("remote.status", json!({})).await, before);
+    first.call("remote.set", settings).await;
 
     let content = json!([{"type": "text", "text": "  Exact \r\nテキスト \"\u{1f30d}\"\n"}, {"type": "file", "path": "file.rs", "name": null}]);
     let start =
@@ -517,6 +702,7 @@ async fn exercise(path: &Path, cwd: &Path) {
 
     stop.send(()).unwrap();
     serving.await.unwrap().unwrap();
+    assert!(std::net::TcpStream::connect(&marker).is_err());
     let home = Home::discover().unwrap();
     assert_eq!(home.settings().idle_release_minutes, 0);
     assert_eq!(home.local_token(), local_token);
@@ -547,6 +733,18 @@ impl Client {
     async fn recv(&mut self) -> Value {
         let frame = self.socket.next().await.unwrap().unwrap();
         serde_json::from_str(frame.to_text().unwrap()).unwrap()
+    }
+
+    async fn wait_closed(&mut self) {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while let Some(Ok(message)) = self.socket.next().await {
+                if matches!(message, Message::Close(_)) {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
     }
 
     async fn request(&mut self, method: &str, params: Value) -> Value {
@@ -622,6 +820,11 @@ fn ws_request(
     request
         .headers_mut()
         .insert("origin", HeaderValue::from_str(origin).unwrap());
+    if origin == REMOTE_ORIGIN {
+        request
+            .headers_mut()
+            .insert("host", HeaderValue::from_static(REMOTE_HOST));
+    }
     if let Some(cookie) = cookie {
         request
             .headers_mut()
@@ -643,6 +846,7 @@ async fn socket_error(addr: SocketAddr, cookie: Option<&str>, origin: &str) -> u
 struct HttpReply {
     status: u16,
     cookie: Option<String>,
+    cookie_attributes: String,
     body: Value,
 }
 
@@ -675,14 +879,19 @@ async fn http(
     let data = String::from_utf8(data).unwrap();
     let (headers, body) = data.split_once("\r\n\r\n").unwrap();
     let status = headers.split_whitespace().nth(1).unwrap().parse().unwrap();
-    let cookie = headers
+    let cookie_header = headers
         .lines()
         .find_map(|line| line.strip_prefix("set-cookie: "))
-        .and_then(|line| line.split(';').next())
+        .unwrap_or_default();
+    let cookie = (!cookie_header.is_empty())
+        .then(|| cookie_header.split(';').next().unwrap())
         .map(str::to_owned);
     HttpReply {
         status,
         cookie,
+        cookie_attributes: cookie_header
+            .split_once(';')
+            .map_or(String::new(), |(_, attributes)| format!(";{attributes}")),
         body: serde_json::from_str(body).unwrap_or(Value::Null),
     }
 }

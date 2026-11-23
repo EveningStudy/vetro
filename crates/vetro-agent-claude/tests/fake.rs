@@ -51,7 +51,10 @@ fn main() {
 async fn test() {
     let temp = tempfile::tempdir().unwrap();
     let agent = ClaudeAgent::new(env::current_exe().unwrap(), temp.path());
-    let starter = agent.options(Some(temp.path())).await.unwrap();
+    let starter = agent
+        .options(Some(temp.path()), &BTreeMap::new())
+        .await
+        .unwrap();
     assert_eq!(starter.options[0].choices[0].value, "haiku");
     assert_eq!(starter.commands[0].name, "help");
     let info = agent.info().await;
@@ -64,7 +67,13 @@ async fn test() {
         .start(
             StartRequest {
                 cwd: temp.path().to_path_buf(),
-                content: vec![text(PROMPT)],
+                content: vec![
+                    text(PROMPT),
+                    ContentBlock::File {
+                        path: "file.rs".into(),
+                        name: None,
+                    },
+                ],
                 options: BTreeMap::new(),
             },
             sink,

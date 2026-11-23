@@ -1,4 +1,5 @@
 use std::{env, path::PathBuf};
+use vetro_agent_api::detection::{search_directories, usable};
 
 fn binary_name(command: &str) -> String {
     if cfg!(windows) {
@@ -9,24 +10,15 @@ fn binary_name(command: &str) -> String {
 }
 
 fn on_path(command: &str) -> Option<PathBuf> {
-    let paths = env::var_os("PATH")?;
-    env::split_paths(&paths)
+    search_directories()
+        .into_iter()
         .map(|dir| dir.join(binary_name(command)))
-        .find(|file| file.is_absolute() && file.is_file())
-}
-
-fn local_bin(command: &str) -> Option<PathBuf> {
-    let path = env::home_dir()?
-        .join(".local/bin")
-        .join(binary_name(command));
-    path.is_file().then_some(path)
+        .find(|file| usable(file))
 }
 
 #[cfg(feature = "claude")]
 pub(super) fn claude() -> Option<PathBuf> {
-    on_path("claude")
-        .or_else(|| local_bin("claude"))
-        .or_else(claude_desktop)
+    on_path("claude").or_else(claude_desktop)
 }
 
 #[cfg(feature = "claude")]
@@ -83,7 +75,7 @@ fn latest_claude(stores: impl Iterator<Item = PathBuf>) -> Option<PathBuf> {
 #[cfg(feature = "acp")]
 pub(super) fn acp(command: &str) -> Option<PathBuf> {
     match command {
-        "devin" => devin_desktop().or_else(|| on_path(command)),
+        "devin" => on_path(command).or_else(devin_desktop),
         "agy" => {
             let installed = if cfg!(windows) {
                 env::var_os("LOCALAPPDATA")
@@ -93,9 +85,7 @@ pub(super) fn acp(command: &str) -> Option<PathBuf> {
             } else {
                 None
             };
-            installed
-                .or_else(|| local_bin(command))
-                .or_else(|| on_path(command))
+            on_path(command).or(installed)
         }
         _ => on_path(command),
     }

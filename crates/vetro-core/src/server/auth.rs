@@ -1,36 +1,56 @@
-use std::sync::Mutex;
+use std::{
+    collections::VecDeque,
+    net::SocketAddr,
+    sync::RwLock,
+    time::{Duration, Instant},
+};
 
 use axum::{
     extract::State,
-    http::{header, HeaderMap, HeaderValue, StatusCode},
+    http::{header, uri::Authority, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
 use serde::Deserialize;
 use serde_json::json;
+use tokio::sync::{watch, Mutex as AsyncMutex};
 use vetro_agent_api::{AgentError, Result};
 use vetro_proto::rpc::{
-    ErrorCode, Pairing, RemoteDevice, RemoteStatus, ServerEvent, TailscaleStatus,
+    ErrorCode, Pairing, RemoteDevice, RemoteSetParams, RemoteStatus, ServerEvent, TailscaleStatus,
 };
 
-use super::HttpState;
+use super::{
+    tailscale::{Serve, Tailscale, HTTPS_PORT},
+    HttpState, RequestHost,
+};
 use crate::{
     bad_request,
-    home::{equal, secret, Device, Home},
+    home::{device_token_hash, equal, secret, Device, Home},
     not_found, now,
 };
 
 const COOKIE: &str = "vetro_session";
-const PAIR_TTL: i64 = 5 * 60 * 1000;
+const REMOTE_COOKIE: &str = "__Host-vetro_session";
+const PAIR_TTL: i64 = 10 * 60 * 1000;
 
 pub(super) struct Auth {
     local_cookie: String,
-    pairing: Mutex<Option<Pairing>>,
+    tailscale: Option<Tailscale>,
+    serve: AsyncMutex<Option<Serve>>,
+    remote: RwLock<Remote>,
+    changes: watch::Sender<()>,
+}
+
+struct Remote {
+    enabled: bool,
+    tailscale: TailscaleStatus,
+    pairing: Option<Pairing>,
+    attempts: VecDeque<Instant>,
 }
 
 pub(super) enum Client {
     Local,
-    Remote { id: String, secret: String },
+    Remote { id: String, token_hash: String },
 }
 
 impl Client {
@@ -38,16 +58,23 @@ impl Client {
         matches!(self, Self::Remote { .. })
     }
 
-    pub(super) fn valid(&self, home: &Home) -> bool {
+    pub(super) fn valid(&self, state: &HttpState) -> bool {
         match self {
             Self::Local => true,
-            Self::Remote { id, secret } => home.read_state(|state| {
-                state
-                    .devices
-                    .get(id)
-                    .is_some_and(|device| equal(&device.secret, secret))
-            }),
+            Self::Remote { id, token_hash } => {
+                state.auth.remote.read().unwrap().enabled
+                    && state.core.home.read_state(|state| {
+                        state
+                            .devices
+                            .get(id)
+                            .is_some_and(|device| equal(&device.token_hash, token_hash))
+                    })
+            }
         }
+    }
+
+    pub(super) async fn invalidated(&self, state: &HttpState, mut changes: watch::Receiver<()>) {
+        while self.valid(state) && changes.changed().await.is_ok() {}
     }
 
     pub(super) fn desktop(&self) -> Result<()> {
@@ -63,44 +90,181 @@ impl Client {
 
 impl Auth {
     pub(super) fn new(local_cookie: String) -> Self {
+        let tailscale = Tailscale::find();
         Self {
             local_cookie,
-            pairing: Mutex::new(None),
+            remote: RwLock::new(Remote {
+                enabled: false,
+                tailscale: TailscaleStatus {
+                    installed: tailscale.is_some(),
+                    running: false,
+                    dns_name: None,
+                    serve_url: None,
+                },
+                pairing: None,
+                attempts: VecDeque::new(),
+            }),
+            tailscale,
+            serve: AsyncMutex::new(None),
+            changes: watch::channel(()).0,
         }
     }
 
-    pub(super) fn client(&self, home: &Home, headers: &HeaderMap) -> Option<Client> {
+    pub(super) fn changes(&self) -> watch::Receiver<()> {
+        self.changes.subscribe()
+    }
+
+    pub(super) fn allows(&self, host: &Authority) -> bool {
+        let remote = self.remote.read().unwrap();
+        remote.enabled
+            && remote.tailscale.running
+            && host.port_u16() == Some(HTTPS_PORT)
+            && remote
+                .tailscale
+                .dns_name
+                .as_ref()
+                .is_some_and(|dns| dns.eq_ignore_ascii_case(host.host()))
+    }
+
+    pub(super) async fn refresh(&self) {
+        let mut serve = self.serve.lock().await;
+        if let Some(tailscale) = &self.tailscale {
+            let mut status = tailscale.status().await;
+            if serve
+                .as_ref()
+                .is_some_and(|entry| entry.process.has_exited())
+            {
+                serve.take();
+            }
+            if let Some(entry) = serve.as_ref() {
+                status.serve_url = Some(entry.url.clone());
+            }
+            self.remote.write().unwrap().tailscale = status;
+        }
+    }
+
+    pub(super) async fn set(&self, address: SocketAddr, params: RemoteSetParams) -> Result<()> {
+        let mut serve = self.serve.lock().await;
+        if !params.enabled {
+            let mut remote = self.remote.write().unwrap();
+            remote.enabled = false;
+            remote.pairing = None;
+            remote.tailscale.serve_url = None;
+            self.changes.send_replace(());
+        }
+        if !params.enabled || !params.tailscale_serve {
+            if let Some(owned) = serve.take() {
+                owned.process.kill().await.map_err(crate::internal)?;
+            }
+        }
+        let mut status = match &self.tailscale {
+            Some(tailscale) => tailscale.status().await,
+            None => self.remote.read().unwrap().tailscale.clone(),
+        };
+        if params.enabled && params.tailscale_serve {
+            let tailscale = self
+                .tailscale
+                .as_ref()
+                .ok_or_else(|| bad_request("Tailscale CLI not found"))?;
+            let dns = status
+                .dns_name
+                .as_deref()
+                .filter(|_| status.running)
+                .ok_or_else(|| bad_request("Tailscale is not running or has no DNS name"))?;
+            if serve
+                .as_ref()
+                .is_some_and(|entry| entry.process.has_exited())
+            {
+                serve.take();
+            }
+            if serve.is_none() {
+                *serve = Some(tailscale.start(dns, address).await?);
+            }
+            status.serve_url = serve.as_ref().map(|entry| entry.url.clone());
+        }
+        let mut remote = self.remote.write().unwrap();
+        remote.tailscale = status;
+        remote.enabled = params.enabled;
+        Ok(())
+    }
+
+    pub(super) async fn stop(&self) {
+        if let Some(owned) = self.serve.lock().await.take() {
+            let _ = owned.process.kill().await;
+        }
+    }
+
+    pub(super) fn client(
+        &self,
+        state: &HttpState,
+        headers: &HeaderMap,
+        host: RequestHost,
+    ) -> Option<Client> {
+        let name = if host == RequestHost::Local {
+            COOKIE
+        } else {
+            REMOTE_COOKIE
+        };
         let token = headers
             .get_all(header::COOKIE)
             .iter()
             .filter_map(|header| header.to_str().ok())
             .flat_map(|value| value.split(';'))
-            .find_map(|part| part.trim().strip_prefix("vetro_session="))?;
-        if equal(token, &self.local_cookie) {
-            return Some(Client::Local);
+            .filter_map(|part| part.trim().split_once('='))
+            .find_map(|(key, value)| (key == name).then_some(value))?;
+        if host == RequestHost::Local {
+            return equal(token, &self.local_cookie).then_some(Client::Local);
         }
         let (id, token) = token.split_once('.')?;
         let client = Client::Remote {
             id: id.into(),
-            secret: token.into(),
+            token_hash: device_token_hash(token),
         };
-        client.valid(home).then_some(client)
+        client.valid(state).then_some(client)
     }
 
     pub(super) fn create_pairing(&self) -> Result<Pairing> {
+        let mut remote = self.remote.write().unwrap();
+        if !remote.enabled {
+            return Err(bad_request("Enable remote access before pairing a device"));
+        }
+        let code = secret(4)?;
         let pairing = Pairing {
-            code: secret(6)?,
-            url: None,
+            url: remote
+                .tailscale
+                .serve_url
+                .as_ref()
+                .map(|url| format!("{url}/#pair={code}")),
+            code,
             expires_at: now() + PAIR_TTL,
         };
-        *self.pairing.lock().unwrap() = Some(pairing.clone());
+        remote.pairing = Some(pairing.clone());
         Ok(pairing)
     }
 
-    fn exchange(&self, home: &Home, code: &str, name: String) -> Result<String> {
-        let mut pairing = self.pairing.lock().unwrap();
+    fn exchange(&self, home: &Home, code: &str, name: String) -> Result<Option<String>> {
+        let mut remote = self.remote.write().unwrap();
+        if !remote.enabled {
+            return Err(AgentError::new(
+                ErrorCode::Unauthorized,
+                "Remote access is disabled",
+            ));
+        }
+        let current = Instant::now();
+        while remote
+            .attempts
+            .front()
+            .is_some_and(|previous| current.duration_since(*previous) >= Duration::from_secs(60))
+        {
+            remote.attempts.pop_front();
+        }
+        if remote.attempts.len() >= 10 {
+            return Ok(None);
+        }
+        remote.attempts.push_back(current);
         let timestamp = now();
-        if !pairing
+        if !remote
+            .pairing
             .as_ref()
             .is_some_and(|pairing| pairing.expires_at > timestamp && equal(&pairing.code, code))
         {
@@ -112,7 +276,7 @@ impl Auth {
         let id = secret(16)?;
         let secret = secret(32)?;
         let device = Device {
-            secret: secret.clone(),
+            token_hash: device_token_hash(&secret),
             details: RemoteDevice {
                 id: id.clone(),
                 name,
@@ -122,8 +286,8 @@ impl Auth {
             },
         };
         home.change_state(|state| state.devices.insert(id.clone(), device))?;
-        pairing.take();
-        Ok(format!("{id}.{secret}"))
+        remote.pairing.take();
+        Ok(Some(format!("{id}.{secret}")))
     }
 }
 
@@ -134,10 +298,12 @@ pub(super) struct LocalRequest {
 
 pub(super) async fn local(
     State(state): State<std::sync::Arc<HttpState>>,
+    axum::Extension(host): axum::Extension<RequestHost>,
     headers: HeaderMap,
     Json(request): Json<LocalRequest>,
 ) -> Response {
-    if headers.contains_key("forwarded")
+    if host != RequestHost::Local
+        || headers.contains_key("forwarded")
         || headers.contains_key("x-forwarded-for")
         || headers.contains_key("x-forwarded-host")
     {
@@ -158,8 +324,12 @@ pub(super) struct PairRequest {
 
 pub(super) async fn pair(
     State(state): State<std::sync::Arc<HttpState>>,
+    axum::Extension(host): axum::Extension<RequestHost>,
     Json(request): Json<PairRequest>,
 ) -> Response {
+    if host != RequestHost::Remote {
+        return StatusCode::FORBIDDEN.into_response();
+    }
     let name = request.device_name.trim();
     if name.is_empty() || name.chars().count() > 100 {
         return StatusCode::BAD_REQUEST.into_response();
@@ -168,12 +338,13 @@ pub(super) async fn pair(
         .auth
         .exchange(&state.core.home, request.code.trim(), name.into())
     {
-        Ok(token) => {
+        Ok(Some(token)) => {
             state.core.publish(ServerEvent::RemoteUpdated {
                 status: status(&state, &Client::Local),
             });
             cookie(&token, true)
         }
+        Ok(None) => StatusCode::TOO_MANY_REQUESTS.into_response(),
         Err(error) if error.code == ErrorCode::Unauthorized => {
             StatusCode::UNAUTHORIZED.into_response()
         }
@@ -186,9 +357,10 @@ pub(super) async fn pair(
 
 pub(super) async fn session(
     State(state): State<std::sync::Arc<HttpState>>,
+    axum::Extension(host): axum::Extension<RequestHost>,
     headers: HeaderMap,
 ) -> Response {
-    let Some(client) = state.auth.client(&state.core.home, &headers) else {
+    let Some(client) = state.auth.client(&state, &headers, host) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
     with_no_store(
@@ -197,6 +369,7 @@ pub(super) async fn session(
 }
 
 pub(super) fn status(state: &HttpState, client: &Client) -> RemoteStatus {
+    let remote = state.auth.remote.read().unwrap();
     let devices = state.core.home.read_state(|state| {
         state
             .devices
@@ -209,14 +382,9 @@ pub(super) fn status(state: &HttpState, client: &Client) -> RemoteStatus {
             .collect()
     });
     RemoteStatus {
-        enabled: false,
+        enabled: remote.enabled,
         port: state.address.port(),
-        tailscale: TailscaleStatus {
-            installed: false,
-            running: false,
-            dns_name: None,
-            serve_url: None,
-        },
+        tailscale: remote.tailscale.clone(),
         devices,
     }
 }
@@ -235,6 +403,7 @@ pub(super) fn revoke(state: &HttpState, client: &Client, device_id: &str) -> Res
     {
         return Err(not_found("Unknown device"));
     }
+    state.auth.changes.send_replace(());
     let status = status(state, client);
     state.core.publish(ServerEvent::RemoteUpdated {
         status: status.clone(),
@@ -243,12 +412,16 @@ pub(super) fn revoke(state: &HttpState, client: &Client, device_id: &str) -> Res
 }
 
 fn cookie(token: &str, persistent: bool) -> Response {
-    let max_age = if persistent { "; Max-Age=2592000" } else { "" };
+    let (name, extra) = if persistent {
+        (REMOTE_COOKIE, "; Secure; Max-Age=2592000")
+    } else {
+        (COOKIE, "")
+    };
     let mut response = with_no_store(Json(json!({"ok": true})).into_response());
     response.headers_mut().insert(
         header::SET_COOKIE,
         HeaderValue::from_str(&format!(
-            "{COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/{max_age}"
+            "{name}={token}; HttpOnly; SameSite=Strict; Path=/{extra}"
         ))
         .unwrap(),
     );

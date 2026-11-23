@@ -64,6 +64,8 @@ impl Core {
             })
             .ok();
         let mut watched = HashSet::new();
+        let mut requested = true;
+        let mut pending = false;
         loop {
             if let Some(watcher) = &mut watcher {
                 for path in &paths {
@@ -74,7 +76,15 @@ impl Core {
                     }
                 }
             }
-            let pending = self.sync_agent(&agent, Some(Duration::from_secs(3))).await;
+            if requested
+                || pending
+                || !paths.is_empty()
+                || self.registry.background_poll_due(id)
+                || self.sessions.has_open(id)
+            {
+                pending = self.sync_agent(&agent, Some(Duration::from_secs(3))).await;
+            }
+            requested = false;
             let interval = if pending {
                 Duration::from_millis(250)
             } else if paths.is_empty() || id == "devin" {
@@ -87,10 +97,11 @@ impl Core {
             };
             tokio::select! {
                 _ = time::sleep(interval) => {},
-                _ = self.history_requested.notified() => {},
+                _ = self.history_requested.notified() => requested = true,
                 Some(()) = changed.recv() => {
                     time::sleep(Duration::from_millis(350)).await;
                     while changed.try_recv().is_ok() {}
+                    requested = true;
                 },
             }
         }
@@ -148,11 +159,19 @@ impl Core {
             .get(id)
             .cloned()
             .unwrap_or_default();
+        let allow_protocol = budget.is_none()
+            || self.registry.background_poll_due(id)
+            || (paths.is_empty() && self.sessions.has_open(id));
         let roots = paths.clone();
         let agent_id = id.to_owned();
         let inventory = blocking(move || native::inventory(&agent_id, &roots)).await?;
         let list = if inventory.authoritative {
             Vec::new()
+        } else if !allow_protocol {
+            agent
+                .list_without_runtime()
+                .await?
+                .map_or_else(Vec::new, |page| page.sessions)
         } else {
             let _guard = self.registry.enter(id, false).await;
             match time::timeout(Duration::from_secs(30), list(agent)).await {
@@ -268,15 +287,19 @@ impl Core {
                     continue;
                 }
                 let read = {
-                    let _guard = self.registry.enter(id, false).await;
+                    let _guard = if allow_protocol {
+                        Some(self.registry.enter(id, false).await)
+                    } else {
+                        None
+                    };
                     time::timeout(
                         Duration::from_secs(30),
-                        self.read_history_items(agent, &thread),
+                        self.read_for_index(agent, &thread, allow_protocol),
                     )
                     .await
                 };
                 match read {
-                    Ok(Ok(transcript)) => {
+                    Ok(Ok(Some(transcript))) => {
                         let title = self.overlay(thread.clone()).title;
                         let store = self.store.clone();
                         let saved = thread.clone();
@@ -295,6 +318,7 @@ impl Core {
                         self.publish_history(changes);
                         indexed += 1;
                     }
+                    Ok(Ok(None)) => {}
                     Ok(Err(error)) if id == "devin" && error.code == ErrorCode::AuthRequired => {
                         self.history_authenticated.write().unwrap().remove(id);
                         break;
@@ -317,6 +341,44 @@ impl Core {
         }
         self.progress(id, total, total, true);
         Ok((total, indexed, failed, false))
+    }
+
+    async fn read_for_index(
+        &self,
+        agent: &Arc<dyn Agent>,
+        summary: &ThreadSummary,
+        allow_protocol: bool,
+    ) -> Result<Option<Transcript>> {
+        if allow_protocol || agent.id() == "claude" {
+            return self.read_history_items(agent, summary).await.map(Some);
+        }
+        #[cfg(feature = "codex")]
+        if agent.id() == "codex" {
+            if summary
+                .origin
+                .as_deref()
+                .is_some_and(|origin| origin.starts_with("Codex desktop catalog ("))
+            {
+                return Ok(Some(Transcript::default()));
+            }
+            return self.read_codex_store(&summary.native_id).await;
+        }
+        agent.read_without_runtime(&summary.native_id).await
+    }
+
+    #[cfg(feature = "codex")]
+    async fn read_codex_store(&self, native_id: &str) -> Result<Option<Transcript>> {
+        let Some(root) = self
+            .registry
+            .history_paths
+            .get("codex")
+            .and_then(|roots| roots.first())
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        let id = native_id.to_owned();
+        blocking(move || native::codex_fallback(&root, &id)).await
     }
 
     pub(crate) async fn read_history_items(
@@ -353,19 +415,8 @@ impl Core {
                 .as_ref()
                 .map_or(true, |transcript| transcript.items.is_empty())
         {
-            if let Some(root) = self
-                .registry
-                .history_paths
-                .get("codex")
-                .and_then(|roots| roots.first())
-                .cloned()
-            {
-                let id = summary.native_id.clone();
-                if let Some(transcript) =
-                    blocking(move || native::codex_fallback(&root, &id)).await?
-                {
-                    return Ok(transcript);
-                }
+            if let Some(transcript) = self.read_codex_store(&summary.native_id).await? {
+                return Ok(transcript);
             }
         }
         result

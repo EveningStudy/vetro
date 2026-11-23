@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     env,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -13,7 +13,8 @@ use vetro_agent_api::{
     SessionPage, StartRequest, Transcript, WireLog,
 };
 use vetro_proto::{
-    rpc::ErrorCode, AgentAuth, AgentCapabilities, AgentInfo, AgentKind, AuthMethod, AuthState,
+    rpc::{AuthenticateResult, ErrorCode},
+    AgentAuth, AgentCapabilities, AgentInfo, AgentKind, AuthMethod, AuthState,
 };
 
 pub use vetro_agent_api::process::SpawnSpec;
@@ -344,15 +345,19 @@ impl Agent for AcpAgent {
         info
     }
 
-    async fn authenticate(&self, method_id: &str) -> Result<()> {
+    async fn authenticate(&self, method_id: &str) -> Result<AuthenticateResult> {
         self.runtime(None)
             .await?
             .call("authenticate", json!({ "methodId": method_id }))
             .await?;
-        Ok(())
+        Ok(AuthenticateResult::default())
     }
 
-    async fn options(&self, cwd: Option<&Path>) -> Result<AgentOptions> {
+    async fn options(
+        &self,
+        cwd: Option<&Path>,
+        _: &BTreeMap<String, String>,
+    ) -> Result<AgentOptions> {
         let cwd = self.cwd(cwd)?;
         let runtime = self.runtime(Some(&cwd)).await?;
         let _lifecycle = runtime.connection.lifecycle.lock().await;

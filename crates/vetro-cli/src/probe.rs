@@ -48,9 +48,18 @@ pub(crate) async fn authenticate(agent: &dyn Agent, auth: Option<Option<String>>
                     .id
             }
         };
-        agent.authenticate(&method).await?;
+        show_auth(agent.authenticate(&method).await?);
     }
     Ok(())
+}
+
+pub(crate) fn show_auth(result: vetro_proto::rpc::AuthenticateResult) {
+    for line in [result.message, result.url, result.code]
+        .into_iter()
+        .flatten()
+    {
+        eprintln!("{line}");
+    }
 }
 
 pub(crate) async fn run(core: &Core, args: Args) -> Result<()> {

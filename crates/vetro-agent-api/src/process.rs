@@ -119,6 +119,10 @@ impl Process {
         self.pid
     }
 
+    pub fn has_exited(&self) -> bool {
+        self.exited.borrow().is_some()
+    }
+
     pub fn wire_log(&self) -> Arc<WireLog> {
         Arc::clone(&self.log)
     }
