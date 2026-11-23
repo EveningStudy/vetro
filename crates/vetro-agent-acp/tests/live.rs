@@ -165,15 +165,7 @@ async fn devin_round_trip() {
     let cwd = scratch("devin");
     let program = env::var_os("VETRO_ACP_DEVIN")
         .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            if cfg!(windows) {
-                PathBuf::from(
-                    "D:/Software/Devin/resources/app/extensions/windsurf/devin/bin/devin.exe",
-                )
-            } else {
-                PathBuf::from("devin")
-            }
-        });
+        .unwrap_or_else(|| PathBuf::from("devin"));
     let mut spec = SpawnSpec::new(program);
     spec.cwd = Some(cwd.clone());
     spec.args = ["acp", "--process-model", "in-process"]

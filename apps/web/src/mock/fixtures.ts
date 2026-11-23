@@ -1083,7 +1083,7 @@ export const remote: RemoteStatus = {
   port: 47600,
   tailscale: { installed: true, running: true, dnsName: "chris-desk.tail4b21.ts.net", serveUrl: "https://chris-desk.tail4b21.ts.net" },
   devices: [
-    { id: "dev-iphone", name: "Chris's iPhone", createdAt: now - 12 * DAY, lastSeenAt: now - 40 * MIN, current: false },
+    { id: "dev-iphone", name: "Alex's iPhone", createdAt: now - 12 * DAY, lastSeenAt: now - 40 * MIN, current: false },
     { id: "dev-ipad", name: "iPad Air", createdAt: now - 30 * DAY, lastSeenAt: now - 4 * DAY, current: false },
   ],
 };
@@ -1091,7 +1091,7 @@ export const remote: RemoteStatus = {
 export const fileTree: Record<string, string[]> = {
   "": ["C:\\", "D:\\"],
   "C:\\": ["Program Files", "Users", "Windows"],
-  "C:\\Users": ["Chris", "Public"],
+  "C:\\Users": ["Alex", "Public"],
   [HOME]: ["Desktop", "Documents", "Downloads", "scratch", ".vetro"],
   [`${HOME}\\scratch`]: ["tauri-spike-old", "notes.txt"],
   "D:\\": ["Dev", "Software", "Media"],

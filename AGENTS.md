@@ -39,9 +39,9 @@ Read `docs/ARCHITECTURE.md` before changing the core, and `docs/API.md` before t
 
 ## Live agents on the development machine
 
-- Binaries: `codex` (npm shim; the real exe is under `%APPDATA%\npm\node_modules\@openai\codex\...\codex.exe`), `claude` at `~/.local/bin/claude.exe`, `agy` at `%LOCALAPPDATA%\agy\bin\agy.exe`, `devin` at `D:\Software\Devin\resources\app\extensions\windsurf\devin\bin\devin.exe`.
+- Binaries are found the way the app finds them (`vetro agents` shows the paths). Override with `VETRO_ACP_DEVIN` and the settings file when a test needs a specific binary.
 - Live tests spend the owner's quota. Keep prompts tiny (for example: reply with one word), use the cheapest model, and do not loop.
-- Claude Code is on a Pro plan: at most a handful of short live prompts per task.
+- Subscriptions have small quotas: at most a handful of short live prompts per task.
 - **Antigravity: do not send prompts to `agy` (neither `agy -p` nor ACP `session/prompt`).** Handshake-level calls (`initialize`, `session/new`, `session/list`, `session/load`, `session/close`) are fine. The orchestrator runs the live Antigravity prompts itself.
 - `devin acp` must be started with `--process-model in-process` in tests so no daemon is left behind. It needs the ACP `authenticate` call (`devin-browser`) in every new process; that opens a browser tab and completes by itself.
 - Never run agents with permission-bypass flags against anything but a scratch directory under `.orchestra/`.
