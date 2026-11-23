@@ -5,4 +5,9 @@ export type AgentOptionsParams = { agentId: string, cwd?: string,
  * Choices already made in the new-thread form (option id to value). Dependent options, such as the
  * thinking levels of the chosen model, are returned for these choices.
  */
-selected?: { [key in string]: string }, };
+selected?: { [key in string]: string }, 
+/**
+ * The user explicitly asked to load options from the agent. Only then may an agent that reports its
+ * options per session create one; that session is used for the thread the user starts next.
+ */
+prepare?: boolean, };

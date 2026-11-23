@@ -174,6 +174,9 @@ pub struct AgentOptionsParams {
     /// Choices already made in the new-thread form (option id to value). Dependent options, such as the
     /// thinking levels of the chosen model, are returned for these choices.
     pub selected: Option<BTreeMap<String, String>>,
+    /// The user explicitly asked to load options from the agent. Only then may an agent that reports its
+    /// options per session create one; that session is used for the thread the user starts next.
+    pub prepare: Option<bool>,
 }
 
 /// What the user needs to finish a sign-in that continues outside Vetro (device-code flows).
@@ -193,6 +196,10 @@ pub struct AuthenticateResult {
 pub struct AgentOptionsResult {
     pub options: Vec<ConfigOption>,
     pub commands: Vec<SlashCommand>,
+    /// Nothing is cached yet and this agent only reports options from a session. The UI offers an explicit
+    /// "load options" action (`prepare`) and otherwise starts the thread with the agent's defaults.
+    #[serde(default)]
+    pub needs_session: bool,
 }
 
 // --- projects ----------------------------------------------------------------------------------

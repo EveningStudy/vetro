@@ -27,7 +27,7 @@ Unknown fields must be ignored by both sides. Timestamps are milliseconds since 
 | `agents.list` | `Empty` | `AgentsResult` | Cached detection. |
 | `agents.refresh` | `Empty` | `AgentsResult` | Re-detect binaries, versions and auth state. |
 | `agents.authenticate` | `AuthenticateParams` | `AuthenticateResult` | Runs the agent's own sign-in method. The result carries a URL and code when the flow continues in a browser elsewhere. |
-| `agents.options` | `AgentOptionsParams` | `AgentOptionsResult` | Options and slash commands for a new thread. The versioned cache survives restart. If ACP requires a session to discover options, the adapter prepares one for the next start in that folder. |
+| `agents.options` | `AgentOptionsParams` | `AgentOptionsResult` | Options and slash commands for a new thread, from Vetro's versioned cache of what the agent reported earlier. It never creates a native session by itself: when nothing is cached and the agent only reports options from a session, the result has `needsSession: true`, and a session is created only when the call carries `prepare: true` from an explicit user action; that session is then used for the thread the user starts next in that folder. |
 | `projects.list` | `Empty` | `ProjectsResult` | Includes hidden projects. Missing directories sort last. |
 | `projects.add` | `ProjectAddParams` | `Project` | Desktop client only. Adds a folder to Vetro's list. |
 | `projects.remove` | `ProjectAddParams` | `Empty` | Desktop client only. Removes a manually added folder. Projects discovered from sessions can only be hidden. |

@@ -5,4 +5,9 @@ import type { SlashCommand } from "./SlashCommand";
 /**
  * What a new thread of this agent would start with. Comes from the agent, possibly cached.
  */
-export type AgentOptionsResult = { options: Array<ConfigOption>, commands: Array<SlashCommand>, };
+export type AgentOptionsResult = { options: Array<ConfigOption>, commands: Array<SlashCommand>, 
+/**
+ * Nothing is cached yet and this agent only reports options from a session. The UI offers an explicit
+ * "load options" action (`prepare`) and otherwise starts the thread with the agent's defaults.
+ */
+needsSession: boolean, };
