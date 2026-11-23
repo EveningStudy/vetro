@@ -48,15 +48,21 @@ impl From<AgentError> for RpcError {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SessionEvent {
+    /// Upsert by id. The core assigns ordinals.
     Item(ItemDraft),
-    TextDelta { item_id: String, delta: String },
+    TextDelta {
+        item_id: String,
+        delta: String,
+    },
     Status(ThreadStatus),
     Title(String),
     Model(Option<String>),
     Options(Vec<ConfigOption>),
     Commands(Vec<SlashCommand>),
     Usage(ThreadUsage),
-    Closed { error: Option<String> },
+    Closed {
+        error: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -96,6 +102,7 @@ pub struct SessionPage {
 
 #[derive(Debug, Clone, Default)]
 pub struct Transcript {
+    /// Oldest first. IDs should match live item IDs when the native protocol allows it.
     pub items: Vec<ItemDraft>,
 }
 
@@ -103,6 +110,7 @@ pub struct Transcript {
 pub struct StartRequest {
     pub cwd: PathBuf,
     pub content: Vec<ContentBlock>,
+    /// Only choices the user changed from the agent's defaults.
     pub options: BTreeMap<String, String>,
 }
 
@@ -113,7 +121,9 @@ pub trait Agent: Send + Sync + 'static {
     async fn authenticate(&self, method_id: &str) -> Result<()>;
     async fn options(&self, cwd: Option<&Path>) -> Result<AgentOptions>;
     async fn list(&self, cursor: Option<String>) -> Result<SessionPage>;
+    /// Read stored items without creating a live Vetro session.
     async fn read(&self, native_id: &str) -> Result<Transcript>;
+    /// Create a native session and submit the first prompt.
     async fn start(&self, req: StartRequest, sink: EventSink) -> Result<Arc<dyn Session>>;
     async fn attach(
         &self,
@@ -132,5 +142,6 @@ pub trait Session: Send + Sync + 'static {
     async fn set_option(&self, option_id: &str, value: &str) -> Result<Vec<ConfigOption>>;
     async fn respond(&self, request_id: &str, resolution: RequestResolution) -> Result<()>;
     async fn detach(&self);
+    /// Sessions multiplexed on the same process share its wire log.
     fn wire_log(&self) -> Arc<WireLog>;
 }

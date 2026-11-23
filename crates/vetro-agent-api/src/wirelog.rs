@@ -58,23 +58,19 @@ impl WireLog {
         self.state.lock().unwrap().file_error.clone()
     }
 
-    pub(crate) fn record(&self, direction: RawDirection, text: String) {
+    pub(crate) fn record(&self, direction: RawDirection, mut text: String) {
         let mut state = self.state.lock().unwrap();
+        text.shrink_to_fit();
         let entry = RawEntry {
             ts: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as i64,
             direction,
-            text: text.into_boxed_str().into_string(),
+            text,
         };
         if let Some(file) = state.file.as_mut() {
-            let write = || -> io::Result<()> {
-                let mut line = serde_json::to_vec(&entry)?;
-                line.push(b'\n');
-                file.write_all(&line)
-            };
-            if let Err(error) = (write)() {
+            if let Err(error) = append(file, &entry) {
                 state.file_error = Some(error.to_string());
                 state.file = None;
             }
@@ -95,4 +91,10 @@ impl WireLog {
 
 fn entry_size(entry: &RawEntry) -> usize {
     size_of::<RawEntry>() + entry.text.capacity()
+}
+
+fn append(file: &mut File, entry: &RawEntry) -> io::Result<()> {
+    let mut line = serde_json::to_vec(entry)?;
+    line.push(b'\n');
+    file.write_all(&line)
 }

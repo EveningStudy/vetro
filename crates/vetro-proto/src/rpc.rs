@@ -66,6 +66,7 @@ pub struct RpcResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(tag = "event", content = "data", rename_all_fields = "camelCase")]
 #[ts(export)]
+#[allow(clippy::large_enum_variant)]
 pub enum ServerEvent {
     /// Sent only for threads this connection opened. `seq` increases by one per thread.
     #[serde(rename = "thread.event")]

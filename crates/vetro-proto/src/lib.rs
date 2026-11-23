@@ -238,7 +238,11 @@ pub struct ThreadSummary {
 // ---------------------------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-#[serde(tag = "type", rename_all = "snake_case", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 #[ts(export)]
 pub enum ContentBlock {
     Text {
@@ -286,7 +290,11 @@ pub enum ToolStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-#[serde(tag = "type", rename_all = "snake_case", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 #[ts(export)]
 pub enum ToolContent {
     Text {
@@ -394,7 +402,11 @@ pub struct Question {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(tag = "type", rename_all = "snake_case", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 #[ts(export)]
 pub enum RequestBody {
     /// The agent wants to run a tool and asks first.
@@ -404,7 +416,11 @@ pub enum RequestBody {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(tag = "type", rename_all = "snake_case", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 #[ts(export)]
 pub enum RequestResolution {
     Selected {
@@ -471,7 +487,11 @@ pub struct TokenUsage {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-#[serde(tag = "type", rename_all = "snake_case", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 #[ts(export)]
 pub enum ItemKind {
     UserMessage {
@@ -545,18 +565,37 @@ pub struct ThreadUsage {
 
 /// Everything about one thread that changes while it is open.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-#[serde(tag = "type", rename_all = "snake_case", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 #[ts(export)]
 pub enum ThreadEvent {
-    ItemAdded { item: Item },
+    ItemAdded {
+        item: Item,
+    },
     /// Full replacement of an existing item (tool call progress, resolved request, ...).
-    ItemUpdated { item: Item },
+    ItemUpdated {
+        item: Item,
+    },
     /// Append to the `text` of a streaming agent message or reasoning item.
-    TextDelta { item_id: String, delta: String },
-    Summary { thread: ThreadSummary },
-    Options { options: Vec<ConfigOption> },
-    Commands { commands: Vec<SlashCommand> },
-    Usage { usage: ThreadUsage },
+    TextDelta {
+        item_id: String,
+        delta: String,
+    },
+    Summary {
+        thread: ThreadSummary,
+    },
+    Options {
+        options: Vec<ConfigOption>,
+    },
+    Commands {
+        commands: Vec<SlashCommand>,
+    },
+    Usage {
+        usage: ThreadUsage,
+    },
 }
 
 /// One line of the raw wire log: exactly what Vetro sent to or received from the agent process.
