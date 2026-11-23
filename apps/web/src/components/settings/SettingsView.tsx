@@ -3,7 +3,6 @@ import {
   ChevronDownIcon,
   InfoIcon,
   KeyRoundIcon,
-  LogInIcon,
   MonitorIcon,
   MoonIcon,
   PaletteIcon,
@@ -22,8 +21,11 @@ import { type LanguagePref, type ThemePref, setLanguage, setTheme, usePrefs } fr
 import { type SettingsSection, actions, useStore } from "~/state/store";
 import { errorMessage, toast } from "~/state/toast";
 import { AgentIcon } from "../AgentIcon";
+import { CustomAgents } from "./CustomAgents";
+import { SignInMethods } from "../SignIn";
 import { QrCodeSvg } from "../QrCode";
 import { MobileSidebarButton } from "../Shell";
+import { useNow } from "../hooks";
 import { Button } from "../ui/button";
 import { Badge, Input, Label, Spinner, Switch, Textarea } from "../ui/primitives";
 
@@ -98,6 +100,11 @@ function Row({ label, hint, children }: { label: ReactNode; hint?: ReactNode; ch
   );
 }
 
+function countdown(ms: number) {
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
 export function displayPath(path: string | null) {
   return path?.startsWith("\\\\?\\") ? path.slice(4) : (path ?? "");
 }
@@ -130,6 +137,7 @@ function AgentsSection() {
   const agents = useStore((s) => s.agents);
   const { settings, update } = useSettings();
   const [refreshing, setRefreshing] = useState(false);
+  const remoteClient = useStore((s) => s.app?.remoteClient ?? false);
   return (
     <section>
       <SectionTitle
@@ -153,11 +161,25 @@ function AgentsSection() {
           </Button>
         }
       />
+      {remoteClient ? <p className="mb-3 text-xs text-muted-foreground">{t("settings.remoteReadOnly")}</p> : null}
       <div className="flex flex-col gap-3">
         {agents.map((agent) => (
-          <AgentCard key={agent.id} agent={agent} settings={settings?.agents[agent.id]} custom={settings?.customAcpAgents.some((c) => c.id === agent.id) ?? false} onSave={update} />
+          <AgentCard key={agent.id} agent={agent} settings={settings?.agents[agent.id]} custom={settings?.customAcpAgents.some((c) => c.id === agent.id) ?? false} onSave={update} readOnly={remoteClient} />
         ))}
       </div>
+      <CustomAgents
+        settings={settings}
+        readOnly={remoteClient}
+        reservedIds={agents.filter((agent) => !settings?.customAcpAgents.some((c) => c.id === agent.id)).map((agent) => agent.id)}
+        onSave={async (patch) => {
+          const next = await update(patch);
+          if (next) {
+            const refreshed = await client().request("agents.refresh", {}).catch(() => null);
+            if (refreshed) useStore.setState({ agents: refreshed.agents });
+          }
+          return next;
+        }}
+      />
     </section>
   );
 }
@@ -167,15 +189,16 @@ function AgentCard({
   settings,
   custom,
   onSave,
+  readOnly,
 }: {
   agent: AgentInfo;
   settings: AgentSettings | undefined;
   custom: boolean;
   onSave: (patch: unknown) => Promise<Settings | null>;
+  readOnly: boolean;
 }) {
   const t = useT();
   const [open, setOpen] = useState(false);
-  const [signing, setSigning] = useState<string | null>(null);
   const current: AgentSettings = settings ?? { enabled: true, binaryPath: null, extraArgs: [], env: {} };
   const [binary, setBinary] = useState(current.binaryPath ?? "");
   const [args, setArgs] = useState(current.extraArgs.join("\n"));
@@ -231,37 +254,19 @@ function AgentCard({
           </div>
           {agent.error ? <div className="mt-0.5 text-xs text-destructive-foreground">{agent.error}</div> : null}
         </div>
-        <Switch checked={current.enabled} aria-label={t("settings.enabled")} onCheckedChange={(enabled) => void onSave({ agents: { [agent.id]: { ...current, enabled } } })} />
+        <Switch checked={current.enabled} disabled={readOnly} aria-label={t("settings.enabled")} onCheckedChange={(enabled) => void onSave({ agents: { [agent.id]: { ...current, enabled } } })} />
       </div>
       {agent.installed && agent.auth.state !== "ok" && agent.auth.methods.length > 0 ? (
-        <div className={cn("flex flex-wrap items-center gap-2 px-4 py-2.5", agent.auth.state === "required" && "bg-warning-surface/50")}>
-          <span className="me-auto text-xs text-muted-foreground">{t(agent.auth.state === "required" ? "composer.signInHint" : "settings.signInOptional", { agent: agent.name })}</span>
-          {agent.auth.methods.map((method, index) => (
-            <Button
-              key={method.id}
-              size="xs"
-              variant={index === 0 ? "default" : "outline"}
-              disabled={signing !== null}
-              onClick={() => {
-                setSigning(method.id);
-                client()
-                  .request("agents.authenticate", { agentId: agent.id, methodId: method.id })
-                  .then(() => client().request("agents.refresh", {}))
-                  .then((result) => useStore.setState({ agents: result.agents }))
-                  .catch((error) => toast.error(errorMessage(error)))
-                  .finally(() => setSigning(null));
-              }}
-            >
-              {signing === method.id ? <Spinner className="size-3" /> : <LogInIcon />}
-              {method.name}
-            </Button>
-          ))}
+        <div className={cn("flex flex-col gap-2 px-4 py-2.5", agent.auth.state === "required" && "bg-warning-surface/50")}>
+          <span className="text-xs text-muted-foreground">{t(agent.auth.state === "required" ? "composer.signInHint" : "settings.signInOptional", { agent: agent.name })}</span>
+          <SignInMethods agent={agent} size="xs" />
         </div>
       ) : null}
       <button
         type="button"
+        disabled={readOnly}
         onClick={() => setOpen(!open)}
-        className="flex w-full items-center gap-2 px-4 py-2 text-left text-xs font-medium text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+        className="flex w-full items-center gap-2 px-4 py-2 text-left disabled:cursor-default disabled:opacity-60 text-xs font-medium text-muted-foreground hover:bg-accent/50 hover:text-foreground"
       >
         <ChevronDownIcon className={cn("size-3.5 transition-transform", !open && "-rotate-90")} />
         {t("settings.binaryOverride")} · {t("settings.extraArgs")} · {t("settings.env")}
@@ -302,6 +307,8 @@ function RemoteSection() {
   const remoteClient = useStore((s) => s.app?.remoteClient ?? false);
   const [pairing, setPairing] = useState<Pairing | null>(null);
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const now = useNow(1000);
 
   useEffect(() => {
     client()
@@ -314,16 +321,23 @@ function RemoteSection() {
     setBusy(true);
     client()
       .request("remote.set", { enabled, tailscaleServe })
-      .then((status) => useStore.setState({ remote: status }))
-      .catch((error) => toast.error(errorMessage(error)))
+      .then((status) => {
+        setError(null);
+        useStore.setState({ remote: status });
+        if (!status.enabled) setPairing(null);
+      })
+      .catch((failure) => setError(errorMessage(failure)))
       .finally(() => setBusy(false));
   };
 
   const createPairing = () =>
     client()
       .request("remote.createPairing", {})
-      .then(setPairing)
-      .catch((error) => toast.error(errorMessage(error)));
+      .then((result) => {
+        setError(null);
+        setPairing(result);
+      })
+      .catch((failure) => setError(errorMessage(failure)));
 
   useEffect(() => {
     if (new URLSearchParams(location.search).get("pairing") === "1" && remote?.enabled && !pairing) void createPairing();
@@ -337,6 +351,7 @@ function RemoteSection() {
       <div>
         <SectionTitle title={t("settings.remote")} />
         {remoteClient ? <p className="mb-3 text-xs text-muted-foreground">{t("settings.desktopOnly")}</p> : null}
+        {error ? <p className="mb-3 rounded-lg border border-destructive/30 bg-error-surface px-3 py-2 text-sm text-destructive-foreground">{error}</p> : null}
         <Group>
           <Row label={t("settings.remoteEnable")} hint={t("settings.remoteEnableHint")}>
             <Switch checked={remote.enabled} disabled={remoteClient || busy} onCheckedChange={(enabled) => set(enabled, serving)} />
@@ -373,7 +388,9 @@ function RemoteSection() {
                 <div className="font-mono text-3xl font-semibold tracking-[0.2em] tabular-nums">{pairing.code}</div>
                 {pairing.url ? <div className="max-w-full truncate font-mono text-xs text-muted-foreground">{pairing.url}</div> : null}
                 <p className="text-center text-xs text-muted-foreground sm:text-left">
-                  {t("settings.pairHint", { time: new Date(pairing.expiresAt).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }) })}
+                  {pairing.expiresAt > now
+                    ? t("settings.pairHint", { time: countdown(pairing.expiresAt - now) })
+                    : t("settings.pairExpired")}
                 </p>
               </div>
             </div>
@@ -479,6 +496,7 @@ function AboutSection() {
   const t = useT();
   const app = useStore((s) => s.app);
   const { settings, update } = useSettings();
+  const remoteClient = app?.remoteClient ?? false;
   const [idle, setIdle] = useState<string>("");
   useEffect(() => {
     if (settings) setIdle(String(settings.idleReleaseMinutes));
@@ -506,6 +524,7 @@ function AboutSection() {
             <Input
               type="number"
               min={0}
+              disabled={remoteClient}
               value={idle}
               onChange={(event) => setIdle(event.target.value)}
               onBlur={() => {

@@ -140,6 +140,10 @@ export class WsTransport implements Transport {
       else pending.resolve(frame.result ?? {});
       return;
     }
+    if (frame.event === "app.resync") {
+      if (this.current === "open") this.setStatus("open", null, true);
+      return;
+    }
     if (typeof frame.event === "string") {
       for (const listener of this.eventListeners) listener(frame as unknown as ServerEvent);
     }

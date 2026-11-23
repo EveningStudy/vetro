@@ -279,7 +279,7 @@ function ChildSession({ threadId, defaultOpen = false }: { threadId: string; def
           <AgentIcon agentId={summary?.agentId ?? threadId.split(":")[0]!} className="size-4" />
           <span className="shrink-0 text-sm font-medium">{t("item.childSession", { agent: agent?.name ?? summary?.agentId ?? "" })}</span>
           <span className="min-w-0 truncate text-sm text-muted-foreground">{summary?.title}</span>
-          {summary ? <Badge variant="outline">{sourceLabel(summary, agent?.name, t)}</Badge> : null}
+          {summary ? <Badge variant="outline" className="max-sm:hidden">{sourceLabel(summary, agent?.name, t)}</Badge> : null}
           {summary?.status === "running" ? <Spinner className="size-3.5 text-info-foreground" /> : null}
         </button>
         {confidence ? (
@@ -288,7 +288,7 @@ function ChildSession({ threadId, defaultOpen = false }: { threadId: string; def
           </Tip>
         ) : null}
         <Button size="xs" variant="ghost-muted" onClick={() => actions.navigate({ view: "thread", threadId })}>
-          {t("item.openSession")}
+          <span className="max-sm:hidden">{t("item.openSession")}</span>
           <ExternalLinkIcon />
         </Button>
       </div>

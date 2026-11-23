@@ -11,14 +11,18 @@ import { actions, useHiddenFilter, useStore } from "~/state/store";
 import { AgentIcon } from "./AgentIcon";
 import { Kbd, Spinner } from "./ui/primitives";
 
-type Entry = { key: string; icon: ReactNode; title: ReactNode; detail?: ReactNode; meta?: string; run: () => void };
+type Entry = { key: string; icon: ReactNode; title: ReactNode; detail?: ReactNode; context?: string; meta?: string; run: () => void };
 
+const ENTITIES: Record<string, string> = { "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": '"', "&#39;": "'", "&#x27;": "'" };
+const decode = (text: string) => text.replace(/&(?:amp|lt|gt|quot|#39|#x27);/g, (entity) => ENTITIES[entity] ?? entity);
+
+/** The core escapes snippet text and wraps matches in <mark>; nothing else is markup. */
 function Snippet({ html }: { html: string }) {
-  const parts = html.split(/(<mark>.*?<\/mark>)/g);
+  const parts = html.split(/(<mark>[\s\S]*?<\/mark>)/g);
   return (
     <span className="search-snippet">
       {parts.map((part, index) =>
-        part.startsWith("<mark>") ? <mark key={index}>{part.slice(6, -7)}</mark> : <span key={index}>{part}</span>,
+        part.startsWith("<mark>") ? <mark key={index}>{decode(part.slice(6, -7))}</mark> : <span key={index}>{decode(part)}</span>,
       )}
     </span>
   );
@@ -28,6 +32,8 @@ export function CommandPalette() {
   const t = useT();
   const open = useStore((s) => s.paletteOpen);
   const threads = useStore((s) => s.threads);
+  const agents = useStore((s) => s.agents);
+  const projects = useStore((s) => s.projects);
   const visible = useHiddenFilter();
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<SearchHit[] | null>(null);
@@ -67,11 +73,18 @@ export function CommandPalette() {
   };
 
   const sections = useMemo(() => {
+    const where = (thread: ThreadSummary) => {
+      const agent = agents.find((a) => a.id === thread.agentId)?.name ?? thread.agentId;
+      const cwd = (thread.cwd ?? "").toLowerCase();
+      const project = projects.find((p) => p.path.toLowerCase() === cwd)?.name ?? thread.cwd?.split(/[\\/]/).filter(Boolean).at(-1);
+      return project ? `${agent} · ${project}` : agent;
+    };
     const threadEntry = (thread: ThreadSummary, detail?: ReactNode): Entry => ({
       key: thread.id,
       icon: <AgentIcon agentId={thread.agentId} />,
       title: thread.title,
       detail,
+      context: where(thread),
       meta: relativeTime(thread.updatedAt, t),
       run: () => openThread(thread),
     });
@@ -80,7 +93,7 @@ export function CommandPalette() {
       .filter((thread) => !thread.archived && visible(thread))
       .sort((a, b) => b.updatedAt - a.updatedAt)
       .slice(0, 8)
-      .map((thread) => threadEntry(thread, thread.cwd ? <span className="font-mono text-[11px]">{thread.cwd}</span> : undefined));
+      .map((thread) => threadEntry(thread));
     const dark = document.documentElement.classList.contains("dark");
     const commands: Entry[] = [
       {
@@ -115,7 +128,7 @@ export function CommandPalette() {
       { label: t("palette.recent"), entries: recent },
       { label: t("palette.actions"), entries: commands },
     ];
-  }, [hits, threads, t, visible]);
+  }, [hits, threads, t, visible, agents, projects]);
 
   const flat = sections.flatMap((section) => section.entries);
   useEffect(() => setActive(0), [hits, query]);
@@ -174,8 +187,11 @@ export function CommandPalette() {
                           >
                             <span className="flex size-5 shrink-0 items-center justify-center">{entry.icon}</span>
                             <span className="flex min-w-0 flex-1 flex-col">
-                              <span className="truncate text-sm text-foreground">{entry.title}</span>
-                              {entry.detail ? <span className="truncate text-xs text-muted-foreground">{entry.detail}</span> : null}
+                              <span className="flex min-w-0 items-baseline gap-2">
+                                <span className="truncate text-sm text-foreground">{entry.title}</span>
+                                {entry.context ? <span className="shrink-0 text-xs text-muted-foreground">{entry.context}</span> : null}
+                              </span>
+                              {entry.detail ? <span className="line-clamp-2 text-xs text-muted-foreground">{entry.detail}</span> : null}
                             </span>
                             {entry.meta ? <span className="shrink-0 text-xs tabular-nums text-muted-foreground">{entry.meta}</span> : null}
                             {active === current ? <CornerDownLeftIcon className="size-3.5 shrink-0 text-muted-foreground" /> : null}

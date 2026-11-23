@@ -1,4 +1,6 @@
 export type { AgentInfo } from "./bindings/AgentInfo";
+export type { AuthenticateResult } from "./bindings/AuthenticateResult";
+export type { CustomAcpAgent } from "./bindings/CustomAcpAgent";
 export type { AppInfo } from "./bindings/AppInfo";
 export type { ConfigOption } from "./bindings/ConfigOption";
 export type { ContentBlock } from "./bindings/ContentBlock";

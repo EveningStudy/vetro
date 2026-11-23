@@ -59,6 +59,26 @@ function textOf(item: Item): string {
   }
 }
 
+const remoteClient = new URLSearchParams(location.search).has("remote");
+
+function escapeHtml(text: string) {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/** Codex-like dependency: the small model has fewer reasoning levels. */
+function withSelection(options: { options: Result<"agents.options">["options"]; commands: Result<"agents.options">["commands"] }, selected: Record<string, string>) {
+  const model = selected.model;
+  const result = structuredClone(options);
+  for (const option of result.options) {
+    if (selected[option.id]) option.currentValue = selected[option.id]!;
+    if (option.category === "thought_level" && model?.includes("mini")) {
+      option.choices = option.choices.filter((choice) => choice.value === "low" || choice.value === "medium");
+      if (!option.choices.some((choice) => choice.value === option.currentValue)) option.currentValue = "medium";
+    }
+  }
+  return result;
+}
+
 const LIVE_USAGE = { input: 14_200, cachedInput: 9_800, output: 420, reasoning: 120, contextUsed: 14_620, contextWindow: 272_000 };
 
 /** The whole Vetro protocol, in the browser, over fixtures. */
@@ -282,6 +302,10 @@ export class MockTransport implements Transport {
     finish(run.cancelled ? "cancelled" : "end_turn");
   }
 
+  private desktopOnly() {
+    if (remoteClient) throw new RpcFailure("unauthorized", "Local authentication required");
+  }
+
   private startThread(params: Params<"threads.start">): Result<"threads.start"> {
     const agent = this.agents.find((a) => a.id === params.agentId);
     if (!agent?.installed) throw new RpcFailure("agent_unavailable", agent?.error ?? "Agent not available");
@@ -373,7 +397,7 @@ export class MockTransport implements Transport {
         const index = source.toLowerCase().indexOf(query);
         if (index < 0) continue;
         const from = Math.max(0, index - 40);
-        const snippet = `${from > 0 ? "…" : ""}${source.slice(from, index)}<mark>${source.slice(index, index + query.length)}</mark>${source.slice(index + query.length, index + query.length + 60)}`;
+        const snippet = `${from > 0 ? "…" : ""}${escapeHtml(source.slice(from, index))}<mark>${escapeHtml(source.slice(index, index + query.length))}</mark>${escapeHtml(source.slice(index + query.length, index + query.length + 60))}`;
         hits.push({ thread: thread.summary, snippet });
         break;
       }
@@ -423,7 +447,7 @@ export class MockTransport implements Transport {
       hostname: "CHRIS-DESK",
       homeDir: HOME,
       dataDir: `${HOME}\\.vetro`,
-      remoteClient: new URLSearchParams(location.search).has("remote"),
+      remoteClient,
     }),
     "agents.list": () => ({ agents: this.agents }),
     "agents.refresh": () => {
@@ -434,17 +458,25 @@ export class MockTransport implements Transport {
       await sleep(1200);
       const agent = this.agents.find((a) => a.id === params.agentId);
       if (!agent) throw new RpcFailure("not_found", "Unknown agent");
+      if (params.methodId === "device-code") {
+        setTimeout(() => {
+          agent.auth = { ...agent.auth, state: "ok", account: "Google AI Pro" };
+          this.emit({ event: "agents.updated", data: { agents: this.agents } });
+        }, 6000);
+        return { message: "Open the link on any device and enter the code.", url: "https://accounts.example.com/device", code: "WDJB-MJHT" };
+      }
       agent.auth = { ...agent.auth, state: "ok", account: "Google AI Pro" };
       this.emit({ event: "agents.updated", data: { agents: this.agents } });
-      return {};
+      return { message: null, url: null, code: null };
     },
     "agents.options": (params) => {
       const options = agentOptions[params.agentId];
       if (!options) throw new RpcFailure("agent_unavailable", "This agent is not available");
-      return options;
+      return withSelection(options, params.selected ?? {});
     },
     "projects.list": () => ({ projects: this.projects }),
     "projects.add": (params) => {
+      this.desktopOnly();
       const existing = this.projects.find((p) => p.path.toLowerCase() === params.path.toLowerCase());
       if (existing) return existing;
       const name = params.path.split(/[\\/]/).filter(Boolean).at(-1) ?? params.path;
@@ -452,6 +484,16 @@ export class MockTransport implements Transport {
       this.projects.push(project);
       this.emit({ event: "projects.updated", data: { projects: this.projects } });
       return project;
+    },
+    "projects.remove": (params) => {
+      this.desktopOnly();
+      const index = this.projects.findIndex((p) => p.path === params.path);
+      if (index < 0) throw new RpcFailure("not_found", "Unknown project");
+      if ([...this.threads.values()].some((t) => t.summary.cwd === params.path))
+        throw new RpcFailure("bad_request", "Sessions still use this folder, so it can only be hidden.");
+      this.projects.splice(index, 1);
+      this.emit({ event: "projects.updated", data: { projects: this.projects } });
+      return {};
     },
     "projects.update": (params) => {
       const project = this.projects.find((p) => p.path === params.path);
@@ -539,11 +581,13 @@ export class MockTransport implements Transport {
     "fs.find": (params) => this.find(params),
     "settings.get": () => this.settings,
     "settings.update": (params) => {
+      this.desktopOnly();
       this.settings = mergePatch(this.settings, params.patch) as typeof this.settings;
       return this.settings;
     },
     "remote.status": () => this.remote,
     "remote.set": (params) => {
+      this.desktopOnly();
       this.remote.enabled = params.enabled;
       const dns = this.remote.tailscale.dnsName;
       this.remote.tailscale.serveUrl = params.tailscaleServe && dns ? `https://${dns}` : null;
@@ -551,6 +595,7 @@ export class MockTransport implements Transport {
       return this.remote;
     },
     "remote.createPairing": () => {
+      this.desktopOnly();
       const code = "K7M-4QX";
       const serve = this.remote.tailscale.serveUrl;
       return { code, url: serve ? `${serve}/?code=${code}` : null, expiresAt: Date.now() + 5 * 60_000 };

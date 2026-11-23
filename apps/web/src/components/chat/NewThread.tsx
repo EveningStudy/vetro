@@ -1,4 +1,4 @@
-import { ChevronDownIcon, KeyRoundIcon, LogInIcon } from "lucide-react";
+import { ChevronDownIcon, KeyRoundIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { client } from "~/api/client";
 import type { AgentInfo, ConfigOption, SlashCommand } from "~/api/types";
@@ -7,9 +7,9 @@ import { shortVersion } from "~/lib/format";
 import { actions, useStore } from "~/state/store";
 import { errorMessage, toast } from "~/state/toast";
 import { AgentIcon } from "../AgentIcon";
+import { SignInMethods } from "../SignIn";
 import { FolderBrowser } from "../FolderBrowser";
 import { MobileSidebarButton } from "../Shell";
-import { Button } from "../ui/button";
 import { Menu, MenuGroupLabel, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from "../ui/overlay";
 import { Spinner } from "../ui/primitives";
 import { Composer } from "./Composer";
@@ -33,6 +33,7 @@ export function NewThread({ projectPath, agentId: routeAgent }: { projectPath: s
   const [baseOptions, setBaseOptions] = useState<ConfigOption[]>([]);
   const [commands, setCommands] = useState<SlashCommand[]>([]);
   const [overrides, setOverrides] = useState<Record<string, string>>({});
+  const [defaults, setDefaults] = useState<Record<string, string>>({});
   const [loadingOptions, setLoadingOptions] = useState(false);
   const [browsing, setBrowsing] = useState(false);
 
@@ -61,6 +62,7 @@ export function NewThread({ projectPath, agentId: routeAgent }: { projectPath: s
       .then((result) => {
         if (cancelled) return;
         setBaseOptions(result.options);
+        setDefaults(Object.fromEntries(result.options.map((option) => [option.id, option.currentValue])));
         setCommands(result.commands);
       })
       .catch(() => {
@@ -74,9 +76,36 @@ export function NewThread({ projectPath, agentId: routeAgent }: { projectPath: s
   }, [agent?.id, agent?.auth.state, effectiveCwd]);
 
   const options = useMemo(
-    () => baseOptions.map((option) => (overrides[option.id] ? { ...option, currentValue: overrides[option.id]! } : option)),
+    () =>
+      baseOptions.map((option) => {
+        const value = overrides[option.id];
+        return value && option.choices.some((choice) => choice.value === value) ? { ...option, currentValue: value } : option;
+      }),
     [baseOptions, overrides],
   );
+
+  const changeOption = (optionId: string, value: string) => {
+    const next = { ...overrides, [optionId]: value };
+    setOverrides(next);
+    const changed = baseOptions.find((option) => option.id === optionId);
+    if (!agent || changed?.category !== "model") return;
+    setLoadingOptions(true);
+    client()
+      .request("agents.options", { agentId: agent.id, ...(effectiveCwd ? { cwd: effectiveCwd } : {}), selected: next })
+      .then((result) => {
+        setBaseOptions(result.options);
+        setOverrides((current) => {
+          const kept: Record<string, string> = {};
+          for (const [id, chosen] of Object.entries(current)) {
+            const option = result.options.find((o) => o.id === id);
+            if (option?.choices.some((choice) => choice.value === chosen)) kept[id] = chosen;
+          }
+          return kept;
+        });
+      })
+      .catch((error) => toast.error(errorMessage(error)))
+      .finally(() => setLoadingOptions(false));
+  };
 
   const chooseProject = async (path: string) => {
     try {
@@ -107,13 +136,13 @@ export function NewThread({ projectPath, agentId: routeAgent }: { projectPath: s
           cwd={effectiveCwd}
           options={options}
           commands={commands}
-          onOptionChange={(optionId, value) => setOverrides((current) => ({ ...current, [optionId]: value }))}
+          onOptionChange={changeOption}
           onSubmit={async (content) => {
             if (!agent || !effectiveCwd) return;
             const changed: Record<string, string> = {};
-            for (const option of baseOptions) {
-              const value = overrides[option.id];
-              if (value && value !== option.currentValue) changed[option.id] = value;
+            for (const [id, value] of Object.entries(overrides)) {
+              const option = options.find((o) => o.id === id);
+              if (option?.currentValue === value && value !== defaults[id]) changed[id] = value;
             }
             localStorage.setItem(LAST_AGENT, agent.id);
             localStorage.setItem(LAST_PROJECT, effectiveCwd);
@@ -186,7 +215,6 @@ function AgentPicker({ agents, current, onChange }: { agents: AgentInfo[]; curre
 
 export function SignInCard({ agent, onDone }: { agent: AgentInfo; onDone?: () => void }) {
   const t = useT();
-  const [pending, setPending] = useState<string | null>(null);
   return (
     <div className="mx-auto mb-3 w-full max-w-(--chat-content-max-width) rounded-xl border border-warning/40 bg-warning-surface/60 px-4 py-3">
       <div className="flex items-start gap-3">
@@ -194,31 +222,8 @@ export function SignInCard({ agent, onDone }: { agent: AgentInfo; onDone?: () =>
         <div className="min-w-0 flex-1">
           <div className="text-sm font-medium">{t("composer.needsSignIn")}</div>
           <p className="mt-0.5 text-xs text-muted-foreground">{t("composer.signInHint", { agent: agent.name })}</p>
-          <div className="mt-2.5 flex flex-wrap gap-2">
-            {agent.auth.methods.map((method, index) => (
-              <Button
-                key={method.id}
-                size="sm"
-                variant={index === 0 ? "default" : "outline"}
-                disabled={pending !== null}
-                title={method.description ?? undefined}
-                onClick={() => {
-                  setPending(method.id);
-                  client()
-                    .request("agents.authenticate", { agentId: agent.id, methodId: method.id })
-                    .then(() => client().request("agents.refresh", {}))
-                    .then((result) => {
-                      useStore.setState({ agents: result.agents });
-                      onDone?.();
-                    })
-                    .catch((error) => toast.error(errorMessage(error)))
-                    .finally(() => setPending(null));
-                }}
-              >
-                {pending === method.id ? <Spinner className="size-3.5" /> : <LogInIcon />}
-                {pending === method.id ? t("composer.signingIn") : method.name}
-              </Button>
-            ))}
+          <div className="mt-2.5">
+            <SignInMethods agent={agent} onDone={onDone} />
           </div>
         </div>
       </div>

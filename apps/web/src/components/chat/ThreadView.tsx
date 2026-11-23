@@ -117,6 +117,21 @@ function ThreadHeader({ thread, threadId }: { thread: OpenThread | undefined; th
           ) : null}
         </div>
         <div className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+          {summary.parent ? (
+            <>
+              <button
+                type="button"
+                onClick={() => actions.navigate({ view: "thread", threadId: summary.parent!.threadId })}
+                className="inline-flex min-w-0 max-w-56 shrink items-center gap-1 rounded-sm hover:text-foreground"
+                title={t("thread.openParent")}
+              >
+                <CornerLeftUpIcon className="size-3 shrink-0" />
+                {parent ? <AgentIcon agentId={parent.agentId} className="size-3" /> : null}
+                <span className="truncate">{parent?.title ?? t("thread.parent")}</span>
+              </button>
+              <span className="text-muted-foreground/50">·</span>
+            </>
+          ) : null}
           <AgentIcon agentId={summary.agentId} className="size-3" />
           <span className="shrink-0">{agent?.name ?? summary.agentId}</span>
           {model ? (

@@ -409,6 +409,11 @@ export const actions = {
     return project;
   },
 
+  async removeProject(path: string) {
+    await client().request("projects.remove", { path });
+    set({ projects: get().projects.filter((project) => project.path !== path) });
+  },
+
   async updateProject(path: string, patch: { name?: string; pinned?: boolean; hidden?: boolean }) {
     try {
       const project = await client().request("projects.update", { path, ...patch });

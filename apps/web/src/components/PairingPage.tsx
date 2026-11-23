@@ -15,9 +15,16 @@ function defaultDeviceName() {
   return "Browser";
 }
 
+/** The pairing link carries the code as #pair=… (or ?code=…); take it and clear it from the address bar. */
+function initialCode() {
+  const fromHash = /[#&]pair=([^&]+)/.exec(location.hash)?.[1];
+  if (fromHash) history.replaceState(null, "", `${location.pathname}${location.search}`);
+  return decodeURIComponent(fromHash ?? new URLSearchParams(location.search).get("code") ?? "");
+}
+
 export function PairingPage({ onPaired }: { onPaired: () => void }) {
   const t = useT();
-  const [code, setCode] = useState(() => new URLSearchParams(location.search).get("code") ?? "");
+  const [code, setCode] = useState(initialCode);
   const [name, setName] = useState(defaultDeviceName);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -60,10 +67,11 @@ export function PairingPage({ onPaired }: { onPaired: () => void }) {
             value={code}
             autoFocus
             autoComplete="one-time-code"
-            autoCapitalize="characters"
+            autoCapitalize="none"
+            autoCorrect="off"
             spellCheck={false}
-            onChange={(event) => setCode(event.target.value.toUpperCase())}
-            placeholder="ABC-123"
+            onChange={(event) => setCode(event.target.value.trim())}
+            placeholder="503bb401"
             className="h-11 text-center font-mono text-lg tracking-[0.2em] sm:h-11 sm:text-lg"
           />
         </div>

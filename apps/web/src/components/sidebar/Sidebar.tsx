@@ -15,6 +15,7 @@ import {
   SquarePenIcon,
   CornerDownRightIcon,
   EyeIcon,
+  FolderMinusIcon,
   EyeOffIcon,
 } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -22,11 +23,17 @@ import type { Project, ThreadSource, ThreadSummary } from "~/api/types";
 import { useT } from "~/i18n";
 import { relativeTime } from "~/lib/format";
 import { cn, isMac } from "~/lib/utils";
+import { RpcFailure } from "~/api/protocol";
 import { actions, useStore } from "~/state/store";
+import { errorMessage, toast } from "~/state/toast";
 import { AgentIcon } from "../AgentIcon";
 import { useNow } from "../hooks";
 import { Button } from "../ui/button";
 import {
+  Dialog,
+  DialogDescription,
+  DialogPopup,
+  DialogTitle,
   Menu,
   MenuCheckboxItem,
   MenuGroupLabel,
@@ -166,6 +173,16 @@ const ThreadRow = memo(function ThreadRow({
 const ProjectHeader = memo(function ProjectHeader({ row }: { row: Extract<SidebarRow, { kind: "project" }> }) {
   const t = useT();
   const { project, collapsed, count, attention, suffix } = row;
+  const [refusal, setRefusal] = useState<string | null>(null);
+  const remove = () =>
+    actions
+      .removeProject(project.path)
+      .then(() => toast.success(t("sidebar.removed", { name: project.name })))
+      .catch((error: unknown) => {
+        if (error instanceof RpcFailure && error.code === "bad_request") setRefusal(error.message);
+        else if (error instanceof RpcFailure && /unknown rpc method/i.test(error.message)) setRefusal(t("sidebar.removeUnsupported"));
+        else toast.error(errorMessage(error));
+      });
   return (
     <div className="group/project-folder relative pt-2">
       <button
@@ -206,6 +223,11 @@ const ProjectHeader = memo(function ProjectHeader({ row }: { row: Extract<Sideba
                 {project.hidden ? <EyeIcon /> : <EyeOffIcon />}
                 {project.hidden ? t("sidebar.unhide") : t("sidebar.hide")}
               </MenuItem>
+              <MenuSeparator />
+              <MenuItem destructive onClick={() => void remove()}>
+                <FolderMinusIcon />
+                {t("sidebar.remove")}
+              </MenuItem>
             </MenuPopup>
           </Menu>
           <Tip label={t("sidebar.newThreadIn", { name: project.name })}>
@@ -220,6 +242,30 @@ const ProjectHeader = memo(function ProjectHeader({ row }: { row: Extract<Sideba
           </Tip>
         </span>
       )}
+      <Dialog open={refusal !== null} onOpenChange={(open) => !open && setRefusal(null)}>
+        <DialogPopup className="max-w-md">
+          <div className="flex flex-col gap-4 p-5">
+            <div className="flex flex-col gap-1 pe-8">
+              <DialogTitle>{t("sidebar.removeRefusedTitle", { name: project.name })}</DialogTitle>
+              <DialogDescription>{refusal}</DialogDescription>
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="ghost" onClick={() => setRefusal(null)}>
+                {t("common.cancel")}
+              </Button>
+              <Button
+                onClick={() => {
+                  setRefusal(null);
+                  void actions.updateProject(project.path, { hidden: true });
+                }}
+              >
+                <EyeOffIcon />
+                {t("sidebar.hide")}
+              </Button>
+            </div>
+          </div>
+        </DialogPopup>
+      </Dialog>
     </div>
   );
 });

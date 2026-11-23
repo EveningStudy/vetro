@@ -56,6 +56,7 @@ export const agents: AgentInfo[] = [
       state: "required",
       methods: [
         { id: "oauth-personal", name: "Sign in with Google", description: "Opens Google sign-in in your browser." },
+        { id: "device-code", name: "Sign in with a code", description: "Finish on any device with a browser." },
         { id: "gemini-api-key", name: "Use GEMINI_API_KEY", description: "Reads the key from the agent's environment." },
       ],
       account: null,
