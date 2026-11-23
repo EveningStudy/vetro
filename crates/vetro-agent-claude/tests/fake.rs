@@ -248,7 +248,7 @@ async fn test() {
     assert_eq!(record.source, ThreadSource::Exec);
     assert_eq!(record.cwd.as_deref(), Some(original.as_path()));
     assert_eq!(record.created_at, Some(1_795_392_000_100));
-    let history = agent.read(ID).await.unwrap();
+    let history = agent.read(ID, None).await.unwrap();
     assert_eq!(history.items.len(), 3);
     let ItemKind::ToolCall(call) = &history.items[1].kind else {
         panic!("missing Agent call")

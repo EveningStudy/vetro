@@ -195,13 +195,37 @@ impl Core {
 
     pub(crate) async fn authenticate(&self, params: AuthenticateParams) -> Result<()> {
         self.check_agent_enabled(&params.agent_id)?;
-        {
+        let result = {
             let agent = self.registry.get(&params.agent_id)?;
             let _guard = self.registry.enter(&params.agent_id, true).await;
-            agent.authenticate(&params.method_id).await?;
-        }
-        self.agents(true).await;
+            agent.authenticate(&params.method_id).await
+        };
+        self.auth_result(&params.agent_id, result).await?;
+        self.set_agent_auth(&params.agent_id, AuthState::Ok).await;
         Ok(())
+    }
+
+    pub(crate) async fn auth_result<T>(&self, id: &str, result: Result<T>) -> Result<T> {
+        if result
+            .as_ref()
+            .is_err_and(|error| error.code == ErrorCode::AuthRequired)
+        {
+            self.set_agent_auth(id, AuthState::Required).await;
+        }
+        result
+    }
+
+    pub(crate) async fn set_agent_auth(&self, id: &str, state: AuthState) {
+        self.agents(false).await;
+        let _refresh = self.detection_refresh.lock().await;
+        let mut cache = self.detection.write().unwrap();
+        let Some(agents) = cache.as_mut() else { return };
+        if let Some(agent) = agents.iter_mut().find(|agent| agent.id == id) {
+            agent.auth.state = state;
+            self.publish(ServerEvent::AgentsUpdated {
+                agents: agents.clone(),
+            });
+        }
     }
 
     pub(crate) async fn agent_options(
@@ -216,15 +240,18 @@ impl Core {
             .map(Path::new)
             .map(files::directory)
             .transpose()?;
-        let key = serde_json::to_string(&(params.agent_id, cwd.as_ref())).map_err(internal)?;
+        let key = serde_json::to_string(&(&params.agent_id, cwd.as_ref())).map_err(internal)?;
         if let Some(cached) = self
             .home
             .read_state(|state| state.options.get(&key).cloned())
         {
             return Ok(cached);
         }
-        let _guard = self.registry.enter(agent.id(), true).await;
-        let options = agent.options(cwd.as_deref()).await?;
+        let result = {
+            let _guard = self.registry.enter(agent.id(), true).await;
+            agent.options(cwd.as_deref()).await
+        };
+        let options = self.auth_result(agent.id(), result).await?;
         let result = AgentOptionsResult {
             options: options.options,
             commands: options.commands,

@@ -12,6 +12,7 @@ default = []
 claude = ["vetro-core/claude"]
 codex = ["vetro-core/codex"]
 acp = ["vetro-core/acp"]
+antigravity-store = ["vetro-core/antigravity-store"]
 
 [[bin]]
 name = "vetro"

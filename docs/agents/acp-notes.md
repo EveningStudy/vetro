@@ -1,11 +1,12 @@
 # ACP v1 adapter notes
 
 `vetro_agent_acp::AcpAgent` implements `vetro_agent_api::Agent` and returns
-`Arc<dyn Session>`. Use `antigravity()` for `agy acp`, `devin()` for `devin acp`,
+`Arc<dyn Session>`. Use `antigravity()` for `agy acp`, `devin()` for `devin acp --process-model in-process`,
 or `new(id, name, SpawnSpec)` to specify a native executable, arguments,
-environment overrides and an optional process working directory. On Windows,
-pass the installed `devin.exe` path if it is outside `PATH`. The tests pass
-`--process-model in-process` explicitly in the Devin launch spec.
+environment overrides and an optional process working directory. The core
+also uses `--process-model in-process` for the built-in Devin agent, keeping
+its sessions in the child process Vetro owns. On Windows, the core checks the
+installed Devin Desktop application's uninstall registry entries.
 `with_mid_turn_input` enables steering for a custom agent that supports it.
 `wire_log()` inspects the currently started process.
 
@@ -16,13 +17,17 @@ neither capability retain the probe in their native store. An agent can publish
 commands asynchronously after the probe has closed. Such commands are available
 through live session events when they arrive before the live session closes.
 
-`read()` captures replay in wire order up to the `session/load` reply. It closes
+`read()` uses the history record's cwd when available and captures replay in
+wire order up to the `session/load` reply. It closes
 the loaded session when the agent supports `close`. Loading an already attached
 session returns `Busy` to protect its live turn. `attach()` prefers
 `session/resume` and uses `session/load` where only replay-based continuation is
 advertised. Core callers can use `read()` to build the history and then attach
 without emitting that replay a second time. `shutdown()` releases the shared
 process. The next agent call starts a fresh one after shutdown or a crash.
+Devin requires native browser authentication for each fresh process.
+`vetro probe devin --auth` selects the first advertised method. The wire log
+records environment override names and masks their values.
 
 ## Contract gaps
 
@@ -30,13 +35,6 @@ process. The next agent call starts a fresh one after shutdown or a crash.
   channels. ACP needs a single wire-order boundary for replay and turn
   completion. This adapter uses the shared `Process`, Windows Job Object or
   Unix process group, and a small ordered JSON-RPC dispatcher.
-- `Process::spawn` records environment override values in its spawn log. The
-  adapter uses a zero-capacity log when the launch spec overrides the environment
-  so secrets passed to the native agent are absent from the diagnostic snapshot.
-  A redacted spawn-record API would allow retaining other wire entries.
-- `Agent::read` has no `cwd` parameter. The adapter uses a remembered directory,
-  looks it up through `session/list`, or falls back to the launch directory or
-  Vetro's current directory. `attach` accepts an explicit `cwd`.
 - `SessionEvent` represents session titles, models, usage and text, while ACP
   can also report session timestamps, cumulative cost, and rich agent content.
   Session info timestamps are available on list records, context token counts
@@ -50,7 +48,9 @@ process. The next agent call starts a fresh one after shutdown or a crash.
   containing unsupported field types are declined with invalid params.
 - ACP turn completion, cancellation and failures arrive asynchronously. `send`
   returns once the prompt is written. Turn completion and errors are reported
-  in events. New-session authentication errors return `AuthRequired` directly.
+  in events. When a prompt is rejected asynchronously for authentication, the
+  adapter emits `AuthRequired`. New-session authentication errors and sends to
+  a process already known to require authentication return `AuthRequired` directly.
   ACP v1 requires a base64 payload even when an image URI is present. The
   caller can supply inline data or a base64 data URI.
 

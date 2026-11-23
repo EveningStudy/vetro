@@ -60,6 +60,7 @@ pub enum SessionEvent {
     Options(Vec<ConfigOption>),
     Commands(Vec<SlashCommand>),
     Usage(ThreadUsage),
+    AuthRequired,
     Closed {
         error: Option<String>,
     },
@@ -122,7 +123,7 @@ pub trait Agent: Send + Sync + 'static {
     async fn options(&self, cwd: Option<&Path>) -> Result<AgentOptions>;
     async fn list(&self, cursor: Option<String>) -> Result<SessionPage>;
     /// Read stored items without creating a live Vetro session.
-    async fn read(&self, native_id: &str) -> Result<Transcript>;
+    async fn read(&self, native_id: &str, cwd: Option<&Path>) -> Result<Transcript>;
     /// Create a native session and submit the first prompt.
     async fn start(&self, req: StartRequest, sink: EventSink) -> Result<Arc<dyn Session>>;
     async fn attach(

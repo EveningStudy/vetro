@@ -31,7 +31,10 @@ async fn installed_app_server() {
                     .is_some_and(|preview| !preview.is_empty())
         })
         .expect("existing Codex history");
-    let history = agent.read(&existing.native_id).await.unwrap();
+    let history = agent
+        .read(&existing.native_id, existing.cwd.as_deref())
+        .await
+        .unwrap();
     assert!(history
         .items
         .iter()
@@ -97,7 +100,7 @@ async fn installed_app_server() {
     let (sink, _events) = mpsc::unbounded_channel();
     let resumed = agent.attach(&original, Some(&cwd), sink).await.unwrap();
     assert_eq!(resumed.native_id(), original);
-    let recorded = agent.read(&original).await.unwrap();
+    let recorded = agent.read(&original, None).await.unwrap();
     assert!(recorded.items.iter().any(
         |item| matches!(&item.kind, ItemKind::AgentMessage { text, .. } if text.trim() == "OK")
     ));

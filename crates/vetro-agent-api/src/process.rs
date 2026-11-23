@@ -31,7 +31,7 @@ pub struct SpawnSpec {
     pub program: PathBuf,
     pub args: Vec<OsString>,
     pub cwd: Option<PathBuf>,
-    /// The agent inherits the environment with these overrides. Values are logged.
+    /// The agent inherits the environment with these overrides. Values are masked in the log.
     pub env: BTreeMap<OsString, OsString>,
 }
 
@@ -71,7 +71,7 @@ impl Process {
                 "program": spec.program.as_os_str().to_string_lossy(),
                 "args": spec.args.iter().map(|arg| arg.to_string_lossy()).collect::<Vec<_>>(),
                 "cwd": spec.cwd.as_ref().map(|cwd| cwd.as_os_str().to_string_lossy()),
-                "env": spec.env.iter().map(|(key, value)| (key.to_string_lossy(), value.to_string_lossy()))
+                "env": spec.env.keys().map(|key| (key.to_string_lossy(), "<redacted>"))
                     .collect::<BTreeMap<_, _>>(),
             })
             .to_string(),

@@ -40,12 +40,7 @@ pub(crate) struct Connection {
 
 impl Connection {
     pub fn spawn(spec: SpawnSpec) -> Result<Arc<Self>> {
-        let log = if spec.env.is_empty() {
-            WireLog::default()
-        } else {
-            WireLog::new(0)
-        };
-        let (process, stdout) = Process::spawn(spec, Arc::new(log))
+        let (process, stdout) = Process::spawn(spec, Arc::new(WireLog::default()))
             .map_err(|error| AgentError::new(ErrorCode::AgentUnavailable, error.to_string()))?;
         let connection = Arc::new(Self {
             process,

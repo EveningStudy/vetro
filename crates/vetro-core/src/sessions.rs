@@ -97,6 +97,24 @@ impl Sessions {
 }
 
 impl Core {
+    pub async fn open_thread(
+        self: &Arc<Self>,
+        id: &str,
+        limit: Option<u32>,
+    ) -> Result<ThreadOpenResult> {
+        Ok(self.open(id, limit).await?.0)
+    }
+
+    pub(crate) async fn open(
+        self: &Arc<Self>,
+        id: &str,
+        limit: Option<u32>,
+    ) -> Result<(ThreadOpenResult, Arc<Thread>)> {
+        self.refresh_history(true).await;
+        let thread = self.thread(id).await?;
+        Ok((thread.snapshot(limit), thread))
+    }
+
     pub(crate) async fn thread(self: &Arc<Self>, id: &str) -> Result<Arc<Thread>> {
         if let Some(thread) = self.sessions.get(id) {
             return Ok(thread);
@@ -112,8 +130,11 @@ impl Core {
         });
         let transcript = {
             let _guard = self.registry.enter(agent_id, true).await;
-            agent.read(native_id).await?
+            agent
+                .read(native_id, summary.cwd.as_deref().map(Path::new))
+                .await
         };
+        let transcript = self.auth_result(agent_id, transcript).await?;
         let mut state = Timeline::new(summary);
         if unknown {
             state.summary.resumable = self.agent_info(agent_id).await?.capabilities.resume;
@@ -132,7 +153,7 @@ impl Core {
     ) -> Result<(ThreadSummary, Arc<Thread>)> {
         self.check_agent_enabled(&params.agent_id)?;
         let agent = self.registry.get(&params.agent_id)?;
-        let _guard = self.registry.enter(&params.agent_id, true).await;
+        let guard = self.registry.enter(&params.agent_id, true).await;
         let cwd = crate::files::directory(Path::new(&params.cwd))?;
         let title = params
             .content
@@ -160,7 +181,14 @@ impl Core {
                 },
                 sink,
             )
-            .await?;
+            .await;
+        let session = match session {
+            Ok(session) => session,
+            Err(error) => {
+                drop(guard);
+                return self.auth_result(&params.agent_id, Err(error)).await;
+            }
+        };
         if session.native_id().is_empty() {
             session.detach().await;
             return Err(internal("Agent returned an empty native session id"));
@@ -238,6 +266,19 @@ impl Thread {
                 let Some(thread) = thread.upgrade() else {
                     return;
                 };
+                if event == SessionEvent::AuthRequired {
+                    let id = {
+                        let state = thread.state.lock().unwrap();
+                        if state.generation != generation || state.session.is_none() {
+                            return;
+                        }
+                        state.summary.agent_id.clone()
+                    };
+                    if let Some(core) = thread.core.upgrade() {
+                        core.set_agent_auth(&id, AuthState::Required).await;
+                    }
+                    continue;
+                }
                 if thread.core.upgrade().is_none() || !thread.handle(generation, event) {
                     return;
                 }
@@ -296,6 +337,7 @@ impl Thread {
                 state.usage = usage;
                 None
             }
+            SessionEvent::AuthRequired => None,
             SessionEvent::Closed { error } => {
                 closed_session = state.session.take();
                 state.summary.live = false;
@@ -344,7 +386,7 @@ impl Thread {
         }
         let core = self.core();
         core.check_agent_enabled(&summary.agent_id)?;
-        let _guard = core.registry.enter(&summary.agent_id, true).await;
+        let guard = core.registry.enter(&summary.agent_id, true).await;
         let (sink, events) = mpsc::unbounded_channel();
         let result = core
             .registry
@@ -362,7 +404,13 @@ impl Thread {
                 state.changed(&core);
             }
         }
-        let session = result?;
+        let session = match result {
+            Ok(session) => session,
+            Err(error) => {
+                drop(guard);
+                return core.auth_result(&summary.agent_id, Err(error)).await;
+            }
+        };
         if session.native_id() != summary.native_id {
             session.detach().await;
             return Err(internal("Agent attached to a different native session"));
@@ -423,17 +471,20 @@ impl Thread {
             (state.generation, was_active)
         };
         if let Err(error) = session.send(content).await {
-            let mut state = self.state.lock().unwrap();
-            if generation == state.generation {
-                if !was_active && state.status == ThreadStatus::Running {
-                    state.status = ThreadStatus::Error;
+            let agent_id = {
+                let mut state = self.state.lock().unwrap();
+                if generation == state.generation {
+                    if !was_active && state.status == ThreadStatus::Running {
+                        state.status = ThreadStatus::Error;
+                    }
+                    let notice = state.notice(error.message.clone());
+                    state.emit(core, notice);
+                    state.update_status();
+                    state.changed(core);
                 }
-                let notice = state.notice(error.message.clone());
-                state.emit(core, notice);
-                state.update_status();
-                state.changed(core);
-            }
-            return Err(error);
+                state.summary.agent_id.clone()
+            };
+            return core.auth_result(&agent_id, Err(error)).await;
         }
         Ok(())
     }

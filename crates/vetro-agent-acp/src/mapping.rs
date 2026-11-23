@@ -33,7 +33,9 @@ pub fn record(value: &Value, resumable: bool) -> Option<SessionRecord> {
         title: string(value, "title").unwrap_or_else(|| native_id.clone()),
         native_id,
         preview: string(value, "preview"),
-        cwd: string(value, "cwd").map(PathBuf::from),
+        cwd: value["cwd"]
+            .as_str()
+            .and_then(|cwd| native_cwd(cwd, cfg!(windows))),
         created_at: timestamp(&value["createdAt"]),
         updated_at: timestamp(&value["updatedAt"]).unwrap_or_default(),
         source: ThreadSource::Unknown,
@@ -42,6 +44,77 @@ pub fn record(value: &Value, resumable: bool) -> Option<SessionRecord> {
         resumable,
         parent_native_id: string(value, "parentSessionId"),
     })
+}
+
+fn native_cwd(cwd: &str, windows: bool) -> Option<PathBuf> {
+    let (authority, path) = if let Some(uri) = cwd.strip_prefix("file://") {
+        uri.split_once('/')
+            .map(|(host, _)| (host, &uri[host.len()..]))?
+    } else if let Some(path) = cwd.strip_prefix("file:") {
+        ("", path)
+    } else if cwd.starts_with('/') {
+        ("", cwd)
+    } else {
+        let path = PathBuf::from(cwd);
+        return path.is_absolute().then_some(path);
+    };
+    let decoded = percent_encoding::percent_decode_str(path)
+        .decode_utf8()
+        .ok()?;
+    if decoded.contains('\0') {
+        return None;
+    }
+    if !authority.is_empty() && !authority.eq_ignore_ascii_case("localhost") {
+        return (windows && !authority.contains(['\\', ':', '@']))
+            .then(|| PathBuf::from(format!(r"\\{authority}{}", decoded.replace('/', "\\"))));
+    }
+    let path = decoded.as_ref();
+    if windows {
+        let path = path
+            .strip_prefix('/')
+            .filter(|drive| {
+                let bytes = drive.as_bytes();
+                bytes.len() >= 3
+                    && bytes[0].is_ascii_alphabetic()
+                    && bytes[1] == b':'
+                    && bytes[2] == b'/'
+            })
+            .unwrap_or(path);
+        let path = PathBuf::from(path.replace('/', "\\"));
+        path.is_absolute().then_some(path)
+    } else {
+        let path = PathBuf::from(path);
+        path.is_absolute().then_some(path)
+    }
+}
+
+#[cfg(test)]
+mod cwd_tests {
+    use super::*;
+
+    #[test]
+    fn decodes_absolute_paths_and_ignores_missing_directories() {
+        let (uri, expected) = if cfg!(windows) {
+            (
+                "file://localhost/d%3A/Dev/My%20Project",
+                PathBuf::from(r"d:\Dev\My Project"),
+            )
+        } else {
+            (
+                "file://localhost/tmp/My%20Project",
+                PathBuf::from("/tmp/My Project"),
+            )
+        };
+        assert_eq!(native_cwd(uri, cfg!(windows)), Some(expected.clone()));
+        let encoded = uri.strip_prefix("file://localhost").unwrap();
+        assert_eq!(native_cwd(encoded, cfg!(windows)), Some(expected));
+        assert_eq!(native_cwd("", cfg!(windows)), None);
+        assert_eq!(native_cwd("relative", cfg!(windows)), None);
+        assert!(record(&serde_json::json!({"sessionId": "no-cwd"}), true)
+            .unwrap()
+            .cwd
+            .is_none());
+    }
 }
 
 fn bad_content(message: &str) -> AgentError {

@@ -27,6 +27,13 @@ enum Command {
         #[arg(long)]
         agent: Option<String>,
     },
+    Show {
+        thread_id: String,
+        #[arg(long)]
+        limit: Option<u32>,
+        #[arg(long, value_name = "METHOD", num_args = 0..=1)]
+        auth: Option<Option<String>>,
+    },
 }
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -81,9 +88,32 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Command::Probe(args) => probe::run(&core, args).await,
         Command::Threads { agent } => list_threads(&core, agent).await,
+        Command::Show {
+            thread_id,
+            limit,
+            auth,
+        } => show_thread(&core, &thread_id, limit, auth).await,
     };
     core.shutdown().await;
     result
+}
+
+async fn show_thread(
+    core: &std::sync::Arc<Core>,
+    id: &str,
+    limit: Option<u32>,
+    auth: Option<Option<String>>,
+) -> Result<()> {
+    if auth.is_some() {
+        let (agent, _) = id
+            .split_once(':')
+            .ok_or("Expected a thread id of the form agent:native-id")?;
+        let adapter = core.registry.get(agent)?;
+        probe::authenticate(adapter.as_ref(), auth).await?;
+    }
+    let thread = core.open_thread(id, limit).await?;
+    println!("{}", serde_json::to_string_pretty(&thread)?);
+    Ok(())
 }
 
 async fn list_threads(core: &Core, agent: Option<String>) -> Result<()> {

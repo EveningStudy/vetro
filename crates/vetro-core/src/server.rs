@@ -36,6 +36,7 @@ include!(concat!(env!("OUT_DIR"), "/assets.rs"));
 
 const PLACEHOLDER: &str = "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\">\
     <title>Vetro</title><h1>Vetro</h1><p>The web UI has not been built yet.</p></html>";
+const DEFAULT_PORT: u16 = 47600;
 
 pub struct Server {
     listener: TcpListener,
@@ -53,12 +54,11 @@ struct HttpState {
 
 impl Server {
     pub async fn bind(core: Arc<Core>, port: Option<u16>) -> Result<Self> {
-        let listener = TcpListener::bind((
-            Ipv4Addr::LOCALHOST,
-            port.unwrap_or_else(|| core.home.settings().port),
-        ))
-        .await
-        .map_err(internal)?;
+        let configured = port.or_else(|| {
+            let port = core.home.settings().port;
+            (port != 0).then_some(port)
+        });
+        let listener = bind_loopback(configured).await.map_err(internal)?;
         let address = listener.local_addr().map_err(internal)?;
         let (stop, stopping) = watch::channel(false);
         let state = Arc::new(HttpState {
@@ -121,6 +121,29 @@ impl Server {
         }
         result
     }
+}
+
+async fn bind_loopback(port: Option<u16>) -> io::Result<TcpListener> {
+    if let Some(port) = port {
+        return TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await;
+    }
+    for port in DEFAULT_PORT..=u16::MAX {
+        match TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await {
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::AddrInUse | io::ErrorKind::PermissionDenied
+                ) =>
+            {
+                continue
+            }
+            result => return result,
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AddrInUse,
+        "No free Vetro port",
+    ))
 }
 
 async fn health() -> Json<serde_json::Value> {
@@ -304,4 +327,18 @@ async fn static_ui(State(state): State<Arc<HttpState>>, request: Request) -> Res
 fn embedded(name: &str) -> Option<(&str, Body)> {
     let (_, bytes) = EMBEDDED.iter().find(|(path, _)| *path == name)?;
     Some((name, Body::from(*bytes)))
+}
+
+#[cfg(test)]
+mod port_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn chooses_a_stable_default_and_skips_bound_ports() {
+        let first = bind_loopback(None).await.unwrap();
+        let second = bind_loopback(None).await.unwrap();
+        let first_port = first.local_addr().unwrap().port();
+        assert!(first_port >= DEFAULT_PORT);
+        assert!(second.local_addr().unwrap().port() > first_port);
+    }
 }

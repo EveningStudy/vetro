@@ -6,7 +6,7 @@ use std::{
 };
 
 use tokio::sync::mpsc;
-use vetro_agent_api::{Session, SessionEvent, StartRequest};
+use vetro_agent_api::{Agent, Session, SessionEvent, StartRequest};
 use vetro_core::Core;
 use vetro_proto::{
     ContentBlock, InteractionRequest, ItemKind, PermissionOptionKind, RequestBody,
@@ -28,6 +28,29 @@ pub(crate) struct Args {
     raw: bool,
     #[arg(long)]
     yes: bool,
+    #[arg(long, value_name = "METHOD", num_args = 0..=1)]
+    auth: Option<Option<String>>,
+}
+
+pub(crate) async fn authenticate(agent: &dyn Agent, auth: Option<Option<String>>) -> Result<()> {
+    if let Some(method) = auth {
+        let method = match method {
+            Some(method) => method,
+            None => {
+                agent
+                    .info()
+                    .await
+                    .auth
+                    .methods
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| format!("{} did not report any sign-in methods", agent.id()))?
+                    .id
+            }
+        };
+        agent.authenticate(&method).await?;
+    }
+    Ok(())
 }
 
 pub(crate) async fn run(core: &Core, args: Args) -> Result<()> {
@@ -41,6 +64,7 @@ pub(crate) async fn run(core: &Core, args: Args) -> Result<()> {
     {
         return Err(format!("Agent is disabled: {}", args.agent).into());
     }
+    authenticate(agent.as_ref(), args.auth).await?;
     let cwd = cwd(args.cwd)?;
     let text = match args.prompt {
         Some(text) => text,
@@ -70,6 +94,7 @@ pub(crate) async fn run(core: &Core, args: Args) -> Result<()> {
                 .await?
         }
     };
+    eprintln!("session {}", session.native_id());
     let outcome = tokio::select! {
         result = stream(&session, &mut events, args.yes) => result,
         _ = tokio::signal::ctrl_c() => session.interrupt().await.map_err(Into::into),
@@ -121,6 +146,7 @@ async fn stream(
                     .unwrap_or_else(|| "Agent closed before the turn ended".into())
                     .into());
             }
+            SessionEvent::AuthRequired => return Err("Agent sign-in is required".into()),
             _ => {}
         }
     }

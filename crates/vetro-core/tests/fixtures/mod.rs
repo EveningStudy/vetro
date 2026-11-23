@@ -1,7 +1,7 @@
 use std::{
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Mutex,
     },
 };
@@ -15,6 +15,7 @@ pub(crate) struct Fake {
     pub attaches: AtomicUsize,
     pub detaches: Arc<AtomicUsize>,
     pub shutdowns: AtomicUsize,
+    pub authenticated: Arc<AtomicBool>,
 }
 
 #[async_trait]
@@ -32,8 +33,12 @@ impl Agent for Fake {
             path: None,
             version: Some("test".into()),
             auth: AgentAuth {
-                state: AuthState::Ok,
-                methods: Vec::new(),
+                state: AuthState::Unknown,
+                methods: vec![AuthMethod {
+                    id: "fake-login".into(),
+                    name: "Fake login".into(),
+                    description: None,
+                }],
                 account: None,
             },
             capabilities: AgentCapabilities {
@@ -45,7 +50,9 @@ impl Agent for Fake {
         }
     }
 
-    async fn authenticate(&self, _: &str) -> Result<()> {
+    async fn authenticate(&self, method_id: &str) -> Result<()> {
+        assert_eq!(method_id, "fake-login");
+        self.authenticated.store(true, Ordering::Relaxed);
         Ok(())
     }
 
@@ -80,7 +87,8 @@ impl Agent for Fake {
         })
     }
 
-    async fn read(&self, native_id: &str) -> Result<Transcript> {
+    async fn read(&self, native_id: &str, cwd: Option<&Path>) -> Result<Transcript> {
+        assert_eq!(cwd, Some(self.cwd.as_path()));
         if !matches!(native_id, "history" | "readonly") {
             return Err(AgentError::new(ErrorCode::NotFound, "Unknown fake session"));
         }
@@ -100,6 +108,7 @@ impl Agent for Fake {
     }
 
     async fn start(&self, req: StartRequest, sink: EventSink) -> Result<Arc<dyn Session>> {
+        require_auth(&self.authenticated)?;
         assert_eq!(req.options.get("model").map(String::as_str), Some("chosen"));
         let session = self.session("live", sink);
         session.input(req.content);
@@ -163,6 +172,7 @@ impl Fake {
             prompts: self.prompts.clone(),
             detaches: self.detaches.clone(),
             log: Arc::new(WireLog::default()),
+            authenticated: self.authenticated.clone(),
         }
     }
 }
@@ -173,6 +183,7 @@ struct FakeSession {
     prompts: Arc<Mutex<Vec<Vec<ContentBlock>>>>,
     detaches: Arc<AtomicUsize>,
     log: Arc<WireLog>,
+    authenticated: Arc<AtomicBool>,
 }
 
 impl FakeSession {
@@ -215,6 +226,7 @@ impl Session for FakeSession {
     }
 
     async fn send(&self, content: Vec<ContentBlock>) -> Result<()> {
+        require_auth(&self.authenticated)?;
         self.input(content);
         Ok(())
     }
@@ -273,5 +285,16 @@ fn model(value: &str) -> ConfigOption {
         category: ConfigCategory::Model,
         current_value: value.into(),
         choices: Vec::new(),
+    }
+}
+
+fn require_auth(authenticated: &AtomicBool) -> Result<()> {
+    if authenticated.load(Ordering::Relaxed) {
+        Ok(())
+    } else {
+        Err(AgentError::new(
+            ErrorCode::AuthRequired,
+            "Fixture requires login",
+        ))
     }
 }

@@ -124,9 +124,7 @@ async fn call(
         }
         "threads.open" => {
             let params: ThreadOpenParams = parse(params)?;
-            core.refresh_history(true).await;
-            let thread = core.thread(&params.thread_id).await?;
-            let snapshot = thread.snapshot(params.limit);
+            let (snapshot, thread) = core.open(&params.thread_id, params.limit).await?;
             connection.subscribe(params.thread_id, thread, snapshot.seq);
             output(snapshot)
         }

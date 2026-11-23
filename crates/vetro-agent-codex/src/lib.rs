@@ -44,14 +44,18 @@ const SOURCE_KINDS: &[&str] = &[
 const TIMEOUT: Duration = Duration::from_secs(60);
 
 pub struct CodexAgent {
-    binary: Option<PathBuf>,
+    spec: Option<SpawnSpec>,
     app: AsyncMutex<Option<Arc<App>>>,
 }
 
 impl CodexAgent {
     pub fn new(binary: Option<PathBuf>) -> Self {
+        Self::from_spec(resolve_binary(binary.as_deref()).map(SpawnSpec::new))
+    }
+
+    pub fn from_spec(spec: Option<SpawnSpec>) -> Self {
         Self {
-            binary: resolve_binary(binary.as_deref()),
+            spec,
             app: AsyncMutex::new(None),
         }
     }
@@ -64,11 +68,11 @@ impl CodexAgent {
         {
             return Ok(Arc::clone(app));
         }
-        let binary = self
-            .binary
+        let spec = self
+            .spec
             .as_ref()
             .ok_or_else(|| unavailable("Codex executable not found"))?;
-        let app = App::start(binary).await?;
+        let app = App::start(spec.clone()).await?;
         *slot = Some(Arc::clone(&app));
         Ok(app)
     }
@@ -91,11 +95,14 @@ impl Agent for CodexAgent {
             id: self.id().into(),
             name: "Codex".into(),
             kind: AgentKind::Codex,
-            installed: self.binary.is_some(),
-            path: self
-                .binary
+            installed: self
+                .spec
                 .as_ref()
-                .map(|path| path.to_string_lossy().into_owned()),
+                .is_some_and(|spec| spec.program.is_file()),
+            path: self
+                .spec
+                .as_ref()
+                .map(|spec| spec.program.to_string_lossy().into_owned()),
             version: None,
             auth: AgentAuth {
                 state: AuthState::Unknown,
@@ -195,7 +202,7 @@ impl Agent for CodexAgent {
         })
     }
 
-    async fn read(&self, native_id: &str) -> Result<Transcript> {
+    async fn read(&self, native_id: &str, _cwd: Option<&Path>) -> Result<Transcript> {
         let response = self
             .app()
             .await?
@@ -293,9 +300,8 @@ struct App {
 }
 
 impl App {
-    async fn start(binary: &Path) -> Result<Arc<Self>> {
-        let mut spawn = SpawnSpec::new(binary);
-        spawn.args.push("app-server".into());
+    async fn start(mut spawn: SpawnSpec) -> Result<Arc<Self>> {
+        spawn.args.insert(0, "app-server".into());
         let (process, stdout) = Process::spawn(spawn, Arc::new(WireLog::default()))
             .map_err(|error| unavailable(format!("Could not start Codex: {error}")))?;
         let (peer, incoming) = Peer::new(process, stdout, Version::Bare);

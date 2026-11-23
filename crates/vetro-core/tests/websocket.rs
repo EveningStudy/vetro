@@ -64,6 +64,7 @@ async fn exercise(path: &Path, cwd: &Path) {
         attaches: Default::default(),
         detaches: Default::default(),
         shutdowns: Default::default(),
+        authenticated: Default::default(),
     });
     let home = Home::discover().unwrap();
     assert_eq!(home.root(), path.join(".vetro"));
@@ -194,7 +195,21 @@ async fn exercise(path: &Path, cwd: &Path) {
     drop(remote);
 
     let content = json!([{"type": "text", "text": "  Exact \r\nテキスト \"\u{1f30d}\"\n"}, {"type": "file", "path": "file.rs", "name": null}]);
-    let started = first.call("threads.start", json!({"agentId": "fake", "cwd": cwd, "content": content, "options": {"model": "chosen"}})).await;
+    let start =
+        json!({"agentId": "fake", "cwd": cwd, "content": content, "options": {"model": "chosen"}});
+    assert_eq!(
+        first.request("threads.start", start.clone()).await["error"]["code"],
+        "auth_required"
+    );
+    first.until_agent_auth("required").await;
+    first
+        .call(
+            "agents.authenticate",
+            json!({"agentId": "fake", "methodId": "fake-login"}),
+        )
+        .await;
+    first.until_agent_auth("ok").await;
+    let started = first.call("threads.start", start).await;
     let id = started["thread"]["id"].as_str().unwrap();
     assert_eq!(id, "fake:live");
     let mut seq = 0;
@@ -300,6 +315,27 @@ async fn exercise(path: &Path, cwd: &Path) {
         .all(|event| event["event"] != "thread.event"));
     assert_eq!(fake.attaches.load(Ordering::Relaxed), 1);
     assert_eq!(fake.detaches.load(Ordering::Relaxed), 1);
+    fake.authenticated.store(false, Ordering::Relaxed);
+    let send = json!({"threadId": id, "content": [{"type": "text", "text": "Retry after login"}]});
+    first
+        .call("threads.interrupt", json!({"threadId": id}))
+        .await;
+    second
+        .until_event(id, |event| event["thread"]["status"] == "idle")
+        .await;
+    assert_eq!(
+        first.request("threads.send", send.clone()).await["error"]["code"],
+        "auth_required"
+    );
+    first.until_agent_auth("required").await;
+    first
+        .call(
+            "agents.authenticate",
+            json!({"agentId": "fake", "methodId": "fake-login"}),
+        )
+        .await;
+    first.until_agent_auth("ok").await;
+    first.call("threads.send", send).await;
     assert_eq!(
         first.call("threads.raw", json!({"threadId": id})).await["entries"],
         json!([])
@@ -457,6 +493,20 @@ impl Client {
 
     async fn thread_event(&mut self, id: &str) -> (u64, Value) {
         self.until_event(id, |_| true).await
+    }
+
+    async fn until_agent_auth(&mut self, state: &str) {
+        loop {
+            let frame = match self.events.pop_front() {
+                Some(frame) => frame,
+                None => self.recv().await,
+            };
+            if frame["event"] == "agents.updated"
+                && frame["data"]["agents"][0]["auth"]["state"] == state
+            {
+                return;
+            }
+        }
     }
 
     async fn until_event(&mut self, id: &str, predicate: impl Fn(&Value) -> bool) -> (u64, Value) {

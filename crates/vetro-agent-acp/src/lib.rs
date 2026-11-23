@@ -73,7 +73,10 @@ impl AcpAgent {
     }
 
     pub fn devin() -> Self {
-        Self::new("devin", "Devin", standard_spec("devin"))
+        let mut spec = standard_spec("devin");
+        spec.args
+            .extend(["--process-model".into(), "in-process".into()]);
+        Self::new("devin", "Devin", spec)
     }
 
     pub fn with_mid_turn_input(mut self, enabled: bool) -> Self {
@@ -154,6 +157,14 @@ impl AcpAgent {
                 })
                 .collect(),
         });
+        if self.id == "devin"
+            && runtime
+                .methods
+                .iter()
+                .any(|method| method.id == "devin-browser")
+        {
+            *runtime.connection.auth.lock().unwrap() = AuthState::Required;
+        }
         *current = Some(Arc::clone(&runtime));
         Ok(runtime)
     }
@@ -197,13 +208,12 @@ impl AcpAgent {
             let mut visited = std::collections::HashSet::new();
             loop {
                 let page = self.list_on(runtime, cursor).await?;
-                if let Some(cwd) = page
+                if let Some(record) = page
                     .sessions
                     .into_iter()
                     .find(|record| record.native_id == id)
-                    .and_then(|record| record.cwd)
                 {
-                    return self.cwd(Some(&cwd));
+                    return self.cwd(record.cwd.as_deref());
                 }
                 cursor = page.next_cursor;
                 if !cursor
@@ -238,7 +248,7 @@ impl AcpAgent {
         }
         Ok(SessionPage {
             sessions,
-            next_cursor: string(&result, "nextCursor"),
+            next_cursor: string(&result, "nextCursor").filter(|cursor| !cursor.is_empty()),
         })
     }
 
@@ -368,15 +378,15 @@ impl Agent for AcpAgent {
         self.list_on(&runtime, cursor).await
     }
 
-    async fn read(&self, native_id: &str) -> Result<Transcript> {
-        let runtime = self.runtime(None).await?;
+    async fn read(&self, native_id: &str, cwd: Option<&Path>) -> Result<Transcript> {
+        let runtime = self.runtime(cwd).await?;
         if !runtime.capabilities.load {
             return Err(AgentError::new(
                 ErrorCode::NotResumable,
                 "ACP agent does not support history replay",
             ));
         }
-        let cwd = self.stored_cwd(&runtime, native_id, None).await?;
+        let cwd = self.stored_cwd(&runtime, native_id, cwd).await?;
         let _lifecycle = runtime.connection.lifecycle.lock().await;
         let session = AcpSession::new(
             Arc::clone(&runtime.connection),

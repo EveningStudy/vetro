@@ -11,7 +11,8 @@ rust-version.workspace = true
 default = []
 claude = ["dep:vetro-agent-claude"]
 codex = ["dep:vetro-agent-codex"]
-acp = ["dep:vetro-agent-acp"]
+acp = ["dep:vetro-agent-acp", "dep:winreg"]
+antigravity-store = ["acp", "dep:vetro-store-antigravity"]
 
 [dependencies]
 axum = { version = "0.8", features = ["ws"] }
@@ -29,6 +30,7 @@ vetro-agent-acp = { path = "../vetro-agent-acp", optional = true }
 vetro-agent-claude = { path = "../vetro-agent-claude", optional = true }
 vetro-agent-codex = { path = "../vetro-agent-codex", optional = true }
 vetro-proto = { path = "../vetro-proto" }
+vetro-store-antigravity = { path = "../vetro-store-antigravity", optional = true }
 
 [dev-dependencies]
 futures-util = "0.3"
@@ -37,3 +39,6 @@ tokio-tungstenite = "0.29"
 [[test]]
 name = "websocket"
 harness = false
+
+[target."cfg(windows)".dependencies]
+winreg = { version = "0.55", optional = true }

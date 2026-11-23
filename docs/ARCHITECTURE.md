@@ -69,7 +69,7 @@ One generic ACP v1 client (`agent-client-protocol` crate or a small hand-written
 - History: `session/list` where advertised, `session/load` to read and continue.
 - Auth: when the agent answers `auth_required`, the UI offers the agent's own `authMethods`; `authenticate` runs the agent's flow. Vetro never sees a credential.
 - Antigravity is launched exactly as Google documents for ACP clients: the unmodified `agy` binary with the single argument `acp`, signed in with its own cached login (or any other method the agent offers, such as a Gemini API key from the environment). See `docs/agents/antigravity.md` for the policy background.
-- Devin is launched as `devin acp`.
+- Devin is launched as `devin acp --process-model in-process`.
 
 ## Sessions
 
@@ -114,7 +114,7 @@ A link sets `ThreadSummary.parent` on the child and adds the child to `ToolCall.
 
 ## Verifiable cleanliness
 
-1. **Raw view.** `threads.raw` returns the wire log, including the exact command line and environment overrides used to start the agent.
+1. **Raw view.** `threads.raw` returns the wire log, including the command line and the names of environment overrides used to start the agent. Environment override values are masked.
 2. **Footprint test.** An integration test runs full sessions against fake agents with `HOME`/`USERPROFILE` pointed at a temp directory, snapshots the tree before and after, and fails on any change outside `.vetro` that the fake agent did not make itself.
 3. **No-injection test.** For every adapter, a test sends a prompt through a fake agent and asserts that the user text arrives byte-for-byte and that no system prompt, instruction, tool or MCP field is present in any outgoing message.
 4. **Orphan test.** Start agents, kill the core hard, assert no child survives.

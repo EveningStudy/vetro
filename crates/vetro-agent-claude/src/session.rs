@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{Arc, Mutex, Weak},
     time::Duration,
 };
@@ -54,15 +54,15 @@ struct Permission {
 
 impl ClaudeSession {
     pub fn launch(
-        executable: &Path,
+        mut spec: SpawnSpec,
         id: String,
         cwd: Option<PathBuf>,
         resume: bool,
         choices: BTreeMap<String, String>,
         sink: EventSink,
     ) -> Result<Arc<Self>> {
-        let mut spec = SpawnSpec::new(executable);
-        spec.cwd = cwd;
+        spec.cwd = cwd.or(spec.cwd);
+        let extra_args = std::mem::take(&mut spec.args);
         spec.args.extend(
             [
                 "-p",
@@ -99,6 +99,7 @@ impl ClaudeSession {
             spec.args.push(flag.into());
             spec.args.push(value.into());
         }
+        spec.args.extend(extra_args);
         let (process, stdout) = Process::spawn(spec, Arc::new(WireLog::default()))
             .map_err(|error| AgentError::new(ErrorCode::AgentUnavailable, error.to_string()))?;
         let state = State {

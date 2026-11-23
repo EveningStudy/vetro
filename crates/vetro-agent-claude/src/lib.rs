@@ -7,8 +7,8 @@ use std::{
 
 use serde_json::Value;
 use vetro_agent_api::{
-    async_trait, Agent, AgentError, AgentOptions, EventSink, Result, Session, SessionPage,
-    StartRequest, Transcript,
+    async_trait, process::SpawnSpec, Agent, AgentError, AgentOptions, EventSink, Result, Session,
+    SessionPage, StartRequest, Transcript,
 };
 use vetro_proto::{rpc::ErrorCode, AgentAuth, AgentCapabilities, AgentInfo, AgentKind, AuthState};
 
@@ -19,7 +19,7 @@ mod session;
 use session::ClaudeSession;
 
 pub struct ClaudeAgent {
-    executable: Option<PathBuf>,
+    spec: Option<SpawnSpec>,
     projects: PathBuf,
     sessions: Mutex<Vec<Weak<ClaudeSession>>>,
 }
@@ -43,7 +43,7 @@ impl Default for ClaudeAgent {
             .map(PathBuf::from)
             .or_else(|| home.map(|home| home.join(".claude")));
         Self {
-            executable,
+            spec: executable.map(SpawnSpec::new),
             projects: config.map(|dir| dir.join("projects")).unwrap_or_default(),
             sessions: Mutex::default(),
         }
@@ -52,15 +52,19 @@ impl Default for ClaudeAgent {
 
 impl ClaudeAgent {
     pub fn new(executable: impl Into<PathBuf>, projects: impl Into<PathBuf>) -> Self {
+        Self::from_spec(Some(SpawnSpec::new(executable)), projects)
+    }
+
+    pub fn from_spec(spec: Option<SpawnSpec>, projects: impl Into<PathBuf>) -> Self {
         Self {
-            executable: Some(executable.into()),
+            spec,
             projects: projects.into(),
             sessions: Mutex::default(),
         }
     }
 
-    fn executable(&self) -> Result<&Path> {
-        self.executable.as_deref().ok_or_else(|| {
+    fn spawn_spec(&self) -> Result<&SpawnSpec> {
+        self.spec.as_ref().ok_or_else(|| {
             AgentError::new(
                 ErrorCode::AgentUnavailable,
                 "Claude Code executable not found",
@@ -76,7 +80,8 @@ impl ClaudeAgent {
         choices: BTreeMap<String, String>,
         sink: EventSink,
     ) -> Result<Arc<ClaudeSession>> {
-        let session = ClaudeSession::launch(self.executable()?, id, cwd, resume, choices, sink)?;
+        let session =
+            ClaudeSession::launch(self.spawn_spec()?.clone(), id, cwd, resume, choices, sink)?;
         {
             let mut sessions = self.sessions.lock().unwrap();
             sessions.retain(|session| session.strong_count() > 0);
@@ -126,11 +131,14 @@ impl Agent for ClaudeAgent {
             id: self.id().into(),
             name: "Claude Code".into(),
             kind: AgentKind::Claude,
-            installed: self.executable.as_ref().is_some_and(|path| path.is_file()),
-            path: self
-                .executable
+            installed: self
+                .spec
                 .as_ref()
-                .map(|path| path.display().to_string()),
+                .is_some_and(|spec| spec.program.is_file()),
+            path: self
+                .spec
+                .as_ref()
+                .map(|spec| spec.program.display().to_string()),
             version: reply_version(reply),
             auth: AgentAuth {
                 state: if error
@@ -175,7 +183,7 @@ impl Agent for ClaudeAgent {
         })
     }
 
-    async fn read(&self, native_id: &str) -> Result<Transcript> {
+    async fn read(&self, native_id: &str, _cwd: Option<&Path>) -> Result<Transcript> {
         let root = self.projects.clone();
         let id = native_id.to_owned();
         disk(move || history::read(&root, &id)).await

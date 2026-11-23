@@ -123,7 +123,7 @@ async fn native_stream_permission_queue_and_resume() {
         .find(|record| record.native_id == id)
         .unwrap();
     println!("native entrypoint: {:?}", record.origin);
-    let history = agent.read(&id).await.unwrap();
+    let history = agent.read(&id, None).await.unwrap();
     println!(
         "first assistant message retained its ID: {}",
         first
@@ -181,7 +181,7 @@ async fn native_history() {
         .unwrap();
     let started = Instant::now();
     let transcript = agent
-        .read(largest.1.file_stem().unwrap().to_str().unwrap())
+        .read(largest.1.file_stem().unwrap().to_str().unwrap(), None)
         .await
         .unwrap();
     let read_time = started.elapsed();

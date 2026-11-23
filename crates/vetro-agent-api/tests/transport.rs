@@ -141,10 +141,7 @@ async fn round_trip() {
     let spawn = &entries[0];
     assert_eq!(spawn.direction, RawDirection::Spawn);
     let spawn: Value = serde_json::from_str(&spawn.text).unwrap();
-    assert_eq!(
-        spawn["env"],
-        json!({"VETRO_TEST_OVERRIDE":"override value"})
-    );
+    assert_eq!(spawn["env"], json!({"VETRO_TEST_OVERRIDE":"<redacted>"}));
     for (direction, text) in [
         (RawDirection::Sent, LINE),
         (RawDirection::Received, LINE),

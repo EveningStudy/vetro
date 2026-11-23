@@ -212,7 +212,7 @@ async fn devin_round_trip() {
     assert_eq!(output.trim(), "OK");
     let id = session.native_id().to_owned();
     session.detach().await;
-    let replay = agent.read(&id).await.unwrap();
+    let replay = agent.read(&id, None).await.unwrap();
     assert!(replay.items.iter().any(
         |item| matches!(&item.kind, ItemKind::AgentMessage { text, .. } if text.trim() == "OK")
     ));

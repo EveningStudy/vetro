@@ -388,7 +388,7 @@ async fn suites() {
         ]
     );
 
-    let transcript = agent.read("stored").await.unwrap();
+    let transcript = agent.read("stored", None).await.unwrap();
     assert_eq!(transcript.items.len(), 2);
     assert!(
         matches!(&transcript.items[1].kind, ItemKind::AgentMessage { text, streaming: false } if text == "old answer")
@@ -440,7 +440,15 @@ async fn suites() {
         .insert("VETRO_FAKE_ACP_VALUE".into(), "synthetic secret".into());
     let custom = AcpAgent::new("custom", "Custom ACP", spec);
     assert!(custom.info().await.error.is_none());
-    assert!(custom.wire_log().await.unwrap().snapshot().is_empty());
+    let entries = custom.wire_log().await.unwrap().snapshot();
+    let spawn: Value = serde_json::from_str(&entries[0].text).unwrap();
+    assert_eq!(spawn["env"]["VETRO_FAKE_ACP_VALUE"], "<redacted>");
+    assert!(entries
+        .iter()
+        .any(|entry| entry.text.contains("\"initialize\"")));
+    assert!(entries
+        .iter()
+        .all(|entry| !entry.text.contains("synthetic secret")));
     custom.shutdown().await;
     println!("ACP fake-agent suites passed");
 }

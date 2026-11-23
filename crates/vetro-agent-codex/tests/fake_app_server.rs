@@ -414,7 +414,7 @@ async fn test_adapter() {
         second_page.sessions[0].parent_native_id.as_deref(),
         Some("saved")
     );
-    let history = agent.read("saved").await.unwrap();
+    let history = agent.read("saved", None).await.unwrap();
     assert_eq!(history.items[0].id, "history-user");
     assert!(
         matches!(&history.items[1].kind, ItemKind::ToolCall(tool) if tool.kind == ToolKind::Edit)

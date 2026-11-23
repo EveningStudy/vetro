@@ -277,6 +277,9 @@ impl AcpSession {
     fn complete_prompt(&self, reply: Reply) {
         self.connection.observe_auth("session/prompt", &reply);
         let mut state = self.state.lock().unwrap();
+        if matches!(&reply, Err(Error::Remote(error)) if error.code == -32000) {
+            state.emit(SessionEvent::AuthRequired);
+        }
         let Some(turn) = state.turn.as_mut() else {
             return;
         };
@@ -350,6 +353,12 @@ impl Session for AcpSession {
     async fn send(&self, content: Vec<ContentBlock>) -> Result<()> {
         let prompt = mapping::prompt(&content, &self.cwd, self.image)?;
         let _outbound = self.outbound.lock().await;
+        if *self.connection.auth.lock().unwrap() == vetro_proto::AuthState::Required {
+            return Err(AgentError::new(
+                ErrorCode::AuthRequired,
+                "Sign in to the agent first",
+            ));
+        }
         let session = self
             .connection
             .session(&self.id)

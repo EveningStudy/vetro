@@ -12,6 +12,11 @@ use vetro_proto::{
     AgentAuth, AgentCapabilities, AgentInfo, AgentKind, AuthState,
 };
 
+#[cfg(feature = "antigravity-store")]
+mod antigravity;
+#[cfg(any(feature = "claude", feature = "acp"))]
+mod detection;
+
 #[derive(Default)]
 pub struct Registry {
     agents: BTreeMap<String, Entry>,
@@ -134,30 +139,31 @@ fn built_ins(_settings: &Settings) -> Vec<Arc<dyn Agent>> {
     #[allow(unused_mut)]
     let mut agents: Vec<Arc<dyn Agent>> = Vec::new();
     #[cfg(feature = "claude")]
-    agents.push(Arc::new(
-        match _settings
-            .agents
-            .get("claude")
-            .and_then(|settings| settings.binary_path.as_ref())
-        {
-            Some(binary) => {
-                let config = std::env::var_os("CLAUDE_CONFIG_DIR")
-                    .map(std::path::PathBuf::from)
-                    .or_else(|| std::env::home_dir().map(|home| home.join(".claude")))
-                    .unwrap_or_default();
-                vetro_agent_claude::ClaudeAgent::new(binary, config.join("projects"))
-            }
-            None => vetro_agent_claude::ClaudeAgent::default(),
-        },
-    ));
+    {
+        let config = _settings.agents.get("claude");
+        let binary = match binary_override(config) {
+            Some(path) => Some(path.to_owned()),
+            None => detection::claude(),
+        };
+        let projects = config
+            .and_then(|config| config.env.get("CLAUDE_CONFIG_DIR"))
+            .map(std::path::PathBuf::from)
+            .or_else(|| std::env::var_os("CLAUDE_CONFIG_DIR").map(std::path::PathBuf::from))
+            .or_else(|| std::env::home_dir().map(|home| home.join(".claude")))
+            .unwrap_or_default()
+            .join("projects");
+        agents.push(Arc::new(vetro_agent_claude::ClaudeAgent::from_spec(
+            binary.map(|path| launch_spec(path, config)),
+            projects,
+        )));
+    }
     #[cfg(feature = "codex")]
-    agents.push(Arc::new(vetro_agent_codex::CodexAgent::new(
-        _settings
-            .agents
-            .get("codex")
-            .and_then(|settings| settings.binary_path.as_ref())
-            .map(Into::into),
-    )));
+    {
+        let config = _settings.agents.get("codex");
+        let spec = vetro_agent_codex::resolve_binary(binary_override(config))
+            .map(|path| launch_spec(path, config));
+        agents.push(Arc::new(vetro_agent_codex::CodexAgent::from_spec(spec)));
+    }
     #[cfg(feature = "acp")]
     {
         use vetro_agent_acp::{AcpAgent, SpawnSpec};
@@ -166,14 +172,27 @@ fn built_ins(_settings: &Settings) -> Vec<Arc<dyn Agent>> {
             ("devin", "Devin", "devin"),
         ] {
             let config = _settings.agents.get(id);
-            let binary = config
-                .and_then(|config| config.binary_path.as_ref())
-                .map(Into::into)
-                .unwrap_or_else(|| acp_binary(command));
-            let mut spec = SpawnSpec::new(binary);
-            spec.args.push("acp".into());
-            configure_acp(&mut spec, config);
-            agents.push(Arc::new(AcpAgent::new(id, name, spec)));
+            let binary = binary_override(config)
+                .map(std::path::Path::to_owned)
+                .or_else(|| detection::acp(command))
+                .unwrap_or_else(|| command.into());
+            let mut spec = launch_spec(binary, config);
+            let defaults: &[&str] = if id == "devin" {
+                &["acp", "--process-model", "in-process"]
+            } else {
+                &["acp"]
+            };
+            spec.args
+                .splice(..0, defaults.iter().map(|arg| (*arg).into()));
+            let agent = AcpAgent::new(id, name, spec);
+            #[cfg(feature = "antigravity-store")]
+            if id == "antigravity" {
+                if let Some(home) = std::env::home_dir() {
+                    agents.push(Arc::new(antigravity::Antigravity::new(agent, home)));
+                    continue;
+                }
+            }
+            agents.push(Arc::new(agent));
         }
         for custom in &_settings.custom_acp_agents {
             let config = _settings.agents.get(&custom.id);
@@ -188,16 +207,31 @@ fn built_ins(_settings: &Settings) -> Vec<Arc<dyn Agent>> {
                     .iter()
                     .map(|(key, value)| (key.into(), value.into())),
             );
-            configure_acp(&mut spec, config);
+            apply_config(&mut spec, config);
             agents.push(Arc::new(AcpAgent::new(&custom.id, &custom.name, spec)));
         }
     }
     agents
 }
 
-#[cfg(feature = "acp")]
-fn configure_acp(
-    spec: &mut vetro_agent_acp::SpawnSpec,
+#[cfg(any(feature = "claude", feature = "codex", feature = "acp"))]
+fn binary_override(config: Option<&vetro_proto::rpc::AgentSettings>) -> Option<&std::path::Path> {
+    config?.binary_path.as_deref().map(std::path::Path::new)
+}
+
+#[cfg(any(feature = "claude", feature = "codex", feature = "acp"))]
+fn launch_spec(
+    binary: std::path::PathBuf,
+    config: Option<&vetro_proto::rpc::AgentSettings>,
+) -> vetro_agent_api::process::SpawnSpec {
+    let mut spec = vetro_agent_api::process::SpawnSpec::new(binary);
+    apply_config(&mut spec, config);
+    spec
+}
+
+#[cfg(any(feature = "claude", feature = "codex", feature = "acp"))]
+fn apply_config(
+    spec: &mut vetro_agent_api::process::SpawnSpec,
     config: Option<&vetro_proto::rpc::AgentSettings>,
 ) {
     if let Some(config) = config {
@@ -209,40 +243,6 @@ fn configure_acp(
                 .map(|(key, value)| (key.into(), value.into())),
         );
     }
-}
-
-#[cfg(feature = "acp")]
-fn acp_binary(command: &str) -> std::path::PathBuf {
-    #[cfg(windows)]
-    {
-        let executable = format!("{command}.exe");
-        if let Some(path) = std::env::var_os("PATH") {
-            if let Some(found) = std::env::split_paths(&path)
-                .map(|dir| dir.join(&executable))
-                .find(|file| file.is_absolute() && file.is_file())
-            {
-                return found;
-            }
-        }
-        if let Some(local) = std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from) {
-            let candidates = match command {
-                "agy" => vec![local.join("agy/bin/agy.exe")],
-                "devin" => std::env::var_os("ProgramFiles")
-                    .map(std::path::PathBuf::from)
-                    .into_iter()
-                    .chain([local.join("Programs")])
-                    .map(|root| {
-                        root.join("Devin/resources/app/extensions/windsurf/devin/bin/devin.exe")
-                    })
-                    .collect(),
-                _ => Vec::new(),
-            };
-            if let Some(found) = candidates.into_iter().find(|file| file.is_file()) {
-                return found;
-            }
-        }
-    }
-    command.into()
 }
 
 pub(crate) fn disabled_info(id: &str) -> AgentInfo {
