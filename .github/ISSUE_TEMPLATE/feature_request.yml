@@ -1,0 +1,28 @@
+name: Feature request
+description: Suggest an idea for Vetro
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Vetro is a thin client: requests that need injected prompts or tools,
+        bundled agent binaries, or writes outside `~/.vetro` are out of scope
+        (see `AGENTS.md`).
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+    validations:
+      required: false
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: false

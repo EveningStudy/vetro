@@ -1,0 +1,53 @@
+name: Bug report
+description: Something in Vetro is broken
+labels: [bug]
+body:
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      description: e.g. Windows 11 24H2, macOS 15.4, Ubuntu 24.04
+    validations:
+      required: true
+  - type: input
+    id: vetro-version
+    attributes:
+      label: Vetro version
+      description: Output of `vetro --version`, or the version shown in the desktop app
+    validations:
+      required: true
+  - type: dropdown
+    id: agent
+    attributes:
+      label: Agent involved
+      options:
+        - Claude Code
+        - Codex
+        - Antigravity
+        - Devin
+        - Multiple agents
+        - None (UI or server issue)
+    validations:
+      required: true
+  - type: input
+    id: agent-version
+    attributes:
+      label: Agent version
+      description: e.g. the output of `claude --version` or `codex --version`. Leave empty if not applicable
+    validations:
+      required: false
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what happened instead
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Raw log excerpt
+      description: Relevant lines from `~/.vetro/logs` or the thread's raw view. Remove tokens, keys and personal paths before pasting.
+      render: text
+    validations:
+      required: false
