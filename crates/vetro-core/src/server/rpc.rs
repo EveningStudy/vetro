@@ -107,21 +107,12 @@ async fn call(
             empty()
         }
         "agents.options" => output(core.agent_options(parse(params)?).await?),
-        "projects.list" => {
-            core.refresh_history(true).await;
-            output(ProjectsResult {
-                projects: core.projects(),
-            })
-        }
+        "projects.list" => output(ProjectsResult {
+            projects: core.projects()?,
+        }),
         "projects.add" => output(core.add_project(parse(params)?)?),
-        "projects.update" => {
-            core.refresh_history(true).await;
-            output(core.update_project(parse(params)?)?)
-        }
-        "threads.list" => {
-            core.refresh_history(true).await;
-            output(core.threads(parse(params)?)?)
-        }
+        "projects.update" => output(core.update_project(parse(params)?)?),
+        "threads.list" => output(core.threads(parse(params)?)?),
         "threads.open" => {
             let params: ThreadOpenParams = parse(params)?;
             let (snapshot, thread) = core.open(&params.thread_id, params.limit).await?;
@@ -173,12 +164,9 @@ async fn call(
                 .await?;
             empty()
         }
-        "threads.update" => {
-            core.refresh_history(true).await;
-            output(ThreadResult {
-                thread: core.update_thread(parse(params)?)?,
-            })
-        }
+        "threads.update" => output(ThreadResult {
+            thread: core.update_thread(parse(params)?)?,
+        }),
         "threads.detach" => {
             let params: ThreadIdParams = parse(params)?;
             core.thread(&params.thread_id).await?.detach().await?;
@@ -188,10 +176,7 @@ async fn call(
             let params: ThreadRawParams = parse(params)?;
             output(core.thread(&params.thread_id).await?.raw(params)?)
         }
-        "search.threads" => {
-            core.refresh_history(true).await;
-            output(core.search(parse(params)?))
-        }
+        "search.threads" => output(core.search(parse(params)?)?),
         "fs.list" => {
             let params: FsListParams = parse(params)?;
             let path = params

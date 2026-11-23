@@ -2,7 +2,7 @@ use std::{path::PathBuf, process::ExitCode};
 
 use clap::{Parser, Subcommand};
 use vetro_core::{home::Home, registry::Registry, server::Server, Core};
-use vetro_proto::rpc::ThreadsListParams;
+use vetro_proto::rpc::{AuthenticateParams, SearchParams, ThreadsListParams};
 
 mod probe;
 
@@ -26,7 +26,12 @@ enum Command {
     Threads {
         #[arg(long)]
         agent: Option<String>,
+        #[arg(long)]
+        search: Option<String>,
+        #[arg(long)]
+        children_of: Option<String>,
     },
+    Links,
     Show {
         thread_id: String,
         #[arg(long)]
@@ -87,7 +92,12 @@ async fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Command::Probe(args) => probe::run(&core, args).await,
-        Command::Threads { agent } => list_threads(&core, agent).await,
+        Command::Threads {
+            agent,
+            search,
+            children_of,
+        } => list_threads(&core, agent, search, children_of).await,
+        Command::Links => links(&core).await,
         Command::Show {
             thread_id,
             limit,
@@ -108,31 +118,75 @@ async fn show_thread(
         let (agent, _) = id
             .split_once(':')
             .ok_or("Expected a thread id of the form agent:native-id")?;
-        let adapter = core.registry.get(agent)?;
-        probe::authenticate(adapter.as_ref(), auth).await?;
+        let method = match auth.flatten() {
+            Some(method) => method,
+            None => core
+                .agents(false)
+                .await
+                .into_iter()
+                .find(|info| info.id == agent)
+                .and_then(|info| info.auth.methods.into_iter().next())
+                .map(|method| method.id)
+                .ok_or("No authentication methods available")?,
+        };
+        core.authenticate(AuthenticateParams {
+            agent_id: agent.into(),
+            method_id: method,
+        })
+        .await?;
     }
+    core.refresh_history().await;
     let thread = core.open_thread(id, limit).await?;
     println!("{}", serde_json::to_string_pretty(&thread)?);
     Ok(())
 }
 
-async fn list_threads(core: &Core, agent: Option<String>) -> Result<()> {
+async fn list_threads(
+    core: &std::sync::Arc<Core>,
+    agent: Option<String>,
+    search: Option<String>,
+    children_of: Option<String>,
+) -> Result<()> {
     if let Some(agent) = agent.as_deref() {
         core.registry.get(agent)?;
     }
-    core.refresh_history(false).await;
+    core.refresh_history().await;
+    if let Some(query) = search {
+        for hit in core
+            .search_threads(
+                SearchParams {
+                    query,
+                    limit: Some(500),
+                },
+                agent.as_deref(),
+                children_of.as_deref(),
+            )?
+            .hits
+        {
+            println!(
+                "{}\t{}\t{}",
+                hit.thread.id,
+                field(&hit.thread.title),
+                field(&hit.snippet)
+            );
+        }
+        return Ok(());
+    }
     let mut params = ThreadsListParams {
         agent_ids: agent.map(|id| vec![id]),
+        parent_id: children_of,
+        include_archived: Some(true),
         ..Default::default()
     };
     loop {
         let page = core.threads(params.clone())?;
         for thread in page.threads {
             println!(
-                "{}\t{}\t{}",
+                "{}\t{}\t{}\t{}",
                 thread.id,
-                thread.title,
-                thread.cwd.unwrap_or_default()
+                field(&thread.title),
+                thread.cwd.unwrap_or_default(),
+                serde_json::to_string(&thread.source)?.trim_matches('"'),
             );
         }
         let Some(cursor) = page.next_cursor else {
@@ -140,6 +194,33 @@ async fn list_threads(core: &Core, agent: Option<String>) -> Result<()> {
         };
         params.cursor = Some(cursor);
     }
+}
+
+async fn links(core: &std::sync::Arc<Core>) -> Result<()> {
+    core.refresh_history().await;
+    for (child, parent) in core.links()? {
+        let child_title = core
+            .indexed_thread(&child)?
+            .map(|thread| thread.title)
+            .unwrap_or_default();
+        let parent_title = core
+            .indexed_thread(&parent.thread_id)?
+            .map(|thread| thread.title)
+            .unwrap_or_default();
+        println!(
+            "{}\t{}\t{}\t{}\t{}",
+            serde_json::to_string(&parent.confidence)?.trim_matches('"'),
+            parent.thread_id,
+            field(&parent_title),
+            child,
+            field(&child_title)
+        );
+    }
+    Ok(())
+}
+
+fn field(value: &str) -> String {
+    value.replace(['\t', '\n', '\r'], " ")
 }
 
 async fn shutdown() {

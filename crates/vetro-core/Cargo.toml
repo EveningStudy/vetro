@@ -10,15 +10,18 @@ rust-version.workspace = true
 [features]
 default = []
 claude = ["dep:vetro-agent-claude"]
-codex = ["dep:vetro-agent-codex"]
+codex = ["dep:vetro-agent-codex", "dep:vetro-store-antigravity", "dep:zstd"]
 acp = ["dep:vetro-agent-acp", "dep:winreg"]
 antigravity-store = ["acp", "dep:vetro-store-antigravity"]
 
 [dependencies]
 axum = { version = "0.8", features = ["ws"] }
 getrandom = "0.3"
+humantime = "2"
 ignore = "0.4"
 mime_guess = "2"
+notify = "8.2"
+rusqlite = { version = "0.43", default-features = false, features = ["bundled", "cache"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"
@@ -31,6 +34,7 @@ vetro-agent-claude = { path = "../vetro-agent-claude", optional = true }
 vetro-agent-codex = { path = "../vetro-agent-codex", optional = true }
 vetro-proto = { path = "../vetro-proto" }
 vetro-store-antigravity = { path = "../vetro-store-antigravity", optional = true }
+zstd = { version = "0.13", default-features = false, optional = true }
 
 [dev-dependencies]
 futures-util = "0.3"

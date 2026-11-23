@@ -4,7 +4,9 @@ use vetro_agent_api::AgentError;
 use vetro_proto::rpc::ErrorCode;
 
 pub mod files;
+mod history;
 pub mod home;
+mod links;
 pub mod registry;
 pub mod server;
 pub mod service;

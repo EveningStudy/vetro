@@ -1,5 +1,6 @@
 use std::{
     collections::BTreeMap,
+    path::PathBuf,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -20,6 +21,7 @@ mod detection;
 #[derive(Default)]
 pub struct Registry {
     agents: BTreeMap<String, Entry>,
+    pub(crate) history_paths: BTreeMap<String, Vec<PathBuf>>,
 }
 
 struct Entry {
@@ -61,7 +63,32 @@ impl Registry {
     }
 
     pub fn from_settings(settings: &Settings) -> Result<Self> {
-        Self::new(built_ins(settings))
+        #[allow(unused_mut)]
+        let mut registry = Self::new(built_ins(settings))?;
+        #[cfg(feature = "claude")]
+        registry
+            .history_paths
+            .insert("claude".into(), vec![claude_projects(settings)]);
+        #[cfg(feature = "codex")]
+        if let Some(path) = agent_path(settings, "codex", "CODEX_HOME", ".codex") {
+            registry.history_paths.insert("codex".into(), vec![path]);
+        }
+        #[cfg(feature = "antigravity-store")]
+        if let Some(home) = std::env::home_dir() {
+            registry.history_paths.insert(
+                "antigravity".into(),
+                vec![
+                    home.join(".gemini/antigravity"),
+                    home.join(".gemini/antigravity-cli"),
+                ],
+            );
+        }
+        Ok(registry)
+    }
+
+    pub fn watch_history(mut self, agent: &str, paths: Vec<PathBuf>) -> Self {
+        self.history_paths.insert(agent.into(), paths);
+        self
     }
 
     pub fn get(&self, id: &str) -> Result<Arc<dyn Agent>> {
@@ -100,6 +127,7 @@ impl Registry {
         &self,
         idle: Duration,
         has_live_thread: impl Fn(&str) -> bool,
+        released: impl Fn(&str),
     ) {
         for (id, entry) in &self.agents {
             let Ok(_access) = entry.access.try_write() else {
@@ -117,6 +145,7 @@ impl Registry {
                     .is_ok()
             {
                 entry.activity.lock().unwrap().in_use = false;
+                released(id);
             }
         }
     }
@@ -145,13 +174,7 @@ fn built_ins(_settings: &Settings) -> Vec<Arc<dyn Agent>> {
             Some(path) => Some(path.to_owned()),
             None => detection::claude(),
         };
-        let projects = config
-            .and_then(|config| config.env.get("CLAUDE_CONFIG_DIR"))
-            .map(std::path::PathBuf::from)
-            .or_else(|| std::env::var_os("CLAUDE_CONFIG_DIR").map(std::path::PathBuf::from))
-            .or_else(|| std::env::home_dir().map(|home| home.join(".claude")))
-            .unwrap_or_default()
-            .join("projects");
+        let projects = claude_projects(_settings);
         agents.push(Arc::new(vetro_agent_claude::ClaudeAgent::from_spec(
             binary.map(|path| launch_spec(path, config)),
             projects,
@@ -212,6 +235,24 @@ fn built_ins(_settings: &Settings) -> Vec<Arc<dyn Agent>> {
         }
     }
     agents
+}
+
+#[cfg(feature = "claude")]
+fn claude_projects(settings: &Settings) -> PathBuf {
+    agent_path(settings, "claude", "CLAUDE_CONFIG_DIR", ".claude")
+        .unwrap_or_default()
+        .join("projects")
+}
+
+#[cfg(any(feature = "claude", feature = "codex"))]
+fn agent_path(settings: &Settings, id: &str, variable: &str, default: &str) -> Option<PathBuf> {
+    settings
+        .agents
+        .get(id)
+        .and_then(|config| config.env.get(variable))
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os(variable).map(PathBuf::from))
+        .or_else(|| std::env::home_dir().map(|home| home.join(default)))
 }
 
 #[cfg(any(feature = "claude", feature = "codex", feature = "acp"))]

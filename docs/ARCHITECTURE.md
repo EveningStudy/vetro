@@ -44,7 +44,7 @@ The native protocol of the Codex desktop app and IDE extension. One long-lived p
 - New thread: `thread/start` with `cwd` only. Model, reasoning effort, approval policy and sandbox are sent only when the user changed them. Never send `baseInstructions`, `developerInstructions`, dynamic tools or config overrides.
 - Turn: `turn/start`; while running, a new message uses `turn/steer`; stop is `turn/interrupt`.
 - Server requests (`item/commandExecution/requestApproval`, `item/fileChange/requestApproval`, `item/permissions/requestApproval`, `item/tool/requestUserInput`, `mcpServer/elicitation/request`) become `InteractionRequest` items.
-- History: `thread/list` (all source kinds, paged) and `thread/read` with turns; continue with `thread/resume`.
+- History: local inventory and native `thread/read` with turns. Continue with `thread/resume`.
 - Options: `model/list` (models and their reasoning efforts), the collaboration/approval presets the server reports. Account: `account/read`, `account/login/*`, `account/rateLimits/read`.
 - Everything in `~/.codex/config.toml` keeps working because Codex itself reads it: ChatGPT login, API keys, custom providers and gateways, hooks, MCP servers, skills. Vetro has no provider logic.
 - Generate the protocol types for the installed version with `codex app-server generate-json-schema` / `generate-ts` when in doubt; tolerate unknown fields and methods.
@@ -85,13 +85,15 @@ Four readers produce `ThreadSummary` rows for the index and items on demand:
 
 | Agent | Listing | Items | Continue |
 |---|---|---|---|
-| Codex | `thread/list` (every source kind) | `thread/read` with turns | `thread/resume` |
+| Codex | Native state DB, archived and active rollouts, stored history projections, and cached Desktop catalogs. `thread/list` on installations without a state DB. | `thread/read` with turns, with a read-only projection or rollout fallback, including compressed segments. Catalog-only sessions have titles and no local body. | `thread/resume` for local sessions |
 | Claude Code | scan `~/.claude/projects/**/*.jsonl` | parse the JSONL | `--resume <id>` |
 | Antigravity (CLI/ACP store) | ACP `session/list` | ACP `session/load` | same session |
 | Antigravity (desktop app store) | `~/.gemini/antigravity/conversation_summaries.db` | `conversations/<id>.db` (`steps` protobuf, decoded best-effort; text from the FTS tables) | read-only unless ACP can load it |
 | Devin | ACP `session/list` | ACP `session/load` | same session |
 
 Rules: open foreign SQLite with `mode=ro` (and `immutable=1` when there is no live writer to respect), never create `-wal`/`-shm` files next to them, never hold locks. The index stores summaries and searchable text only and can be deleted at any time. A file watcher keeps threads that are being written by other apps fresh; watching must not keep files locked on Windows.
+
+The core opens `index.db` before serving requests. One worker per agent lists metadata and reads changed transcripts one at a time. The native mark and successfully indexed mark are separate, so interrupted work resumes on the next scan. File notifications trigger debounced scans, with polling for protocol sources and missed file events. Devin contributes summaries before sign-in and transcripts after explicit sign-in in the running process.
 
 `ThreadSource` comes from the agent's own records: Codex `originator`/`source`, Claude `entrypoint`, the Antigravity store the session lives in, Devin's session metadata.
 
@@ -104,6 +106,10 @@ When an agent runs another agent's CLI (`codex exec`, `claude -p`, `agy -p`, `de
 3. **Heuristic**: an execute tool call that invokes that CLI, in the same working directory, whose time window contains the child's start.
 
 A link sets `ThreadSummary.parent` on the child and adds the child to `ToolCall.childThreadIds` on the parent's tool call. Links are recomputed incrementally as either side changes, so a running child shows up under the running tool call and streams as its file grows.
+
+Matching prefers exact evidence, then prompts, then matching directories and execution windows. Ambiguous matches at the strongest tier stay unlinked unless the native store identifies a parent. Native sub-agent sessions appear under their parents when that relationship is available. Inline sidechains remain timeline items.
+
+`vetro threads` lists indexed roots, including archived roots. `vetro threads --children-of <id>` lists children. `vetro threads --search <phrase>` searches titles and messages. `vetro links` lists the tier and both thread IDs and titles.
 
 ## Server and remote access
 

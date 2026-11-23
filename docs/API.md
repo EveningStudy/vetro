@@ -24,10 +24,10 @@ Unknown fields must be ignored by both sides. Timestamps are milliseconds since 
 | `agents.refresh` | `Empty` | `AgentsResult` | Re-detect binaries, versions and auth state. |
 | `agents.authenticate` | `AuthenticateParams` | `AuthenticateResult` | Runs the agent's own sign-in method. The result carries a URL and code when the flow continues in a browser elsewhere. |
 | `agents.options` | `AgentOptionsParams` | `AgentOptionsResult` | Options and slash commands for a new thread, from the agent (cached). |
-| `projects.list` | `Empty` | `ProjectsResult` | |
+| `projects.list` | `Empty` | `ProjectsResult` | Includes hidden projects. Missing directories sort last. |
 | `projects.add` | `ProjectAddParams` | `Project` | Adds a folder to Vetro's list only. |
 | `projects.update` | `ProjectUpdateParams` | `Project` | Vetro-local name, pin, hide. |
-| `threads.list` | `ThreadsListParams` | `ThreadsListResult` | Newest first, paged. |
+| `threads.list` | `ThreadsListParams` | `ThreadsListResult` | Newest first, paged. Linked children appear when `includeChildren` is true or `parentId` is supplied. |
 | `threads.open` | `ThreadOpenParams` | `ThreadOpenResult` | Loads items and subscribes to `thread.event`. |
 | `threads.close` | `ThreadIdParams` | `Empty` | Unsubscribes. Does not stop the agent. |
 | `threads.items` | `ThreadItemsParams` | `ThreadItemsResult` | Older page. |
@@ -39,7 +39,7 @@ Unknown fields must be ignored by both sides. Timestamps are milliseconds since 
 | `threads.update` | `ThreadUpdateParams` | `ThreadResult` | Vetro-local title and archive flag. |
 | `threads.detach` | `ThreadIdParams` | `Empty` | Releases the agent process for this thread. |
 | `threads.raw` | `ThreadRawParams` | `ThreadRawResult` | Wire log. |
-| `search.threads` | `SearchParams` | `SearchResult` | Full-text over titles and message text. |
+| `search.threads` | `SearchParams` | `SearchResult` | Literal, case-insensitive full-text phrase search over titles and user and agent messages. Supports Chinese substrings. Returns one ranked hit per unarchived thread, with a matching snippet. Snippet text is HTML-escaped and matches use `<mark>` tags. |
 | `fs.list` | `FsListParams` | `FsListResult` | Folder picker. Read-only. |
 | `fs.find` | `FsFindParams` | `FsFindResult` | File mentions. Read-only. |
 | `settings.get` | `Empty` | `Settings` | |
@@ -56,6 +56,8 @@ Unknown fields must be ignored by both sides. Timestamps are milliseconds since 
 - `thread.event`: for opened threads only; `seq` increases by one per thread. `ThreadEvent` is `item_added`, `item_updated`, `text_delta`, `summary`, `options`, `commands` or `usage`.
 - `threads.upserted` / `threads.removed`: the thread list changed (new session, title, status, link, history refresh). Sent to every connection.
 - `agents.updated`, `projects.updated`, `index.progress`, `remote.updated`.
+
+Listings and searches use the local index immediately. During a rebuild its initial results can be incomplete. `index.progress` reports a scan per agent. `done` means the scan ended, including sessions whose transcripts require sign-in. `threads.upserted` carries newly indexed summaries and changes to links. Open history threads receive item events as their native transcripts change.
 
 ## Content rules
 

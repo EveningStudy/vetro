@@ -16,6 +16,8 @@ pub(crate) struct Fake {
     pub detaches: Arc<AtomicUsize>,
     pub shutdowns: AtomicUsize,
     pub authenticated: Arc<AtomicBool>,
+    pub history_path: PathBuf,
+    pub reads: AtomicUsize,
 }
 
 #[async_trait]
@@ -65,46 +67,87 @@ impl Agent for Fake {
 
     async fn list(&self, cursor: Option<String>) -> Result<SessionPage> {
         let (native_id, updated_at, next_cursor, resumable) = match cursor.as_deref() {
-            None => ("history", 2, Some("second".into()), true),
+            None => (
+                "history",
+                std::fs::metadata(&self.history_path).unwrap().len() as i64,
+                Some("second".into()),
+                true,
+            ),
             Some("second") => ("readonly", 1, None, false),
             other => panic!("Unexpected native cursor: {other:?}"),
         };
+        let mut sessions = vec![SessionRecord {
+            native_id: native_id.into(),
+            title: format!("Fake {native_id}"),
+            preview: None,
+            cwd: Some(self.cwd.clone()),
+            created_at: Some(1),
+            updated_at,
+            source: ThreadSource::Cli,
+            origin: None,
+            model: None,
+            resumable,
+            parent_native_id: None,
+        }];
+        if cursor.is_none() {
+            if let Ok(metadata) = std::fs::metadata(self.history_path.with_file_name("fake-child"))
+            {
+                sessions.push(SessionRecord {
+                    native_id: "external-child".into(),
+                    title: "External child".into(),
+                    updated_at: metadata.len() as i64,
+                    source: ThreadSource::Exec,
+                    ..sessions[0].clone()
+                });
+            }
+        }
         Ok(SessionPage {
-            sessions: vec![SessionRecord {
-                native_id: native_id.into(),
-                title: format!("Fake {native_id}"),
-                preview: None,
-                cwd: Some(self.cwd.clone()),
-                created_at: Some(1),
-                updated_at,
-                source: ThreadSource::Cli,
-                origin: None,
-                model: None,
-                resumable,
-                parent_native_id: None,
-            }],
+            sessions,
             next_cursor,
         })
     }
 
     async fn read(&self, native_id: &str, cwd: Option<&Path>) -> Result<Transcript> {
         assert_eq!(cwd, Some(self.cwd.as_path()));
-        if !matches!(native_id, "history" | "readonly") {
+        if !matches!(native_id, "history" | "readonly" | "external-child") {
             return Err(AgentError::new(ErrorCode::NotFound, "Unknown fake session"));
         }
-        Ok(Transcript {
-            items: (1..=5)
-                .map(|number| {
-                    draft(
-                        &format!("history-{number}"),
-                        ItemKind::AgentMessage {
-                            text: format!("History item {number}"),
-                            streaming: false,
-                        },
-                    )
-                })
-                .collect(),
-        })
+        self.reads.fetch_add(1, Ordering::Relaxed);
+        let mut items: Vec<_> = (1..=5)
+            .map(|number| {
+                draft(
+                    &format!("history-{number}"),
+                    ItemKind::AgentMessage {
+                        text: format!("History item {number}"),
+                        streaming: false,
+                    },
+                )
+            })
+            .collect();
+        if matches!(native_id, "history" | "external-child") {
+            let path = if native_id == "history" {
+                self.history_path.clone()
+            } else {
+                self.history_path.with_file_name("fake-child")
+            };
+            items.extend(
+                std::fs::read_to_string(path)
+                    .unwrap()
+                    .lines()
+                    .filter(|line| !line.is_empty())
+                    .enumerate()
+                    .map(|(index, line)| {
+                        draft(
+                            &format!("external-{index}"),
+                            ItemKind::AgentMessage {
+                                text: line.into(),
+                                streaming: false,
+                            },
+                        )
+                    }),
+            );
+        }
+        Ok(Transcript { items })
     }
 
     async fn start(&self, req: StartRequest, sink: EventSink) -> Result<Arc<dyn Session>> {
@@ -129,6 +172,21 @@ impl Agent for Fake {
         });
         session.event(SessionEvent::Title("Agent title".into()));
         session.event(SessionEvent::Options(vec![model("chosen")]));
+        session.item(
+            "child-tool",
+            ItemKind::ToolCall(ToolCall {
+                call_id: "spawn".into(),
+                kind: ToolKind::Agent,
+                name: Some("Task".into()),
+                title: "Running external child".into(),
+                status: ToolStatus::InProgress,
+                input: None,
+                output: Some(serde_json::json!({ "session_id": "external-child" })),
+                content: Vec::new(),
+                locations: Vec::new(),
+                child_thread_ids: Vec::new(),
+            }),
+        );
         session.item(
             "permission",
             ItemKind::Request(InteractionRequest {

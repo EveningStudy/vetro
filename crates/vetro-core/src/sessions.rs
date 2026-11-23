@@ -9,7 +9,7 @@ use tokio::sync::{mpsc, Mutex as AsyncMutex};
 use vetro_agent_api::{AgentError, ItemDraft, Result, Session, SessionEvent, StartRequest};
 use vetro_proto::{rpc::*, *};
 
-use crate::{bad_request, internal, not_found, now, page_limit, Core};
+use crate::{bad_request, internal, links::Projection, not_found, now, page_limit, Core};
 
 const DORMANT_THREADS: usize = 64;
 const RETAINED_EVENTS: usize = 256;
@@ -40,6 +40,9 @@ struct Timeline {
     by_id: HashMap<String, usize>,
     seq: u64,
     events: VecDeque<Arc<ServerEvent>>,
+    children: HashMap<String, Vec<String>>,
+    native_children: HashMap<String, Vec<String>>,
+    index_dirty: bool,
 }
 
 impl Sessions {
@@ -110,7 +113,6 @@ impl Core {
         id: &str,
         limit: Option<u32>,
     ) -> Result<(ThreadOpenResult, Arc<Thread>)> {
-        self.refresh_history(true).await;
         let thread = self.thread(id).await?;
         Ok((thread.snapshot(limit), thread))
     }
@@ -121,7 +123,7 @@ impl Core {
         }
         let (agent_id, native_id) = split_id(id)?;
         let agent = self.registry.get(agent_id)?;
-        let indexed = self.store.get(id);
+        let indexed = self.store.get(id)?;
         let unknown = indexed.is_none();
         let summary = indexed.unwrap_or_else(|| {
             let mut summary = new_summary(agent_id, native_id, native_id.into(), None);
@@ -130,12 +132,11 @@ impl Core {
         });
         let transcript = {
             let _guard = self.registry.enter(agent_id, true).await;
-            agent
-                .read(native_id, summary.cwd.as_deref().map(Path::new))
-                .await
+            self.read_history_items(&agent, &summary).await
         };
         let transcript = self.auth_result(agent_id, transcript).await?;
         let mut state = Timeline::new(summary);
+        state.set_children(self.store.children(id)?);
         if unknown {
             state.summary.resumable = self.agent_info(agent_id).await?.capabilities.resume;
         }
@@ -231,6 +232,104 @@ impl Thread {
             .expect("core outlives thread operations")
     }
 
+    pub(crate) fn is_live(&self) -> bool {
+        self.state.lock().unwrap().session.is_some()
+    }
+
+    pub(crate) fn take_projection(&self) -> Option<(ThreadSummary, Projection)> {
+        let mut state = self.state.lock().unwrap();
+        if !std::mem::take(&mut state.index_dirty) {
+            return None;
+        }
+        let projection = Projection::from_items(
+            &state.summary,
+            state
+                .items
+                .iter()
+                .map(|item| (&item.kind, item.ts, item.turn_id.as_deref())),
+            Some(&state.native_children),
+        );
+        Some((state.summary.clone(), projection))
+    }
+
+    pub(crate) fn refresh_history(&self, mut summary: ThreadSummary, items: Vec<ItemDraft>) {
+        let core = self.core();
+        let Ok(children) = core.store.children(&summary.id) else {
+            return;
+        };
+        let mut state = self.state.lock().unwrap();
+        if state.session.is_some() || state.index_dirty {
+            return;
+        }
+        state.set_children(children);
+        if summary.created_at.is_none() {
+            summary.created_at = state.summary.created_at;
+        }
+        let old = state.summary.clone();
+        state.status = summary.status;
+        state.summary = summary;
+        for mut draft in items {
+            state.decorate(&mut draft.kind);
+            let unchanged = state.by_id.get(&draft.id).is_some_and(|index| {
+                let item = &state.items[*index];
+                item.kind == draft.kind && item.ts == draft.ts && item.turn_id == draft.turn_id
+            });
+            if !unchanged {
+                let event = state.item(draft);
+                state.emit(&core, event);
+            }
+        }
+        state.update_status();
+        if state.summary != old {
+            let thread = core.overlay(state.summary.clone());
+            state.emit(&core, ThreadEvent::Summary { thread });
+        }
+    }
+
+    pub(crate) fn refresh_links(&self, summary: &ThreadSummary) {
+        let core = self.core();
+        let Ok(children) = core.store.children(&summary.id) else {
+            return;
+        };
+        let mut state = self.state.lock().unwrap();
+        let summary_changed = state.summary.parent != summary.parent
+            || state.summary.child_count != summary.child_count;
+        state.summary.parent.clone_from(&summary.parent);
+        state.summary.child_count = summary.child_count;
+        if summary_changed {
+            let thread = core.overlay(state.summary.clone());
+            state.emit(&core, ThreadEvent::Summary { thread });
+        }
+        let previous = std::mem::take(&mut state.children);
+        state.set_children(children);
+        if previous == state.children {
+            return;
+        }
+        let Timeline {
+            items, children, ..
+        } = &mut *state;
+        let updated: Vec<_> = items
+            .iter_mut()
+            .filter_map(|item| {
+                let ItemKind::ToolCall(call) = &mut item.kind else {
+                    return None;
+                };
+                let current = children
+                    .get(&call.call_id)
+                    .map(Vec::as_slice)
+                    .unwrap_or_default();
+                if current == call.child_thread_ids {
+                    return None;
+                }
+                call.child_thread_ids = current.to_vec();
+                Some(item.clone())
+            })
+            .collect();
+        for item in updated {
+            state.emit(&core, ThreadEvent::ItemUpdated { item });
+        }
+    }
+
     pub(crate) fn snapshot(&self, limit: Option<u32>) -> ThreadOpenResult {
         let mut state = self.state.lock().unwrap();
         state.last_access = Instant::now();
@@ -308,8 +407,20 @@ impl Thread {
         let usage_before = state.usage.clone();
         let mut closed_session = None;
         let event = match event {
-            SessionEvent::Item(draft) => Some(state.item(draft)),
-            SessionEvent::TextDelta { item_id, delta } => state.delta(item_id, delta),
+            SessionEvent::Item(draft) => {
+                state.index_dirty |= matches!(
+                    draft.kind,
+                    ItemKind::UserMessage { .. }
+                        | ItemKind::AgentMessage { .. }
+                        | ItemKind::ToolCall(_)
+                        | ItemKind::TurnEnd { .. }
+                );
+                Some(state.item(draft))
+            }
+            SessionEvent::TextDelta { item_id, delta } => {
+                state.index_dirty = true;
+                state.delta(item_id, delta)
+            }
             SessionEvent::Status(status) => {
                 state.status = status;
                 None
@@ -708,6 +819,9 @@ impl Timeline {
             by_id: HashMap::new(),
             seq: 0,
             events: VecDeque::new(),
+            children: HashMap::new(),
+            native_children: HashMap::new(),
+            index_dirty: false,
         }
     }
 
@@ -730,7 +844,33 @@ impl Timeline {
         !self.active() && self.queue.is_empty() && self.last_activity.elapsed() >= idle
     }
 
-    fn item(&mut self, draft: ItemDraft) -> ThreadEvent {
+    fn set_children(&mut self, children: Vec<(String, ThreadParent)>) {
+        self.children.clear();
+        for (child, link) in children {
+            if let Some(call_id) = link.call_id {
+                self.children.entry(call_id).or_default().push(child);
+            }
+        }
+    }
+
+    fn decorate(&self, kind: &mut ItemKind) {
+        if let ItemKind::ToolCall(call) = kind {
+            call.child_thread_ids = self
+                .children
+                .get(&call.call_id)
+                .cloned()
+                .unwrap_or_default();
+        }
+    }
+
+    fn item(&mut self, mut draft: ItemDraft) -> ThreadEvent {
+        if let ItemKind::ToolCall(call) = &draft.kind {
+            if !call.child_thread_ids.is_empty() {
+                self.native_children
+                    .insert(call.call_id.clone(), call.child_thread_ids.clone());
+            }
+        }
+        self.decorate(&mut draft.kind);
         let next = self.items.len();
         let index = *self.by_id.entry(draft.id.clone()).or_insert(next);
         let item = Item {

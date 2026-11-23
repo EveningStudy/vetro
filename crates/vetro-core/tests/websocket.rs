@@ -3,6 +3,7 @@ mod fixtures;
 use std::{
     collections::{BTreeMap, VecDeque},
     fs,
+    io::Write,
     net::SocketAddr,
     path::Path,
     sync::{atomic::Ordering, Arc},
@@ -41,6 +42,7 @@ fn main() {
         fs::create_dir(path.join(agent_dir)).unwrap();
         fs::write(path.join(agent_dir).join("sentinel"), agent_dir).unwrap();
     }
+    fs::write(path.join(".claude/fake-transcript"), "\n\n").unwrap();
     let before = tree(path);
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -55,6 +57,7 @@ fn main() {
     assert!(path.join(".vetro/config.json").exists());
     assert!(path.join(".vetro/state.json").exists());
     assert!(path.join(".vetro/raw").is_dir());
+    assert!(path.join(".vetro/index.db").is_file());
 }
 
 async fn exercise(path: &Path, cwd: &Path) {
@@ -65,14 +68,38 @@ async fn exercise(path: &Path, cwd: &Path) {
         detaches: Default::default(),
         shutdowns: Default::default(),
         authenticated: Default::default(),
+        history_path: path.join(".claude/fake-transcript"),
+        reads: Default::default(),
     });
     let home = Home::discover().unwrap();
     assert_eq!(home.root(), path.join(".vetro"));
     let local_token = home.local_token();
-    let core = Core::new(
-        home,
-        Registry::new([fake.clone() as Arc<dyn Agent>]).unwrap(),
-    );
+    let registry = || {
+        Registry::new([fake.clone() as Arc<dyn Agent>])
+            .unwrap()
+            .watch_history("fake", vec![path.join(".claude")])
+    };
+    let core = Core::new(home, registry());
+    core.refresh_history().await;
+    assert_eq!(fake.reads.load(Ordering::Relaxed), 2);
+    core.refresh_history().await;
+    assert_eq!(fake.reads.load(Ordering::Relaxed), 2);
+    drop(core);
+    let index = path.join(".vetro/index.db");
+    fs::remove_file(&index).unwrap();
+    let core = Core::new(Home::discover().unwrap(), registry());
+    core.refresh_history().await;
+    assert_eq!(fake.reads.load(Ordering::Relaxed), 4);
+    drop(core);
+    fs::write(&index, b"not a SQLite database").unwrap();
+    let core = Core::new(Home::discover().unwrap(), registry());
+    core.refresh_history().await;
+    assert_eq!(fake.reads.load(Ordering::Relaxed), 6);
+    drop(core);
+    let core = Core::new(Home::discover().unwrap(), registry());
+    assert_eq!(core.threads(Default::default()).unwrap().threads.len(), 2);
+    core.refresh_history().await;
+    assert_eq!(fake.reads.load(Ordering::Relaxed), 6);
     let server = Server::bind(core, Some(0)).await.unwrap();
     let addr = server.address();
     assert_eq!(addr.ip().to_string(), "127.0.0.1");
@@ -377,6 +404,37 @@ async fn exercise(path: &Path, cwd: &Path) {
         .await;
     assert_eq!(older["hasMore"], false);
     assert_eq!(older["items"].as_array().unwrap().len(), 3);
+    let reads = fake.reads.load(Ordering::Relaxed);
+    writeln!(
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&fake.history_path)
+            .unwrap(),
+        "External writer says 中文全文检索 <unsafe>."
+    )
+    .unwrap();
+    let (seq, event) = tokio::time::timeout(
+        Duration::from_secs(5),
+        first.until_event("fake:history", |event| {
+            event["type"] == "item_added" && event["item"]["id"] == "external-0"
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(seq, history["seq"].as_u64().unwrap() + 1);
+    assert_eq!(event["item"]["ordinal"], 6);
+    assert_eq!(fake.reads.load(Ordering::Relaxed), reads + 1);
+    for (query, marked) in [
+        ("external writer", "<mark>External writer</mark>"),
+        ("全文检索", "<mark>全文检索</mark>"),
+        ("中", "<mark>中</mark>"),
+    ] {
+        let hits = first.call("search.threads", json!({"query": query})).await;
+        assert_eq!(hits["hits"][0]["thread"]["id"], "fake:history");
+        let snippet = hits["hits"][0]["snippet"].as_str().unwrap();
+        assert!(snippet.contains(marked), "{snippet}");
+        assert!(snippet.contains("&lt;unsafe&gt;"));
+    }
     let rename = first
         .call(
             "threads.update",
@@ -384,8 +442,10 @@ async fn exercise(path: &Path, cwd: &Path) {
         )
         .await;
     assert_eq!(rename["thread"]["title"], "Renamed");
-    let hits = first.call("search.threads", json!({"query": "name"})).await;
-    assert_eq!(hits["hits"][0]["snippet"], "Re<mark>name</mark>d");
+    let hits = first
+        .call("search.threads", json!({"query": "Renamed"}))
+        .await;
+    assert_eq!(hits["hits"][0]["snippet"], "<mark>Renamed</mark>");
     first
         .call(
             "threads.update",
@@ -414,6 +474,31 @@ async fn exercise(path: &Path, cwd: &Path) {
         .await;
     assert_eq!(project["name"], "Pinned");
     assert_eq!(project["hidden"], true);
+    let projects = first.call("projects.list", json!({})).await;
+    assert_eq!(projects["projects"][0]["hidden"], true);
+    first.call("threads.open", json!({"threadId": id})).await;
+    let child_store = fake.history_path.with_file_name("fake-child");
+    fs::write(&child_store, "Child started\n").unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        first.until_event(id, |event| {
+            event["type"] == "item_updated"
+                && event["item"]["id"] == "child-tool"
+                && event["item"]["childThreadIds"] == json!(["fake:external-child"])
+        }),
+    )
+    .await
+    .unwrap();
+    let children = first.call("threads.list", json!({"parentId": id})).await;
+    assert_eq!(children["threads"][0]["id"], "fake:external-child");
+    assert_eq!(children["threads"][0]["parent"]["confidence"], "exact");
+    assert_eq!(children["threads"][0]["parent"]["callId"], "spawn");
+    assert_eq!(
+        first.call("threads.open", json!({"threadId": id})).await["thread"]["childCount"],
+        1
+    );
+    fs::remove_file(child_store).unwrap();
+    fs::write(&fake.history_path, "\n\n").unwrap();
     let files = first.call("fs.list", json!({"path": cwd})).await;
     assert_eq!(files["entries"].as_array().unwrap().len(), 3);
     assert_eq!(
