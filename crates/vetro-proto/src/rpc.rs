@@ -284,6 +284,8 @@ pub struct ThreadOpenResult {
     pub options: Vec<ConfigOption>,
     pub commands: Vec<SlashCommand>,
     pub usage: ThreadUsage,
+    #[serde(default)]
+    pub queue: Vec<QueuedMessage>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -338,6 +340,25 @@ pub struct ThreadResult {
 pub struct ThreadSendParams {
     pub thread_id: String,
     pub content: Vec<ContentBlock>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub client_message_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ThreadQueueCancelParams {
+    pub thread_id: String,
+    pub queue_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, optional_fields)]
+pub struct ThreadForkParams {
+    pub thread_id: String,
+    pub turn_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -465,6 +486,21 @@ pub struct FsFindParams {
 pub struct FsFindResult {
     /// Paths relative to `cwd`, with forward slashes.
     pub paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct FsMkdirParams {
+    pub parent: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct FsMkdirResult {
+    pub path: String,
 }
 
 // --- workspace (read-only Git inspection & desktop external open) ------------------------------

@@ -26,6 +26,7 @@ import {
   SquarePenIcon,
   SquareTerminalIcon,
   UnplugIcon,
+  XIcon,
 } from "lucide-react";
 import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { Project, ThreadSource, ThreadStatus, ThreadSummary } from "~/api/types";
@@ -50,8 +51,9 @@ import {
   MenuCheckboxItem,
   MenuGroupLabel,
   MenuItem,
-  MenuItemHint,
   MenuPopup,
+  MenuRadioGroup,
+  MenuRadioItem,
   MenuSeparator,
   MenuTrigger,
   Tip,
@@ -200,12 +202,9 @@ function ThreadMenuItems({ thread }: { thread: ThreadSummary }) {
         {thread.pinned ? <PinOffIcon /> : <PinIcon />}
         {thread.pinned ? t("thread.unpin") : t("thread.pin")}
       </MenuItem>
-      <MenuItem onClick={() => void actions.updateThread(thread.id, { archived: !thread.archived })} className="items-start py-1.5">
-        {thread.archived ? <ArchiveRestoreIcon className="mt-0.5" /> : <ArchiveIcon className="mt-0.5" />}
-        <span className="min-w-0">
-          {thread.archived ? t("thread.unarchive") : t("thread.archive")}
-          <MenuItemHint>{t("thread.archiveHint")}</MenuItemHint>
-        </span>
+      <MenuItem onClick={() => void actions.updateThread(thread.id, { archived: !thread.archived })}>
+        {thread.archived ? <ArchiveRestoreIcon /> : <ArchiveIcon />}
+        {thread.archived ? t("thread.unarchive") : t("thread.archive")}
       </MenuItem>
       {cwd && (!quick || local) ? (
         <>
@@ -466,34 +465,6 @@ const ProjectHeader = memo(function ProjectHeader({ row }: { row: Extract<Sideba
   );
 });
 
-function ScopeToggle() {
-  const t = useT();
-  const scope = usePrefs((s) => s.sidebarScope);
-  const options: { value: SidebarScope; label: string }[] = [
-    { value: "all", label: t("sidebar.scopeAll") },
-    { value: "vetro", label: t("sidebar.scopeVetro") },
-  ];
-  return (
-    <div role="radiogroup" aria-label={t("settings.sidebarScope")} className="flex shrink-0 rounded-md bg-sidebar-row-hover p-px">
-      {options.map((option) => (
-        <button
-          key={option.value}
-          type="button"
-          role="radio"
-          aria-checked={scope === option.value}
-          onClick={() => setSidebarScope(option.value)}
-          className={cn(
-            "h-5 rounded-[5px] px-1.5 text-[11px] font-medium leading-none text-sidebar-muted-foreground outline-none hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-ring",
-            scope === option.value && "bg-sidebar text-sidebar-foreground shadow-xs dark:bg-sidebar-row-active",
-          )}
-        >
-          {option.label}
-        </button>
-      ))}
-    </div>
-  );
-}
-
 function HeadingRow({ row }: { row: Extract<SidebarRow, { kind: "heading" }> }) {
   const t = useT();
   const label = row.heading === "active" ? t("sidebar.active") : row.heading === "quick" ? t("sidebar.quickChats") : t("sidebar.projects");
@@ -501,7 +472,6 @@ function HeadingRow({ row }: { row: Extract<SidebarRow, { kind: "heading" }> }) 
     <div className="flex h-full items-end gap-2 px-(--sidebar-row-content-inset) pb-1 text-xs font-medium text-sidebar-muted-foreground">
       <span className="min-w-0 flex-1 truncate">{label}</span>
       {row.heading !== "projects" && row.count > 0 ? <span className="tabular-nums text-sidebar-muted-foreground/70">{row.count}</span> : null}
-      {row.heading === "projects" ? <ScopeToggle /> : null}
     </div>
   );
 }
@@ -652,8 +622,15 @@ function FilterMenu() {
   const t = useT();
   const filters = useStore((s) => s.filters);
   const agents = useStore((s) => s.agents);
+  const scope = usePrefs((s) => s.sidebarScope);
   const hiddenCount = useStore((s) => s.projects.filter((p) => p.hidden).length);
-  const active = filters.agentIds.length + filters.sources.length + (filters.showArchived ? 1 : 0) + (filters.showHidden ? 1 : 0) + (filters.showInternal ? 1 : 0);
+  const active =
+    (scope === "vetro" ? 1 : 0) +
+    filters.agentIds.length +
+    filters.sources.length +
+    (filters.showArchived ? 1 : 0) +
+    (filters.showHidden ? 1 : 0) +
+    (filters.showInternal ? 1 : 0);
   const toggle = <T extends string>(list: T[], value: T) => (list.includes(value) ? list.filter((v) => v !== value) : [...list, value]);
   return (
     <Menu>
@@ -672,6 +649,16 @@ function FilterMenu() {
         </MenuTrigger>
       </Tip>
       <MenuPopup align="end" className="w-56">
+        <MenuGroupLabel>{t("sidebar.filterScope")}</MenuGroupLabel>
+        <MenuRadioGroup value={scope} onValueChange={(value) => setSidebarScope(value as SidebarScope)}>
+          <MenuRadioItem value="all" closeOnClick={false}>
+            {t("sidebar.scopeAllFull")}
+          </MenuRadioItem>
+          <MenuRadioItem value="vetro" closeOnClick={false}>
+            {t("sidebar.scopeVetroFull")}
+          </MenuRadioItem>
+        </MenuRadioGroup>
+        <MenuSeparator />
         <MenuGroupLabel>{t("sidebar.filterAgents")}</MenuGroupLabel>
         {agents.map((agent) => (
           <MenuCheckboxItem
@@ -722,7 +709,12 @@ function FilterMenu() {
           ))}
         </div>
         {active > 0 ? (
-          <MenuItem onClick={() => actions.setFilters({ agentIds: [], sources: [], showArchived: false, showHidden: false, showInternal: false })}>
+          <MenuItem
+            onClick={() => {
+              setSidebarScope("all");
+              actions.setFilters({ agentIds: [], sources: [], showArchived: false, showHidden: false, showInternal: false });
+            }}
+          >
             {t("sidebar.clearFilters")}
           </MenuItem>
         ) : null}
@@ -982,21 +974,40 @@ export function SidebarContent() {
             onClick={() => useStore.setState({ paletteOpen: true })}
             trailing={<Kbd className="pointer-coarse:hidden">{isMac ? "⌘K" : "Ctrl K"}</Kbd>}
           />
+          {scope === "vetro" ? (
+            <div className="mt-1 flex items-center px-1">
+              <button
+                type="button"
+                onClick={() => setSidebarScope("all")}
+                className="inline-flex h-6 cursor-pointer items-center gap-1 rounded-md border border-sidebar-border/80 bg-sidebar-row-hover/70 px-2 text-xs text-sidebar-foreground/85 transition-colors hover:bg-sidebar-row-hover hover:text-sidebar-foreground"
+              >
+                <span>{t("sidebar.scopeVetroFull")}</span>
+                <XIcon className="size-3 text-sidebar-muted-foreground" />
+              </button>
+            </div>
+          ) : null}
         </div>
         <VirtualRows rows={rows} activeId={activeId} now={now} onToggleMore={toggleMore} onToggleSection={toggleOther} />
-        <div className="shrink-0 px-2 pt-1 pb-[calc(0.5rem+env(safe-area-inset-bottom))]">
-          <SidebarAction
-            icon={SettingsIcon}
-            label={t("sidebar.settings")}
-            active={route.view === "settings"}
+        <footer className="flex shrink-0 items-center justify-between gap-2 border-t border-sidebar-border/70 px-2.5 pt-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))]">
+          <button
+            type="button"
             onClick={() => actions.navigate({ view: "settings", section: "agents" })}
-            trailing={
-              connection !== "open" ? (
+            className={cn(
+              "inline-flex h-7 cursor-pointer select-none items-center gap-2 rounded-md px-2 text-xs text-sidebar-muted-foreground outline-none transition-colors hover:bg-sidebar-row-hover hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+              route.view === "settings" && "bg-sidebar-row-active text-sidebar-foreground",
+            )}
+          >
+            <SettingsIcon className="size-3.5 shrink-0" />
+            <span>{t("sidebar.settings")}</span>
+          </button>
+          {connection !== "open" ? (
+            <Tip label={t("conn.lost")}>
+              <span className="me-1 inline-flex items-center">
                 <span className="size-1.5 rounded-full bg-warning animate-status-pulse" aria-label={t("conn.lost")} />
-              ) : null
-            }
-          />
-        </div>
+              </span>
+            </Tip>
+          ) : null}
+        </footer>
       </div>
       {renaming ? (
         <RenameDialog open onOpenChange={(open) => !open && setRenaming(null)} threadId={renaming.id} title={renaming.title} />

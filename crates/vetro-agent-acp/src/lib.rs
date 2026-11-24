@@ -383,6 +383,7 @@ impl Agent for AcpAgent {
                     mid_turn_input: caps.steering,
                     resume: caps.load || caps.resume,
                     list_sessions: caps.list,
+                    fork: vetro_proto::ForkCapabilities::default(),
                 };
                 info.auth.methods.clone_from(&runtime.methods);
                 if self.id == "devin" {
@@ -560,12 +561,27 @@ impl Agent for AcpAgent {
         };
         session.capture_initial_options();
         self.remember(&session.id, &cwd);
-        let result = async {
-            apply_options(&session, &req.options, reused, false).await?;
-            session.send(req.content).await
+        let skipped = match apply_options(&session, &req.options, reused, true).await {
+            Ok(skipped) => skipped,
+            Err(error) => {
+                // Prompt has not been sent yet; clean up the empty native session when supported.
+                let _lifecycle = runtime.connection.lifecycle.lock().await;
+                runtime.discard_prepared(session).await;
+                return Err(error);
+            }
+        };
+        if !skipped.is_empty() {
+            let summary = skipped
+                .into_iter()
+                .map(|(name, value)| format!("{name}={value}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            session.emit_notice(
+                vetro_proto::NoticeLevel::Info,
+                format!("Using agent default for unsupported options: {summary}"),
+            );
         }
-        .await;
-        if let Err(error) = result {
+        if let Err(error) = session.send(req.content).await {
             session.detach().await;
             return Err(error);
         }
@@ -652,8 +668,8 @@ async fn apply_options(
     session: &AcpSession,
     desired: &BTreeMap<String, String>,
     reset_to_initial: bool,
-    ignore_missing: bool,
-) -> Result<()> {
+    skip_invalid: bool,
+) -> Result<Vec<(String, String)>> {
     let mut target = BTreeMap::new();
     if reset_to_initial {
         if let Some(initial) = session.initial_options() {
@@ -666,29 +682,44 @@ async fn apply_options(
         target.insert(id.clone(), value.clone());
     }
     if target.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
     let mut applied = Vec::new();
-    for pass in 0..2 {
+    let mut skipped = Vec::new();
+    // Apply Model first so dependent options (e.g. thought_level) update before validation,
+    // then Mode, then remaining options.
+    for pass in 0..3 {
         let current = session.options().options;
         let pending: Vec<(String, String)> = target
             .iter()
             .filter(|(id, _)| !applied.contains(*id))
             .filter_map(|(id, value)| {
                 let option = current.iter().find(|option| option.id == *id);
-                let is_primary = option.is_some_and(|option| {
-                    matches!(
-                        option.category,
-                        vetro_proto::ConfigCategory::Mode | vetro_proto::ConfigCategory::Model
-                    )
-                });
-                if (pass == 0 && !is_primary) || (pass == 1 && is_primary) {
+                let bucket = match option.map(|option| option.category) {
+                    Some(vetro_proto::ConfigCategory::Model) => 0,
+                    Some(vetro_proto::ConfigCategory::Mode) => 1,
+                    _ => 2,
+                };
+                if bucket != pass {
                     return None;
                 }
                 if option.is_some_and(|option| option.current_value == *value) {
                     return None;
                 }
-                if pass == 1 && option.is_none() && ignore_missing {
+                if let Some(option) = option {
+                    if skip_invalid
+                        && !option.choices.is_empty()
+                        && !option.choices.iter().any(|choice| choice.value == *value)
+                    {
+                        if desired.contains_key(id) {
+                            skipped.push((option.name.clone(), value.clone()));
+                        }
+                        return None;
+                    }
+                } else if skip_invalid {
+                    if desired.contains_key(id) {
+                        skipped.push((id.clone(), value.clone()));
+                    }
                     return None;
                 }
                 Some((id.clone(), value.clone()))
@@ -699,7 +730,7 @@ async fn apply_options(
             applied.push(id);
         }
     }
-    Ok(())
+    Ok(skipped)
 }
 
 fn standard_spec(program: &str) -> SpawnSpec {

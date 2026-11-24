@@ -69,6 +69,7 @@ struct Turn {
     since: Instant,
     pending: usize,
     user: Option<Vec<ContentBlock>>,
+    user_item_id: Option<String>,
     usage: Option<TokenUsage>,
 }
 
@@ -155,6 +156,23 @@ impl AcpSession {
 
     pub fn capture_initial_options(&self) {
         self.initial_options.get_or_init(|| self.options());
+    }
+
+    pub fn emit_notice(&self, level: NoticeLevel, text: String) {
+        let mut state = self.state.lock().unwrap();
+        if state.closed {
+            return;
+        }
+        let id = state.id("notice");
+        let draft = state.draft(
+            id,
+            ItemKind::Notice {
+                level,
+                text,
+                detail: None,
+            },
+        );
+        state.upsert(draft);
     }
 
     async fn submit_prompt(
@@ -491,15 +509,19 @@ impl Session for AcpSession {
             if let Some(turn) = state.turn.as_mut() {
                 turn.pending += 1;
                 turn.user = Some(content);
+                turn.user_item_id = None;
             } else {
                 state.turn = Some(Turn {
                     id: state.id("turn"),
                     since: Instant::now(),
                     pending: 1,
                     user: Some(content),
+                    user_item_id: None,
                     usage: None,
                 });
             }
+            // Emit immediately so the user sees their sent message without waiting for agent TTFT.
+            state.flush_user();
             state.status_after_input(false);
             state.turn.as_ref().unwrap().id.clone()
         };
@@ -689,6 +711,9 @@ impl State {
         if let Some(content) = self.turn.as_mut().and_then(|turn| turn.user.take()) {
             self.end_message();
             let id = self.id("user");
+            if let Some(turn) = self.turn.as_mut() {
+                turn.user_item_id = Some(id.clone());
+            }
             let draft = self.draft(id, ItemKind::UserMessage { content });
             self.upsert(draft);
         }
@@ -704,6 +729,9 @@ impl State {
             }
         } else {
             self.flush_user();
+            if let Some(turn) = &mut self.turn {
+                turn.user_item_id = None;
+            }
             if !matches!(block, ContentBlock::Text { .. }) {
                 let id = self.id("content");
                 let draft = self.draft(
@@ -726,10 +754,17 @@ impl State {
             .is_some_and(|message| message.role == role && message.native_id == native_id);
         if !is_same_message {
             self.end_message();
-            let id = native_id
-                .as_ref()
-                .map(|id| format!("message:{id}"))
-                .unwrap_or_else(|| self.id("message"));
+            let echoed_id = if role == Role::User && self.replay.is_none() {
+                self.turn.as_mut().and_then(|turn| turn.user_item_id.take())
+            } else {
+                None
+            };
+            let id = echoed_id.unwrap_or_else(|| {
+                native_id
+                    .as_ref()
+                    .map(|id| format!("message:{id}"))
+                    .unwrap_or_else(|| self.id("message"))
+            });
             if role == Role::User && self.replay.is_some() && !self.ended_messages.contains_key(&id)
             {
                 self.replay_turn += 1;

@@ -75,6 +75,26 @@ export const minimizeWindow = () => invokeWindow("minimize");
 export const toggleMaximizeWindow = () => invokeWindow("toggle_maximize");
 export const closeWindow = () => invokeWindow("close");
 
+export async function pickSystemFolder(defaultPath?: string): Promise<string | null> {
+  if (state.chrome === "web") return null;
+  const invoke = window.__TAURI_INTERNALS__?.invoke;
+  if (!invoke) return null;
+  try {
+    const result = await invoke("plugin:dialog|open", {
+      options: {
+        directory: true,
+        multiple: false,
+        ...(defaultPath ? { defaultPath } : {}),
+      },
+    });
+    if (typeof result === "string" && result.trim()) return result;
+    if (Array.isArray(result) && typeof result[0] === "string" && result[0].trim()) return result[0];
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export async function queryWindowMaximized(): Promise<boolean | undefined> {
   const result = await invokeWindow("is_maximized");
   return typeof result === "boolean" ? result : undefined;

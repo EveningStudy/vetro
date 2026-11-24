@@ -30,7 +30,7 @@ export function ProjectPicker({
   const current = projects.find((project) => project.path === value);
   const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
   const filtered = projects.filter((project) => terms.every((term) => `${project.name} ${project.path}`.toLowerCase().includes(term)));
-  const quickMatch = terms.length === 0 || terms.every((term) => `${t("composer.quickChat")} ${t("composer.quickChatHint")} quick scratch`.toLowerCase().includes(term));
+  const quickMatch = terms.length === 0 || terms.every((term) => `${t("composer.quickChat")} quick scratch`.toLowerCase().includes(term));
   return (
     <Popover
       open={open}
@@ -82,10 +82,7 @@ export function ProjectPicker({
                 className="flex w-full min-w-0 items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent"
               >
                 <MessageSquareIcon className="size-4 shrink-0 text-muted-foreground" />
-                <span className="flex min-w-0 flex-1 flex-col">
-                  <span className="truncate">{t("composer.quickChat")}</span>
-                  <span className="truncate text-[11px] text-muted-foreground">{t("composer.quickChatHint")}</span>
-                </span>
+                <span className="min-w-0 flex-1 truncate">{t("composer.quickChat")}</span>
                 {value === null ? <CheckIcon className="size-3.5 shrink-0" /> : null}
               </button>
               {filtered.length > 0 ? <div className="my-1 border-t" /> : null}

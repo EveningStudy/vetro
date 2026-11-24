@@ -32,7 +32,8 @@ struct Timeline {
     raw_saved_at: Option<Instant>,
     status: ThreadStatus,
     pending: HashMap<String, usize>,
-    queue: VecDeque<Vec<ContentBlock>>,
+    queue: VecDeque<QueuedMessage>,
+    queue_seq: u64,
     options: Vec<ConfigOption>,
     commands: Vec<SlashCommand>,
     usage: ThreadUsage,
@@ -396,6 +397,7 @@ impl Thread {
             options: state.options.clone(),
             commands: state.commands.clone(),
             usage: state.usage.clone(),
+            queue: state.queue.iter().cloned().collect(),
         }
     }
 
@@ -460,6 +462,7 @@ impl Thread {
         let before = state.summary.clone();
         let usage_before = state.usage.clone();
         let mut closed_session = None;
+        let mut bump_updated = true;
         let event = match event {
             SessionEvent::Item(draft) => {
                 state.index_dirty |= matches!(
@@ -505,17 +508,34 @@ impl Thread {
             }
             SessionEvent::AuthRequired => None,
             SessionEvent::Closed { error } => {
+                let was_active =
+                    state.active() || !state.pending.is_empty() || !state.queue.is_empty();
+                let shutting_down = core.is_shutting_down();
                 closed_session = state.session.take();
                 state.summary.live = false;
                 state.generation += 1;
-                state.queue.clear();
+                if !state.queue.is_empty() {
+                    state.queue.clear();
+                    state.emit(
+                        &core,
+                        ThreadEvent::Queue {
+                            messages: Vec::new(),
+                        },
+                    );
+                }
                 state.cancel_pending(&core);
-                state.status = if error.is_some() {
-                    ThreadStatus::Error
+                if error.is_some() && was_active && !shutting_down {
+                    state.status = ThreadStatus::Error;
+                    error.map(|text| state.notice(text))
                 } else {
-                    ThreadStatus::Idle
-                };
-                error.map(|text| state.notice(text))
+                    if let Some(text) = &error {
+                        core.home
+                            .log(&format!("Idle session {} closed: {text}", state.summary.id));
+                    }
+                    state.status = ThreadStatus::Idle;
+                    bump_updated = false;
+                    None
+                }
             }
         };
         if let Some(event) = event {
@@ -527,7 +547,11 @@ impl Thread {
         }
         state.update_status();
         if before != state.summary {
-            state.changed(&core);
+            if bump_updated {
+                state.changed(&core);
+            } else {
+                state.changed_without_bump(&core);
+            }
         }
         let still_live = state.session.is_some();
         if let Some(session) = closed_session {
@@ -589,8 +613,13 @@ impl Thread {
             session.detach().await;
             return Err(internal("Agent attached to a different native session"));
         }
-        choices.sort_by_key(|(id, _)| id != "model");
+        choices.sort_by_key(|(id, _)| match id.as_str() {
+            "model" => 0,
+            "mode" | "permissions" | "approvalPolicy" | "sandbox" => 1,
+            _ => 2,
+        });
         let mut restored = None;
+        let mut stale = Vec::new();
         for (id, value) in choices {
             match core
                 .user_agent_call_on(&registry, &summary.agent_id, || {
@@ -600,10 +629,33 @@ impl Thread {
             {
                 Ok(options) => restored = Some(options),
                 Err(error) => {
-                    session.detach().await;
-                    return Err(error);
+                    core.home.log(&format!(
+                        "Skipping unavailable saved option {id}={value} on {}: {error}",
+                        summary.id
+                    ));
+                    stale.push((id, value));
                 }
             }
+        }
+        if !stale.is_empty() {
+            let stale_keys: Vec<String> = stale.iter().map(|(id, _)| id.clone()).collect();
+            let _ = core.home.change_state(|state| {
+                if let Some(overlay) = state.threads.get_mut(&summary.id) {
+                    for key in &stale_keys {
+                        overlay.options.remove(key);
+                    }
+                }
+            });
+            let note = stale
+                .into_iter()
+                .map(|(id, value)| format!("{id}={value}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let mut state = self.state.lock().unwrap();
+            let event = state.info_notice(format!(
+                "Skipped unavailable saved options on resume: {note}"
+            ));
+            state.emit(&core, event);
         }
         if let Some(options) = restored {
             let _ = sink.send(SessionEvent::Options(options));
@@ -641,7 +693,11 @@ impl Thread {
                         "Thread input queue is full",
                     ));
                 }
-                state.queue.push_back(content);
+                state.queue_seq += 1;
+                let id = format!("q:{}", state.queue_seq);
+                state.queue.push_back(QueuedMessage { id, content });
+                let messages = state.queue.iter().cloned().collect();
+                state.emit(&core, ThreadEvent::Queue { messages });
                 return Ok(());
             }
         }
@@ -706,7 +762,10 @@ impl Thread {
                 let Some(session) = state.session.clone() else {
                     return;
                 };
-                (session, state.queue.pop_front().unwrap())
+                let queued = state.queue.pop_front().unwrap();
+                let messages = state.queue.iter().cloned().collect();
+                state.emit(&core, ThreadEvent::Queue { messages });
+                (session, queued.content)
             };
             if self.send_now(&core, session, content).await.is_ok() {
                 return;
@@ -714,11 +773,33 @@ impl Thread {
         }
     }
 
+    pub(crate) fn cancel_queued(&self, queue_id: &str) -> bool {
+        let core = self.core();
+        let mut state = self.state.lock().unwrap();
+        let before = state.queue.len();
+        state.queue.retain(|entry| entry.id != queue_id);
+        let removed = state.queue.len() != before;
+        if removed {
+            let messages = state.queue.iter().cloned().collect();
+            state.emit(&core, ThreadEvent::Queue { messages });
+        }
+        removed
+    }
+
     pub(crate) async fn interrupt(&self) -> Result<()> {
         let _operation = self.operations.lock().await;
+        let core = self.core();
         let session = {
             let mut state = self.state.lock().unwrap();
-            state.queue.clear();
+            if !state.queue.is_empty() {
+                state.queue.clear();
+                state.emit(
+                    &core,
+                    ThreadEvent::Queue {
+                        messages: Vec::new(),
+                    },
+                );
+            }
             state.session.clone()
         };
         if let Some(session) = session {
@@ -843,12 +924,20 @@ impl Thread {
                 return Ok(());
             };
             state.generation += 1;
-            state.queue.clear();
+            if !state.queue.is_empty() {
+                state.queue.clear();
+                state.emit(
+                    &core,
+                    ThreadEvent::Queue {
+                        messages: Vec::new(),
+                    },
+                );
+            }
             state.cancel_pending(&core);
             state.summary.live = false;
             state.status = ThreadStatus::Idle;
             state.update_status();
-            state.changed(&core);
+            state.changed_without_bump(&core);
             (session, state.summary.id.clone())
         };
         session.detach().await;
@@ -940,6 +1029,7 @@ impl Timeline {
             raw_saved_at: None,
             pending: HashMap::new(),
             queue: VecDeque::new(),
+            queue_seq: 0,
             options: Vec::new(),
             commands: Vec::new(),
             usage: ThreadUsage::default(),
@@ -1049,12 +1139,20 @@ impl Timeline {
     }
 
     fn notice(&mut self, text: String) -> ThreadEvent {
+        self.notice_with_level(NoticeLevel::Error, text)
+    }
+
+    fn info_notice(&mut self, text: String) -> ThreadEvent {
+        self.notice_with_level(NoticeLevel::Info, text)
+    }
+
+    fn notice_with_level(&mut self, level: NoticeLevel, text: String) -> ThreadEvent {
         self.item(ItemDraft {
             id: format!("vetro:notice:{}", self.items.len()),
             ts: Some(now()),
             turn_id: None,
             kind: ItemKind::Notice {
-                level: NoticeLevel::Error,
+                level,
                 text,
                 detail: None,
             },
@@ -1115,6 +1213,10 @@ impl Timeline {
 
     fn changed(&mut self, core: &Core) {
         self.summary.updated_at = self.summary.updated_at.max(now());
+        self.changed_without_bump(core);
+    }
+
+    fn changed_without_bump(&mut self, core: &Core) {
         self.emit(
             core,
             ThreadEvent::Summary {

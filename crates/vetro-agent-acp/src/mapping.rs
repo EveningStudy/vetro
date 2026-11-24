@@ -298,7 +298,9 @@ impl Config {
                         category,
                         current_value,
                         choices: array(&value[state][choices_key])
-                            .filter_map(|choice| config_choice(choice, value_key, None))
+                            .filter_map(|choice| {
+                                config_choice(id, category, choice, value_key, None)
+                            })
                             .collect(),
                     },
                 );
@@ -366,13 +368,40 @@ impl Config {
     }
 }
 
-fn config_choice(value: &Value, key: &str, group: Option<&str>) -> Option<ConfigChoice> {
+fn is_danger_choice(option_id: &str, category: ConfigCategory, value: &str) -> bool {
+    let id_lower = option_id.to_ascii_lowercase();
+    let mode_like = category == ConfigCategory::Mode
+        || id_lower.contains("mode")
+        || id_lower.contains("perm")
+        || id_lower.contains("approval")
+        || id_lower.contains("sandbox");
+    if !mode_like {
+        return false;
+    }
+    let val = value.to_ascii_lowercase();
+    val.contains("bypass")
+        || val.contains("yolo")
+        || val.contains("full-access")
+        || val.contains("full_access")
+        || val.contains("danger")
+        || (id_lower.contains("approval") && val == "never")
+}
+
+fn config_choice(
+    option_id: &str,
+    category: ConfigCategory,
+    value: &Value,
+    key: &str,
+    group: Option<&str>,
+) -> Option<ConfigChoice> {
     let id = string(value, key).or_else(|| string(value, "id"))?;
+    let danger = is_danger_choice(option_id, category, &id);
     Some(ConfigChoice {
         name: string(value, "name").unwrap_or_else(|| id.clone()),
         value: id,
         description: string(value, "description"),
         group: group.map(str::to_owned),
+        danger,
     })
 }
 
@@ -393,6 +422,7 @@ fn config_option(value: &Value) -> Option<ConfigOption> {
                 name: choice.to_string(),
                 description: None,
                 group: None,
+                danger: false,
             })
             .collect();
         (current.to_string(), choices)
@@ -403,11 +433,11 @@ fn config_option(value: &Value) -> Option<ConfigOption> {
                     options
                         .iter()
                         .filter_map(|option| {
-                            config_choice(option, "value", choice["name"].as_str())
+                            config_choice(&id, category, option, "value", choice["name"].as_str())
                         })
                         .collect()
                 } else {
-                    config_choice(choice, "value", None)
+                    config_choice(&id, category, choice, "value", None)
                         .into_iter()
                         .collect::<Vec<_>>()
                 }

@@ -23,7 +23,6 @@ export function EmptyState() {
         <VetroMark className="size-9 opacity-90" />
         <div className="max-w-sm">
           <h1 className="text-base font-medium text-foreground">{t("empty.title")}</h1>
-          <p className="mt-1.5 text-sm text-muted-foreground">{t("empty.body")}</p>
         </div>
         <div className="flex items-center gap-3">
           <Button size="sm" onClick={() => actions.navigate({ view: "new", projectPath: null, agentId: null })}>

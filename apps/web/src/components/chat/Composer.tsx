@@ -1,7 +1,7 @@
 import { FileIcon, ImagePlusIcon, SlashIcon, SlidersHorizontalIcon, XIcon } from "lucide-react";
 import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { client } from "~/api/client";
-import type { ConfigOption, ContentBlock, SlashCommand, ThreadUsage } from "~/api/types";
+import type { ConfigOption, ContentBlock, QueuedMessage, SlashCommand, ThreadUsage } from "~/api/types";
 import { useT } from "~/i18n";
 import { formatTokens } from "~/lib/format";
 import { cn } from "~/lib/utils";
@@ -48,13 +48,14 @@ function readImage(file: File): Promise<Omit<Attachment, "id">> {
 
 let attachmentSeq = 0;
 
-/** The bar shows one model, one thinking level and one mode picker; the rest go behind a button. */
+/** The bar shows one model, one thinking level, one mode picker, and any active danger option; the rest go behind a button. */
 function partitionOptions(options: ConfigOption[]) {
   const modes = options.filter((option) => option.category === "mode");
   const picks = [
     options.find((option) => option.category === "model"),
     options.find((option) => option.category === "thought_level"),
     modes.find((option) => /permission/i.test(option.id)) ?? modes[0],
+    ...options.filter((option) => option.choices.some((choice) => choice.value === option.currentValue && choice.danger)),
   ];
   const chosen = new Set(picks.filter((option) => option !== undefined).map((option) => option.id));
   return {
@@ -68,10 +69,13 @@ export interface ComposerProps {
   agentName: string;
   cwd: string | null;
   options: ConfigOption[];
+  defaultOptions?: Record<string, string>;
   commands: SlashCommand[];
   onOptionChange: (optionId: string, value: string) => void;
   onSubmit: (content: ContentBlock[]) => Promise<void>;
   onStop?: () => void;
+  queue?: QueuedMessage[];
+  onCancelQueued?: (queueId: string) => void;
   running?: boolean;
   midTurnInput?: boolean;
   imageInput: boolean;
@@ -198,8 +202,40 @@ export function Composer(props: ComposerProps) {
   const contextUsed = props.usage?.lastTurn?.contextUsed ?? props.usage?.lastTurn?.input ?? null;
   const contextWindow = props.usage?.lastTurn?.contextWindow ?? props.usage?.total?.contextWindow ?? null;
 
+  const queuedPreview = (content: ContentBlock[]) => {
+    const text = content
+      .map((block) => (block.type === "text" ? block.text : block.type === "image" ? `[${t("item.image")}]` : `@${block.name ?? block.path}`))
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+    return text || "…";
+  };
+
   return (
     <div className="mx-auto w-full max-w-(--chat-content-max-width)">
+      {props.queue && props.queue.length > 0 ? (
+        <div className="mb-1.5 flex flex-col gap-1 px-1">
+          {props.queue.map((entry) => (
+            <div
+              key={entry.id}
+              className="flex items-center gap-2 rounded-lg border border-border/70 bg-card/75 px-2.5 py-1 text-xs text-muted-foreground"
+            >
+              <span className="shrink-0 font-medium text-foreground/80">{t("composer.queued")}</span>
+              <span className="min-w-0 flex-1 truncate">{queuedPreview(entry.content)}</span>
+              {props.onCancelQueued ? (
+                <button
+                  type="button"
+                  aria-label={t("composer.cancelQueued")}
+                  onClick={() => props.onCancelQueued?.(entry.id)}
+                  className="inline-flex size-4 shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+                >
+                  <XIcon className="size-3" />
+                </button>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
       <div
         className={cn(
           "relative isolate w-full rounded-2xl border border-black/8 bg-card/90 shadow-composer backdrop-blur-[var(--glass-blur)] transition-colors dark:border-white/[0.06] dark:bg-surface-raised/90 dark:shadow-[0_14px_32px_-18px_rgb(0_0_0/75%)]",
@@ -337,6 +373,7 @@ export function Composer(props: ComposerProps) {
               <OptionPicker
                 key={option.id}
                 option={option}
+                defaultValue={props.defaultOptions?.[option.id]}
                 compact={option.category !== "model"}
                 disabled={props.readOnly}
                 onChange={(value) => props.onOptionChange(option.id, value)}
@@ -355,7 +392,12 @@ export function Composer(props: ComposerProps) {
                       <span className="min-w-0 truncate text-sm text-muted-foreground" title={option.description ?? option.name}>
                         {option.name}
                       </span>
-                      <OptionPicker option={option} disabled={props.readOnly} onChange={(value) => props.onOptionChange(option.id, value)} />
+                      <OptionPicker
+                        option={option}
+                        defaultValue={props.defaultOptions?.[option.id]}
+                        disabled={props.readOnly}
+                        onChange={(value) => props.onOptionChange(option.id, value)}
+                      />
                     </div>
                   ))}
                 </PopoverPopup>

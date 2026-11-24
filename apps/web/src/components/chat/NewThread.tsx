@@ -1,11 +1,11 @@
-import { ChevronDownIcon, KeyRoundIcon } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { ChevronDownIcon, KeyRoundIcon, SlidersHorizontalIcon } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { client } from "~/api/client";
 import type { AgentInfo, ConfigOption, SlashCommand } from "~/api/types";
 import { useT } from "~/i18n";
 import { shortVersion } from "~/lib/format";
 import { cn } from "~/lib/utils";
-import { getPrefs, savePrefs } from "~/state/prefs";
+import { getPrefs, rememberAgentOption, resolveSavedAgentOptions, savePrefs, usePrefs } from "~/state/prefs";
 import { actions, useStore } from "~/state/store";
 import { errorMessage, toast } from "~/state/toast";
 import { AgentIcon } from "../AgentIcon";
@@ -40,6 +40,8 @@ export function NewThread({ projectPath, agentId: routeAgent }: { projectPath: s
   const [needsSession, setNeedsSession] = useState(false);
   const [loadingOptions, setLoadingOptions] = useState(false);
   const [browsing, setBrowsing] = useState(false);
+  const bypassMemoryScope = usePrefs((s) => s.bypassMemoryScope);
+  const reqSeqRef = useRef(0);
 
   useEffect(() => {
     setCwd(projectPath);
@@ -58,33 +60,74 @@ export function NewThread({ projectPath, agentId: routeAgent }: { projectPath: s
     return [clean[index]!, ...clean.slice(0, index), ...clean.slice(index + 1)];
   }, [projects, dataDir, lastProject]);
   const effectiveCwd = cwd;
+  const realProjectCwd = effectiveCwd && !isScratchOrTempPath(effectiveCwd) && !isQuickChatPath(effectiveCwd, dataDir) ? effectiveCwd : null;
+
+  const hydrateLoadedOptions = (
+    targetAgentId: string,
+    targetCwd: string | null,
+    targetRealCwd: string | null,
+    result: { options: ConfigOption[]; commands: SlashCommand[]; needsSession?: boolean },
+    seq: number,
+  ) => {
+    setBaseOptions(result.options);
+    const baseDefaults = Object.fromEntries(result.options.map((option) => [option.id, option.currentValue]));
+    setDefaults(baseDefaults);
+    setCommands(result.commands);
+    setNeedsSession(!!result.needsSession);
+    const saved = resolveSavedAgentOptions(targetAgentId, targetRealCwd, result.options, bypassMemoryScope);
+    setOverrides(saved);
+
+    const modelOption = result.options.find((option) => option.category === "model");
+    const savedModel = modelOption ? saved[modelOption.id] : undefined;
+    if (!modelOption || !savedModel || savedModel === modelOption.currentValue) return;
+
+    client()
+      .request("agents.options", {
+        agentId: targetAgentId,
+        ...(targetCwd ? { cwd: targetCwd } : {}),
+        selected: { [modelOption.id]: savedModel },
+      })
+      .then((modelResult) => {
+        if (reqSeqRef.current !== seq || modelResult.options.length === 0) return;
+        setBaseOptions(modelResult.options);
+        setDefaults((current) => {
+          const nextDefaults = { ...current };
+          for (const option of modelResult.options) {
+            if (option.category !== "model") nextDefaults[option.id] = option.currentValue;
+          }
+          return nextDefaults;
+        });
+        const mergedSaved = resolveSavedAgentOptions(targetAgentId, targetRealCwd, modelResult.options, bypassMemoryScope);
+        setOverrides({ ...mergedSaved, [modelOption.id]: savedModel });
+      })
+      .catch(() => {});
+  };
 
   useEffect(() => {
+    const seq = ++reqSeqRef.current;
     if (!agent || agent.auth.state === "required") {
       setBaseOptions([]);
+      setDefaults({});
       setCommands([]);
+      setOverrides({});
+      setNeedsSession(false);
       return;
     }
-    let cancelled = false;
     setLoadingOptions(true);
+    setOverrides({});
     client()
       .request("agents.options", { agentId: agent.id, ...(effectiveCwd ? { cwd: effectiveCwd } : {}) })
       .then((result) => {
-        if (cancelled) return;
-        setBaseOptions(result.options);
-        setDefaults(Object.fromEntries(result.options.map((option) => [option.id, option.currentValue])));
-        setCommands(result.commands);
-        setNeedsSession(!!result.needsSession);
+        if (reqSeqRef.current !== seq) return;
+        hydrateLoadedOptions(agent.id, effectiveCwd, realProjectCwd, result, seq);
       })
       .catch(() => {
-        if (!cancelled) setBaseOptions([]);
+        if (reqSeqRef.current === seq) setBaseOptions([]);
       })
-      .finally(() => !cancelled && setLoadingOptions(false));
-    setOverrides({});
-    return () => {
-      cancelled = true;
-    };
-  }, [agent?.id, agent?.auth.state, effectiveCwd]);
+      .finally(() => {
+        if (reqSeqRef.current === seq) setLoadingOptions(false);
+      });
+  }, [agent?.id, agent?.auth.state, effectiveCwd, realProjectCwd, bypassMemoryScope]);
 
   const options = useMemo(
     () =>
@@ -97,24 +140,30 @@ export function NewThread({ projectPath, agentId: routeAgent }: { projectPath: s
 
   const prepareOptions = () => {
     if (!agent) return;
+    const seq = ++reqSeqRef.current;
     setLoadingOptions(true);
     client()
       .request("agents.options", { agentId: agent.id, ...(effectiveCwd ? { cwd: effectiveCwd } : {}), prepare: true })
       .then((result) => {
-        setBaseOptions(result.options);
-        setDefaults(Object.fromEntries(result.options.map((option) => [option.id, option.currentValue])));
-        setCommands(result.commands);
-        setNeedsSession(!!result.needsSession);
+        if (reqSeqRef.current !== seq) return;
+        hydrateLoadedOptions(agent.id, effectiveCwd, realProjectCwd, result, seq);
       })
       .catch((error) => toast.error(errorMessage(error)))
-      .finally(() => setLoadingOptions(false));
+      .finally(() => {
+        if (reqSeqRef.current === seq) setLoadingOptions(false);
+      });
   };
 
   const changeOption = (optionId: string, value: string) => {
     const next = { ...overrides, [optionId]: value };
     setOverrides(next);
     const changed = baseOptions.find((option) => option.id === optionId);
-    if (!agent || changed?.category !== "model") return;
+    if (!agent || !changed) return;
+    const modelOption = options.find((option) => option.category === "model");
+    const activeModel = changed.category === "model" ? value : modelOption?.currentValue;
+    rememberAgentOption(agent.id, realProjectCwd, changed, value, defaults[optionId], activeModel, bypassMemoryScope);
+    if (changed.category !== "model") return;
+    const seq = ++reqSeqRef.current;
     setLoadingOptions(true);
     client()
       .request("agents.options", {
@@ -124,25 +173,37 @@ export function NewThread({ projectPath, agentId: routeAgent }: { projectPath: s
         prepare: true,
       })
       .then((result) => {
+        if (reqSeqRef.current !== seq) return;
         setBaseOptions(result.options);
         setDefaults((current) => {
           const nextDefaults = { ...current };
           for (const option of result.options) {
-            if (!(option.id in nextDefaults)) nextDefaults[option.id] = option.currentValue;
+            if (option.category !== "model" || !(option.id in nextDefaults)) nextDefaults[option.id] = option.currentValue;
           }
           return nextDefaults;
         });
+        const rememberedForModel = resolveSavedAgentOptions(agent.id, realProjectCwd, result.options, bypassMemoryScope);
         setOverrides((current) => {
           const kept: Record<string, string> = {};
           for (const [id, chosen] of Object.entries(current)) {
             const option = result.options.find((o) => o.id === id);
             if (option?.choices.some((choice) => choice.value === chosen)) kept[id] = chosen;
           }
+          for (const option of result.options) {
+            if (option.category === "thought_level") {
+              const savedLevel = rememberedForModel[option.id];
+              if (savedLevel) kept[option.id] = savedLevel;
+              else delete kept[option.id];
+            }
+          }
+          kept[optionId] = value;
           return kept;
         });
       })
       .catch((error) => toast.error(errorMessage(error)))
-      .finally(() => setLoadingOptions(false));
+      .finally(() => {
+        if (reqSeqRef.current === seq) setLoadingOptions(false);
+      });
   };
 
   const chooseProject = async (path: string) => {
@@ -174,7 +235,6 @@ export function NewThread({ projectPath, agentId: routeAgent }: { projectPath: s
       <div className="flex min-h-0 flex-1 flex-col justify-center overflow-y-auto px-(--workspace-gutter) pb-[calc(1rem+env(safe-area-inset-bottom))] max-sm:justify-end">
         <div className="mx-auto mb-6 w-full max-w-(--chat-content-max-width) text-center max-sm:mb-4 max-sm:text-left">
           <h1 className="text-2xl font-semibold tracking-tight text-foreground max-sm:text-xl">{t("new.title")}</h1>
-          <p className="mt-1.5 text-sm text-muted-foreground">{t("new.subtitle")}</p>
         </div>
         {needsSignIn && agent ? <SignInCard agent={agent} /> : null}
         <Composer
@@ -182,6 +242,7 @@ export function NewThread({ projectPath, agentId: routeAgent }: { projectPath: s
           agentName={agentName}
           cwd={effectiveCwd}
           options={options}
+          defaultOptions={defaults}
           commands={commands}
           onOptionChange={changeOption}
           onSubmit={async (content) => {
@@ -191,27 +252,26 @@ export function NewThread({ projectPath, agentId: routeAgent }: { projectPath: s
               const option = options.find((o) => o.id === id);
               if (option?.currentValue === value && value !== defaults[id]) changed[id] = value;
             }
-            const realProject = effectiveCwd && !isScratchOrTempPath(effectiveCwd) && !isQuickChatPath(effectiveCwd, dataDir);
-            savePrefs({ lastAgent: agent.id, ...(realProject ? { lastProject: effectiveCwd } : {}) });
+            savePrefs({ lastAgent: agent.id, ...(realProjectCwd ? { lastProject: realProjectCwd } : {}) });
             await actions.start(agent.id, effectiveCwd ?? "", content, changed);
           }}
           imageInput={agent?.capabilities.imageInput ?? false}
           readOnly={!agent}
           sendBlocked={needsSignIn ? t("composer.needsSignIn") : unknownFolder ? t("remote.knownProject") : null}
-          placeholder={t("composer.placeholderNew")}
+          placeholder={t("composer.placeholderNew", { agent: agentName || t("composer.agent") })}
           autoFocus
           leading={
             <>
               <AgentPicker agents={agents} current={agent} onChange={setAgentId} />
               {loadingOptions ? <Spinner className="mx-1.5 size-3.5 text-muted-foreground" /> : null}
-              {needsSession && !loadingOptions && agent ? (
+              {needsSession && options.length === 0 && !loadingOptions && agent ? (
                 <button
                   type="button"
                   onClick={prepareOptions}
-                  title={t("new.loadOptionsHint", { agent: agent.name })}
-                  className="h-7 shrink-0 rounded-md px-2 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+                  className={composerControlClass}
                 >
-                  {t("new.loadOptions", { agent: agent.name })}
+                  <SlidersHorizontalIcon />
+                  <span>{t("composer.loadOptions")}</span>
                 </button>
               ) : null}
             </>

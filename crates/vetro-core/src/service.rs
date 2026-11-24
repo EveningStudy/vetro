@@ -43,6 +43,7 @@ pub struct Core {
     detection_refresh: Mutex<()>,
     pub(crate) history_requested: Notify,
     pub(crate) project_refresh_requested: AtomicBool,
+    shutting_down: AtomicBool,
 }
 
 impl Core {
@@ -65,7 +66,12 @@ impl Core {
             detection_refresh: Mutex::new(()),
             history_requested: Notify::new(),
             project_refresh_requested: AtomicBool::new(false),
+            shutting_down: AtomicBool::new(false),
         })
+    }
+
+    pub(crate) fn is_shutting_down(&self) -> bool {
+        self.shutting_down.load(Ordering::Acquire)
     }
 
     pub fn theme_watch(&self) -> watch::Receiver<WindowTheme> {
@@ -171,6 +177,7 @@ impl Core {
     }
 
     pub async fn shutdown(&self) {
+        self.shutting_down.store(true, Ordering::Release);
         let mut tasks = tokio::task::JoinSet::new();
         for thread in self.sessions.snapshot() {
             tasks.spawn(async move { thread.shutdown().await });
@@ -379,6 +386,18 @@ impl Core {
         result
     }
 
+    fn option_cache_cwd(&self, cwd: Option<&Path>) -> Option<std::path::PathBuf> {
+        let cwd = cwd?;
+        let normalized = files::normalize(cwd);
+        if let Ok(scratch) = self.home.scratch_root() {
+            let scratch = files::normalize(&scratch);
+            if normalized == scratch || normalized.starts_with(&scratch) {
+                return Some(scratch);
+            }
+        }
+        Some(normalized)
+    }
+
     pub(crate) async fn agent_options(
         &self,
         params: AgentOptionsParams,
@@ -395,15 +414,54 @@ impl Core {
             Some(path) => Some(files::directory(Path::new(path))?),
             None => Some(self.home.scratch_root()?),
         };
+        let cache_cwd = self.option_cache_cwd(cwd.as_deref());
         let info = self.agent_info(agent.id()).await?;
         let selected = params.selected.unwrap_or_default();
         let version = info.version;
-        let key = option_key(agent.id(), version.as_deref(), cwd.as_deref(), &selected)?;
+        let key = option_key(
+            agent.id(),
+            version.as_deref(),
+            cache_cwd.as_deref(),
+            &selected,
+        )?;
         if let Some(cached) = self
             .home
             .read_state(|state| state.options.get(&key).cloned())
         {
             return Ok(cached);
+        }
+        // Two-tier lookup: fall back to any cached (agent, version, *, selected) snapshot from
+        // another directory so switching projects does not require clicking "Load options" again.
+        if params.prepare != Some(true) || !selected.is_empty() {
+            let fallback = self.home.read_state(|state| {
+                state
+                    .options
+                    .iter()
+                    .filter_map(|(stored_key, value)| {
+                        let (stored_agent, stored_version, _stored_cwd, stored_selected): (
+                            String,
+                            Option<String>,
+                            Option<String>,
+                            BTreeMap<String, String>,
+                        ) = serde_json::from_str(stored_key).ok()?;
+                        if stored_agent != agent.id()
+                            || stored_version != version
+                            || stored_selected != selected
+                            || value.options.is_empty()
+                        {
+                            return None;
+                        }
+                        Some(AgentOptionsResult {
+                            options: value.options.clone(),
+                            commands: Vec::new(),
+                            needs_session: false,
+                        })
+                    })
+                    .next()
+            });
+            if let Some(cached) = fallback {
+                return Ok(cached);
+            }
         }
         if agent.options_need_session() && params.prepare != Some(true) {
             return Ok(AgentOptionsResult {
@@ -487,7 +545,13 @@ impl Core {
         options: vetro_agent_api::AgentOptions,
     ) -> Result<()> {
         let version = self.agent_info(agent_id).await?.version;
-        let key = option_key(agent_id, version.as_deref(), Some(cwd), &BTreeMap::new())?;
+        let cache_cwd = self.option_cache_cwd(Some(cwd));
+        let key = option_key(
+            agent_id,
+            version.as_deref(),
+            cache_cwd.as_deref(),
+            &BTreeMap::new(),
+        )?;
         self.home.change_state(|state| {
             state.options.insert(
                 key,

@@ -31,13 +31,49 @@ pub enum Id {
     Null,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, thiserror::Error)]
-#[error("JSON-RPC error {code}: {message}")]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RemoteError {
     pub code: i64,
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<Value>,
+}
+
+impl std::fmt::Display for RemoteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "JSON-RPC error {}: {}", self.code, self.message)?;
+        if let Some(detail) = self.data.as_ref().and_then(format_error_data) {
+            if !self.message.contains(&detail) {
+                write!(f, " ({detail})")?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for RemoteError {}
+
+fn format_error_data(value: &Value) -> Option<String> {
+    let raw = match value {
+        Value::Null => return None,
+        Value::String(text) => text.trim().to_owned(),
+        other => other.to_string(),
+    };
+    let clean: String = raw
+        .chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect();
+    let clean = clean.split_whitespace().collect::<Vec<_>>().join(" ");
+    if clean.is_empty() {
+        return None;
+    }
+    const MAX: usize = 200;
+    if clean.chars().count() > MAX {
+        let truncated: String = clean.chars().take(MAX).collect();
+        Some(format!("{truncated}…"))
+    } else {
+        Some(clean)
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -279,4 +315,26 @@ fn complete(pending: &PendingMap, id: u64, envelope: Value) {
         };
         sender(result);
     }
+}
+
+#[cfg(test)]
+#[test]
+fn remote_error_display_includes_sanitized_data() {
+    let error = RemoteError {
+        code: -32602,
+        message: "Invalid params".into(),
+        data: Some(json!(
+            "Invalid value 'max' for config option 'thought_level'"
+        )),
+    };
+    assert_eq!(
+        error.to_string(),
+        "JSON-RPC error -32602: Invalid params (Invalid value 'max' for config option 'thought_level')"
+    );
+    let plain = RemoteError {
+        code: -32601,
+        message: "Method not found".into(),
+        data: None,
+    };
+    assert_eq!(plain.to_string(), "JSON-RPC error -32601: Method not found");
 }

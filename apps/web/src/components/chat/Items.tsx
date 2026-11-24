@@ -11,6 +11,7 @@ import {
   FilePenIcon,
   FileTextIcon,
   FolderInputIcon,
+  GitForkIcon,
   GlobeIcon,
   InfoIcon,
   ListTodoIcon,
@@ -31,6 +32,7 @@ import { cn, copyText } from "~/lib/utils";
 import { actions, useStore } from "~/state/store";
 import { AgentIcon } from "../AgentIcon";
 import { Button } from "../ui/button";
+import { Tip } from "../ui/overlay";
 import { Kbd, Spinner } from "../ui/primitives";
 import { Markdown } from "./Markdown";
 import { DiffBlock, JsonBlock, TerminalBlock, TextBlock, diffStats } from "./ToolDetails";
@@ -481,19 +483,83 @@ export const NoticeRow = memo(function NoticeRow({ item }: { item: ItemOf<"notic
   );
 });
 
-export const TurnEnd = memo(function TurnEnd({ item }: { item: ItemOf<"turn_end"> }) {
+export const TurnEnd = memo(function TurnEnd({
+  item,
+  answerText,
+  isLast,
+  onFork,
+}: {
+  item: ItemOf<"turn_end">;
+  answerText?: string;
+  isLast?: boolean;
+  onFork?: () => void;
+}) {
   const t = useT();
-  const parts: string[] = [];
-  if (item.stopReason !== "end_turn") parts.push(t(`item.stop.${item.stopReason}`));
-  if (item.durationMs != null) parts.push(t("item.turnEnd", { duration: formatDuration(item.durationMs) }));
-  if (item.usage && (item.usage.input != null || item.usage.output != null))
-    parts.push(t("item.turnTokens", { input: formatTokens(item.usage.input), output: formatTokens(item.usage.output) }));
-  if (parts.length === 0) return null;
+  const [copied, setCopied] = useState(false);
+  const stopLabel = item.stopReason !== "end_turn" ? t(`item.stop.${item.stopReason}`) : null;
+  const duration = item.durationMs != null ? t("item.turnEnd", { duration: formatDuration(item.durationMs) }) : null;
+  const tokens =
+    item.usage && (item.usage.input != null || item.usage.output != null)
+      ? t("item.turnTokens", { input: formatTokens(item.usage.input), output: formatTokens(item.usage.output) })
+      : null;
+  const hasCopy = !!answerText?.trim();
+  if (!stopLabel && !duration && !tokens && !hasCopy && !onFork) return null;
+
+  const meta = duration ?? tokens;
   return (
-    <div className={cn("flex items-center gap-3 py-1 text-xs tabular-nums", item.stopReason === "error" ? "text-error-foreground" : "text-muted-foreground")}>
-      <span className="h-px flex-1 bg-border" />
-      <span>{parts.join(" · ")}</span>
-      <span className="h-px flex-1 bg-border" />
+    <div className="group/turn-footer flex items-center gap-2 px-0.5 pt-0.5 text-[11px] tabular-nums text-muted-foreground/75">
+      {stopLabel ? (
+        <span className={cn("font-medium", item.stopReason === "error" ? "text-error-foreground" : "text-warning-foreground")}>
+          {stopLabel}
+        </span>
+      ) : null}
+      {hasCopy || onFork ? (
+        <div
+          className={cn(
+            "flex items-center gap-0.5 transition-opacity focus-within:opacity-100 group-hover/turn-footer:opacity-100 pointer-coarse:opacity-100",
+            isLast ? "opacity-75 hover:opacity-100" : "opacity-0",
+          )}
+        >
+          {hasCopy ? (
+            <Tip label={copied ? t("common.copied") : t("item.copyAnswer")}>
+              <button
+                type="button"
+                aria-label={t("item.copyAnswer")}
+                className="inline-flex size-6 cursor-pointer items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+                onClick={() => {
+                  void copyText(answerText!).then(() => {
+                    setCopied(true);
+                    setTimeout(() => setCopied(false), 1200);
+                  });
+                }}
+              >
+                {copied ? <CheckIcon className="size-3.5 text-success" /> : <CopyIcon className="size-3.5" />}
+              </button>
+            </Tip>
+          ) : null}
+          {onFork ? (
+            <Tip label={t("item.forkFromHere")}>
+              <button
+                type="button"
+                aria-label={t("item.forkFromHere")}
+                className="inline-flex size-6 cursor-pointer items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+                onClick={onFork}
+              >
+                <GitForkIcon className="size-3.5" />
+              </button>
+            </Tip>
+          ) : null}
+        </div>
+      ) : null}
+      {meta ? (
+        duration && tokens ? (
+          <Tip label={tokens}>
+            <span className="cursor-default select-none">{duration}</span>
+          </Tip>
+        ) : (
+          <span className="select-none">{meta}</span>
+        )
+      ) : null}
     </div>
   );
 });

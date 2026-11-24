@@ -180,6 +180,7 @@ impl Agent for ClaudeAgent {
                 mid_turn_input: true,
                 resume: true,
                 list_sessions: true,
+                fork: vetro_proto::ForkCapabilities::default(),
             },
             error: error.map(|error| error.message.clone()),
         }

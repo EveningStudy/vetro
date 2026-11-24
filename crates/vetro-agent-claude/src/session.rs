@@ -522,6 +522,7 @@ impl State {
                         name: string(model, "displayName").unwrap_or(value).into(),
                         description: string(model, "description").map(str::to_owned),
                         group: None,
+                        danger: false,
                     })
                 })
                 .collect();
@@ -579,7 +580,13 @@ impl State {
                 "auto",
                 "bypassPermissions",
             ];
-            let choices = modes.into_iter().map(choice).collect();
+            let choices = modes
+                .into_iter()
+                .map(|value| ConfigChoice {
+                    danger: value == "bypassPermissions",
+                    ..choice(value)
+                })
+                .collect();
             options.push(option(
                 "mode",
                 "Permission mode",
@@ -958,6 +965,7 @@ fn choice(value: &str) -> ConfigChoice {
         name: value.into(),
         description: None,
         group: None,
+        danger: false,
     }
 }
 

@@ -189,6 +189,13 @@ async fn call(
                 .await?;
             empty()
         }
+        "threads.cancelQueued" => {
+            let params: ThreadQueueCancelParams = parse(params)?;
+            core.thread(&params.thread_id)
+                .await?
+                .cancel_queued(&params.queue_id);
+            empty()
+        }
         "threads.interrupt" => {
             let params: ThreadIdParams = parse(params)?;
             core.thread(&params.thread_id).await?.interrupt().await?;
@@ -263,6 +270,18 @@ async fn call(
                     .await
                     .map_err(internal)??,
             )
+        }
+        "fs.mkdir" => {
+            client.desktop()?;
+            let params: FsMkdirParams = parse(params)?;
+            let created = tokio::task::spawn_blocking(move || {
+                files::mkdir(Path::new(&params.parent), &params.name)
+            })
+            .await
+            .map_err(internal)??;
+            output(FsMkdirResult {
+                path: created.to_string_lossy().into_owned(),
+            })
         }
         "workspace.gitStatus" => {
             let params: WorkspacePathParams = parse(params)?;

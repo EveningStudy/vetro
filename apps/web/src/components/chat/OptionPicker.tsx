@@ -1,4 +1,4 @@
-import { BrainIcon, CheckIcon, ChevronDownIcon, CpuIcon, SearchIcon, ShieldIcon, SlidersHorizontalIcon } from "lucide-react";
+import { BrainIcon, CheckIcon, ChevronDownIcon, CpuIcon, RotateCcwIcon, SearchIcon, ShieldAlertIcon, ShieldIcon, SlidersHorizontalIcon } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import type { ConfigOption } from "~/api/types";
 import { useT } from "~/i18n";
@@ -6,6 +6,7 @@ import { cn } from "~/lib/utils";
 import {
   Menu,
   MenuGroupLabel,
+  MenuItem,
   MenuPopup,
   MenuRadioGroup,
   MenuRadioItem,
@@ -58,30 +59,40 @@ function sections(choices: Choice[]) {
 export function OptionPicker({
   option,
   onChange,
+  defaultValue,
   disabled,
   compact,
 }: {
   option: ConfigOption;
   onChange: (value: string) => void;
+  defaultValue?: string;
   disabled?: boolean;
   compact?: boolean;
 }) {
+  const t = useT();
   const choices = useMemo(() => prepare(option), [option]);
   const current = choices.find((choice) => choice.value === option.currentValue);
-  const Icon = categoryIcons[option.category];
+  const danger = !!current?.danger;
+  const Icon = danger ? ShieldAlertIcon : categoryIcons[option.category];
   const label = current?.label || option.name;
+  const triggerClass = cn(
+    composerControlClass,
+    danger && "border-warning/40 bg-warning-surface/70 text-warning-foreground hover:bg-warning-surface hover:text-warning-foreground [&_svg:not([class*='text-'])]:text-warning-foreground",
+  );
   const trigger = (
     <>
-      {option.category !== "model" || compact ? <Icon /> : null}
-      <span className={cn(compact && "max-sm:hidden", "max-w-44 truncate", !current && "text-muted-foreground")}>{label}</span>
+      {option.category !== "model" || compact || danger ? <Icon /> : null}
+      <span className={cn(compact && !danger && "max-sm:hidden", "max-w-44 truncate", !current && "text-muted-foreground")}>{label}</span>
       <ChevronDownIcon className="-me-1 size-3 opacity-70" />
     </>
   );
   if (choices.length > SEARCHABLE_AFTER)
-    return <SearchablePicker option={option} choices={choices} onChange={onChange} disabled={disabled} trigger={trigger} />;
+    return <SearchablePicker option={option} choices={choices} onChange={onChange} disabled={disabled} trigger={trigger} triggerClass={triggerClass} />;
+  const safeDefault = defaultValue ?? choices.find((choice) => !choice.danger)?.value;
+  const resettable = danger && !!safeDefault && safeDefault !== option.currentValue && choices.some((choice) => choice.value === safeDefault);
   return (
     <Menu>
-      <MenuTrigger disabled={disabled} className={composerControlClass} aria-label={option.name} title={option.description ?? option.name}>
+      <MenuTrigger disabled={disabled} className={triggerClass} aria-label={option.name} title={option.description ?? option.name}>
         {trigger}
       </MenuTrigger>
       <MenuPopup side="top" align="start" className="w-64">
@@ -94,7 +105,10 @@ export function OptionPicker({
               {list.map((choice) => (
                 <MenuRadioItem key={choice.value} value={choice.value} className="items-start py-1.5">
                   <span className="flex min-w-0 flex-col">
-                    <span className="truncate">{choice.label}</span>
+                    <span className={cn("inline-flex items-center gap-1.5 truncate", choice.danger && "text-warning-foreground")}>
+                      {choice.danger ? <ShieldAlertIcon className="size-3.5 shrink-0 text-warning-foreground" /> : null}
+                      <span className="truncate">{choice.label}</span>
+                    </span>
                     {choice.description ? <span className="text-xs text-muted-foreground">{choice.description}</span> : null}
                   </span>
                 </MenuRadioItem>
@@ -102,6 +116,15 @@ export function OptionPicker({
             </div>
           ))}
         </MenuRadioGroup>
+        {resettable ? (
+          <>
+            <MenuSeparator />
+            <MenuItem onClick={() => onChange(safeDefault!)}>
+              <RotateCcwIcon />
+              {t("composer.resetDefault")}
+            </MenuItem>
+          </>
+        ) : null}
       </MenuPopup>
     </Menu>
   );
@@ -113,12 +136,14 @@ function SearchablePicker({
   onChange,
   disabled,
   trigger,
+  triggerClass,
 }: {
   option: ConfigOption;
   choices: Choice[];
   onChange: (value: string) => void;
   disabled?: boolean;
   trigger: React.ReactNode;
+  triggerClass: string;
 }) {
   const t = useT();
   const [open, setOpen] = useState(false);
@@ -150,7 +175,7 @@ function SearchablePicker({
         }
       }}
     >
-      <PopoverTrigger disabled={disabled} className={composerControlClass} aria-label={option.name} title={option.description ?? option.name}>
+      <PopoverTrigger disabled={disabled} className={triggerClass} aria-label={option.name} title={option.description ?? option.name}>
         {trigger}
       </PopoverTrigger>
       <PopoverPopup side="top" align="start" className="w-72" initialFocus={inputRef}>

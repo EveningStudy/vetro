@@ -18,12 +18,14 @@ import { useT } from "~/i18n";
 import { relativeTime, shortVersion } from "~/lib/format";
 import { cn } from "~/lib/utils";
 import {
+  type BypassMemoryScope,
   type ChatWidth,
   type FontScale,
   type FontStyle,
   type LanguagePref,
   type SidebarScope,
   type ThemePref,
+  setBypassMemoryScope,
   setChatWidth,
   setFontScale,
   setFontStyle,
@@ -161,6 +163,7 @@ function AgentsSection() {
   const { settings, update } = useSettings();
   const [refreshing, setRefreshing] = useState(false);
   const remoteClient = useStore((s) => s.app?.remoteClient ?? false);
+  const bypassMemoryScope = usePrefs((s) => s.bypassMemoryScope);
   return (
     <section>
       <SectionTitle
@@ -190,6 +193,18 @@ function AgentsSection() {
           <AgentCard key={agent.id} agent={agent} settings={settings?.agents[agent.id]} custom={settings?.customAcpAgents.some((c) => c.id === agent.id) ?? false} onSave={update} readOnly={remoteClient} />
         ))}
       </div>
+      <Group className="mt-4">
+        <Row label={t("settings.bypassMemory")} hint={t("settings.bypassMemoryHint")}>
+          <Segmented<BypassMemoryScope>
+            value={bypassMemoryScope}
+            onChange={setBypassMemoryScope}
+            options={[
+              { value: "project", label: t("settings.bypassMemory.project") },
+              { value: "global", label: t("settings.bypassMemory.global") },
+            ]}
+          />
+        </Row>
+      </Group>
       <CustomAgents
         settings={settings}
         readOnly={remoteClient}

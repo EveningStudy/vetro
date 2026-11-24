@@ -70,6 +70,16 @@ pub struct AgentAuth {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
+pub struct ForkCapabilities {
+    /// Agent supports forking from the latest state of a session.
+    pub whole: bool,
+    /// Agent supports forking from a specific turn id.
+    pub at_turn: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub struct AgentCapabilities {
     pub image_input: bool,
     /// A prompt sent while a turn is running steers that turn instead of queueing.
@@ -78,6 +88,8 @@ pub struct AgentCapabilities {
     pub resume: bool,
     /// The agent can list its own stored sessions.
     pub list_sessions: bool,
+    #[serde(default)]
+    pub fork: ForkCapabilities,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -116,6 +128,9 @@ pub struct ConfigChoice {
     pub name: String,
     pub description: Option<String>,
     pub group: Option<String>,
+    /// True when this choice relaxes approval or filesystem safeguards (e.g. bypass / full access).
+    #[serde(default)]
+    pub danger: bool,
 }
 
 /// A session setting reported by the agent (model, mode, thinking level, ...). The UI renders
@@ -585,6 +600,14 @@ pub struct ThreadUsage {
     pub rate_limits: Vec<RateLimit>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct QueuedMessage {
+    pub id: String,
+    pub content: Vec<ContentBlock>,
+}
+
 /// Everything about one thread that changes while it is open.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(
@@ -617,6 +640,9 @@ pub enum ThreadEvent {
     },
     Usage {
         usage: ThreadUsage,
+    },
+    Queue {
+        messages: Vec<QueuedMessage>,
     },
 }
 

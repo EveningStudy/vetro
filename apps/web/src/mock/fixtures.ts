@@ -31,7 +31,7 @@ export const agents: AgentInfo[] = [
     path: `${HOME}\\.local\\bin\\claude.exe`,
     version: "2.1.31",
     auth: { state: "ok", methods: [], account: "Claude Pro" },
-    capabilities: { imageInput: true, midTurnInput: false, resume: true, listSessions: true },
+    capabilities: { imageInput: true, midTurnInput: false, resume: true, listSessions: true, fork: { whole: true, atTurn: false } },
     error: null,
   },
   {
@@ -42,7 +42,7 @@ export const agents: AgentInfo[] = [
     path: `${HOME}\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\vendor\\x86_64-pc-windows-msvc\\codex\\codex.exe`,
     version: "0.98.0",
     auth: { state: "ok", methods: [], account: "ChatGPT Plus", provider: "litellm", endpoint: "http://127.0.0.1:4000" },
-    capabilities: { imageInput: true, midTurnInput: true, resume: true, listSessions: true },
+    capabilities: { imageInput: true, midTurnInput: true, resume: true, listSessions: true, fork: { whole: true, atTurn: true } },
     error: null,
   },
   {
@@ -61,7 +61,7 @@ export const agents: AgentInfo[] = [
       ],
       account: null,
     },
-    capabilities: { imageInput: true, midTurnInput: false, resume: true, listSessions: true },
+    capabilities: { imageInput: true, midTurnInput: false, resume: true, listSessions: true, fork: { whole: true, atTurn: false } },
     error: null,
   },
   {
@@ -72,7 +72,7 @@ export const agents: AgentInfo[] = [
     path: "D:\\Software\\Devin\\resources\\app\\extensions\\windsurf\\devin\\bin\\devin.exe",
     version: "2026.11.4",
     auth: { state: "ok", methods: [{ id: "devin-browser", name: "Sign in with browser", description: null }], account: "Devin Max" },
-    capabilities: { imageInput: true, midTurnInput: false, resume: true, listSessions: true },
+    capabilities: { imageInput: true, midTurnInput: false, resume: true, listSessions: true, fork: { whole: true, atTurn: false } },
     error: null,
   },
   {
@@ -83,13 +83,13 @@ export const agents: AgentInfo[] = [
     path: null,
     version: null,
     auth: { state: "unknown", methods: [], account: null },
-    capabilities: { imageInput: false, midTurnInput: false, resume: false, listSessions: false },
+    capabilities: { imageInput: false, midTurnInput: false, resume: false, listSessions: false, fork: { whole: false, atTurn: false } },
     error: "Command not found: goose",
   },
 ];
 
-function choice(value: string, name: string, description: string | null = null, group: string | null = null) {
-  return { value, name, description, group };
+function choice(value: string, name: string, description: string | null = null, group: string | null = null, danger = false) {
+  return { value, name, description, group, danger };
 }
 
 export const agentOptions: Record<string, { options: ConfigOption[]; commands: SlashCommand[] }> = {
@@ -124,7 +124,7 @@ export const agentOptions: Record<string, { options: ConfigOption[]; commands: S
         choices: [
           choice("read-only", "Read only", "Asks before editing files or running commands"),
           choice("auto", "Auto", "Edits and runs commands in the workspace"),
-          choice("full-access", "Full access", "No sandbox, no approvals"),
+          choice("full-access", "Full access", "No sandbox, no approvals", null, true),
         ],
       },
       {
@@ -136,7 +136,7 @@ export const agentOptions: Record<string, { options: ConfigOption[]; commands: S
         choices: [
           choice("read-only", "Read only", "The agent can only read files"),
           choice("workspace-write", "Workspace write", "Edits stay inside the workspace"),
-          choice("danger-full-access", "Full access", "No sandbox"),
+          choice("danger-full-access", "Full access", "No sandbox", null, true),
         ],
       },
     ],

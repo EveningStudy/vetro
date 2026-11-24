@@ -10,6 +10,7 @@ import type {
   Item,
   OpenTarget,
   Project,
+  QueuedMessage,
   RemoteStatus,
   RequestResolution,
   ServerEvent,
@@ -33,6 +34,8 @@ export interface OpenThread {
   options: ConfigOption[];
   commands: SlashCommand[];
   usage: ThreadUsage;
+  queue: QueuedMessage[];
+  scrollSignal: number;
   loadingOlder: boolean;
 }
 
@@ -249,6 +252,9 @@ function applyThreadEvent(threadId: string, event: ThreadEvent) {
       break;
     case "usage":
       patchOpen(threadId, () => ({ usage: event.usage }));
+      break;
+    case "queue":
+      patchOpen(threadId, () => ({ queue: event.messages }));
       break;
   }
 }
@@ -535,6 +541,8 @@ export const actions = {
               options: result.options,
               commands: result.commands,
               usage: result.usage,
+              queue: result.queue ?? [],
+              scrollSignal: get().open[threadId]?.scrollSignal ?? 0,
               loadingOlder: false,
             },
           },
@@ -606,7 +614,15 @@ export const actions = {
   },
 
   async send(threadId: string, content: ContentBlock[]) {
-    await client().request("threads.send", { threadId, content });
+    const clientMessageId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    patchOpen(threadId, (thread) => ({ scrollSignal: thread.scrollSignal + 1 }));
+    await client().request("threads.send", { threadId, content, clientMessageId });
+  },
+
+  async cancelQueued(threadId: string, queueId: string) {
+    await client()
+      .request("threads.cancelQueued", { threadId, queueId })
+      .catch((error) => toast.error(errorMessage(error)));
   },
 
   async start(agentId: string, cwd: string, content: ContentBlock[], options: Record<string, string>) {

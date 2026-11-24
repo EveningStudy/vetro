@@ -127,6 +127,7 @@ impl Agent for CodexAgent {
                 mid_turn_input: true,
                 resume: true,
                 list_sessions: true,
+                fork: vetro_proto::ForkCapabilities::default(),
             },
             error: None,
         };
@@ -237,7 +238,8 @@ impl Agent for CodexAgent {
     }
 
     async fn start(&self, req: StartRequest, sink: EventSink) -> Result<Arc<dyn Session>> {
-        let input = mapping::input(req.content)?;
+        let content = req.content;
+        let input = mapping::input(content.clone())?;
         let app = self.app().await?;
         let catalog = catalog::Catalog::load(&app, Some(&req.cwd)).await?;
         let (params, turn_options) = catalog.start_params(&req.cwd, &req.options)?;
@@ -248,6 +250,7 @@ impl Agent for CodexAgent {
         live.hydrate(&response, 0, &req.options);
         if let Err(error) = live
             .start_turn(
+                content,
                 input,
                 turn_options,
                 req.options.get("mode").map(String::as_str),

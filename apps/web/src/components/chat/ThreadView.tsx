@@ -25,14 +25,15 @@ import { useT } from "~/i18n";
 import { basename, tildePath } from "~/lib/format";
 import { cn, copyText, isMac } from "~/lib/utils";
 import { type OpenThread, actions, useIsLocalDesktop, useStore } from "~/state/store";
+import { rememberAgentOption, usePrefs } from "~/state/prefs";
 import { toast } from "~/state/toast";
 import { AgentIcon } from "../AgentIcon";
 import { useEditedFiles } from "../drawer/ChangesPanel";
 import { RightDrawer } from "../RightDrawer";
 import { MobileSidebarButton } from "../Shell";
-import { isQuickChatPath } from "../sidebar/Sidebar";
+import { isQuickChatPath, isScratchOrTempPath } from "../sidebar/Sidebar";
 import { Button } from "../ui/button";
-import { Menu, MenuItem, MenuItemHint, MenuPopup, MenuSeparator, MenuTrigger, Tip } from "../ui/overlay";
+import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger, Tip } from "../ui/overlay";
 import { Badge, Spinner } from "../ui/primitives";
 import { useHeaderChromeClass, useWindowDragProps } from "../WindowChrome";
 import { RpcFailure } from "~/api/protocol";
@@ -423,12 +424,9 @@ function ThreadHeader({ thread, threadId }: { thread: OpenThread | undefined; th
               {summary.pinned ? <PinOffIcon /> : <PinIcon />}
               {summary.pinned ? t("thread.unpin") : t("thread.pin")}
             </MenuItem>
-            <MenuItem onClick={() => void actions.updateThread(threadId, { archived: !summary.archived })} className="items-start py-1.5">
-              {summary.archived ? <ArchiveRestoreIcon className="mt-0.5" /> : <ArchiveIcon className="mt-0.5" />}
-              <span className="min-w-0">
-                {summary.archived ? t("thread.unarchive") : t("thread.archive")}
-                <MenuItemHint>{t("thread.archiveHint")}</MenuItemHint>
-              </span>
+            <MenuItem onClick={() => void actions.updateThread(threadId, { archived: !summary.archived })}>
+              {summary.archived ? <ArchiveRestoreIcon /> : <ArchiveIcon />}
+              {summary.archived ? t("thread.unarchive") : t("thread.archive")}
             </MenuItem>
             <MenuItem onClick={actions.openRawDrawer}>
               <ScrollTextIcon />
@@ -479,10 +477,14 @@ function ThreadComposer({ thread }: { thread: OpenThread }) {
   const t = useT();
   const summary = thread.summary;
   const agent = useStore((s) => s.agents.find((a) => a.id === summary.agentId));
+  const dataDir = useStore((s) => s.app?.dataDir);
+  const bypassMemoryScope = usePrefs((s) => s.bypassMemoryScope);
   const agentName = agent?.name ?? summary.agentId;
   const running = summary.status === "running" || summary.status === "awaiting_input";
   const [signIn, setSignIn] = useState(false);
   const needsSignIn = agent && (signIn || agent.auth.state === "required") && agent.auth.methods.length > 0;
+  const realProjectCwd =
+    summary.cwd && !isScratchOrTempPath(summary.cwd) && !isQuickChatPath(summary.cwd, dataDir) ? summary.cwd : null;
   return (
     <>
     {needsSignIn ? <SignInCard agent={agent} onDone={() => setSignIn(false)} /> : null}
@@ -492,7 +494,17 @@ function ThreadComposer({ thread }: { thread: OpenThread }) {
       cwd={summary.cwd}
       options={thread.options}
       commands={thread.commands}
-      onOptionChange={(optionId, value) => void actions.setOption(summary.id, optionId, value)}
+      queue={thread.queue}
+      onCancelQueued={(queueId) => void actions.cancelQueued(summary.id, queueId)}
+      onOptionChange={(optionId, value) => {
+        const option = thread.options.find((entry) => entry.id === optionId);
+        if (option) {
+          const activeModel =
+            option.category === "model" ? value : thread.options.find((entry) => entry.category === "model")?.currentValue;
+          rememberAgentOption(summary.agentId, realProjectCwd, option, value, undefined, activeModel, bypassMemoryScope);
+        }
+        void actions.setOption(summary.id, optionId, value);
+      }}
       onSubmit={(content) =>
         actions.send(summary.id, content).catch((error: unknown) => {
           if (needsAuth(error)) setSignIn(true);

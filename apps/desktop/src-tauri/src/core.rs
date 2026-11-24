@@ -1,7 +1,19 @@
 use anyhow::{anyhow, Context};
-use tokio::sync::{broadcast, watch};
+use tokio::sync::{broadcast, oneshot, watch};
 use vetro_core::{home::Home, registry::Registry, server::Server, Core, WindowTheme};
 use vetro_proto::rpc::NotifyParams;
+
+pub struct ShutdownHandle {
+    trigger: oneshot::Sender<()>,
+    done: oneshot::Receiver<()>,
+}
+
+impl ShutdownHandle {
+    pub async fn stop(self) {
+        let _ = self.trigger.send(());
+        let _ = self.done.await;
+    }
+}
 
 /// Handle for the running Vetro core. The shell only needs the URL to point
 /// the window at; everything else is internal to the core.
@@ -10,6 +22,7 @@ pub struct CoreHandle {
     pub close_to_tray: bool,
     pub theme_rx: Option<watch::Receiver<WindowTheme>>,
     pub notify_rx: Option<broadcast::Receiver<NotifyParams>>,
+    pub shutdown: Option<ShutdownHandle>,
 }
 
 /// Starts the core inside this process and returns its loopback URL.
@@ -26,6 +39,7 @@ pub async fn start() -> anyhow::Result<CoreHandle> {
             close_to_tray: false,
             theme_rx: None,
             notify_rx: None,
+            shutdown: None,
         });
     }
     let home = Home::discover().map_err(|error| anyhow!("{error:?}"))?;
@@ -38,15 +52,24 @@ pub async fn start() -> anyhow::Result<CoreHandle> {
         .await
         .map_err(|error| anyhow!("{error:?}"))?;
     let url = server.local_url();
+    let (trigger, stop_rx) = oneshot::channel::<()>();
+    let (done_tx, done) = oneshot::channel::<()>();
     tauri::async_runtime::spawn(async move {
-        if let Err(error) = server.serve(std::future::pending()).await {
+        if let Err(error) = server
+            .serve(async move {
+                let _ = stop_rx.await;
+            })
+            .await
+        {
             eprintln!("vetro core stopped: {error}");
         }
+        let _ = done_tx.send(());
     });
     Ok(CoreHandle {
         url,
         close_to_tray: settings.close_to_tray,
         theme_rx: Some(theme_rx),
         notify_rx: Some(notify_rx),
+        shutdown: Some(ShutdownHandle { trigger, done }),
     })
 }

@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, VecDeque},
     sync::{Arc, Mutex},
 };
 
@@ -47,6 +47,8 @@ struct State {
     items: HashMap<String, ItemDraft>,
     reasoning: HashMap<String, BTreeMap<(bool, u64), String>>,
     pending: HashMap<String, Pending>,
+    pending_users: VecDeque<String>,
+    user_aliases: HashMap<String, String>,
 }
 
 impl Live {
@@ -159,15 +161,19 @@ impl Live {
 
     pub(crate) async fn start_turn(
         &self,
+        content: Vec<ContentBlock>,
         input: Value,
         extra: Value,
         mode: Option<&str>,
     ) -> Result<()> {
-        let collaboration = {
-            let state = self.state.lock().unwrap();
+        let (collaboration, local_user_id) = {
+            let mut state = self.state.lock().unwrap();
             check_open(&state)?;
-            mode.map(|mode| self.catalog.collaboration(mode, &state.selected))
-                .transpose()?
+            let collaboration = mode
+                .map(|mode| self.catalog.collaboration(mode, &state.selected))
+                .transpose()?;
+            let id = self.emit_local_user(&mut state, content);
+            (collaboration, id)
         };
         let mut params = extra;
         params["threadId"] = json!(self.id);
@@ -194,10 +200,33 @@ impl Live {
                     }
                 }
             })
-            .await?;
+            .await;
+        let response = match response {
+            Ok(response) => response,
+            Err(error) => {
+                self.state
+                    .lock()
+                    .unwrap()
+                    .pending_users
+                    .retain(|id| *id != local_user_id);
+                return Err(error);
+            }
+        };
         string(&response["turn"], "id")
             .ok_or_else(|| unavailable("Codex returned a turn without an id"))?;
         Ok(())
+    }
+
+    fn emit_local_user(&self, state: &mut State, content: Vec<ContentBlock>) -> String {
+        state.counter += 1;
+        let id = format!("local-user:{}", state.counter);
+        state.pending_users.push_back(id.clone());
+        self.emit(SessionEvent::Item(draft(
+            &id,
+            None,
+            ItemKind::UserMessage { content },
+        )));
+        id
     }
 
     fn emit(&self, event: SessionEvent) {
@@ -445,6 +474,19 @@ impl Live {
             }
             return;
         };
+        if matches!(item.kind, ItemKind::UserMessage { .. }) {
+            let alias = if let Some(existing) = state.user_aliases.get(&item.id).cloned() {
+                Some(existing)
+            } else if let Some(local) = state.pending_users.pop_front() {
+                state.user_aliases.insert(item.id.clone(), local.clone());
+                Some(local)
+            } else {
+                None
+            };
+            if let Some(alias) = alias {
+                item.id = alias;
+            }
+        }
         if started {
             if state.items.contains_key(&item.id) {
                 return;
@@ -598,7 +640,7 @@ impl Session for Live {
     }
 
     async fn send(&self, content: Vec<ContentBlock>) -> Result<()> {
-        let input = mapping::input(content)?;
+        let input = mapping::input(content.clone())?;
         let _operation = self.operations.lock().await;
         let active = {
             let state = self.state.lock().unwrap();
@@ -606,17 +648,31 @@ impl Session for Live {
             state.active.clone()
         };
         if let Some(turn) = active {
-            self.app
+            let local_user_id = {
+                let mut state = self.state.lock().unwrap();
+                check_open(&state)?;
+                self.emit_local_user(&mut state, content)
+            };
+            if let Err(error) = self
+                .app
                 .call(
                     "turn/steer",
                     json!({
                         "threadId": self.id, "expectedTurnId": turn, "input": input,
                     }),
                 )
-                .await?;
+                .await
+            {
+                self.state
+                    .lock()
+                    .unwrap()
+                    .pending_users
+                    .retain(|id| *id != local_user_id);
+                return Err(error);
+            }
             Ok(())
         } else {
-            self.start_turn(input, json!({}), None).await
+            self.start_turn(content, input, json!({}), None).await
         }
     }
 

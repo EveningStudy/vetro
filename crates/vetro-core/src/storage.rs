@@ -484,6 +484,29 @@ fn migrate_internal(conn: &mut Connection) -> rusqlite::Result<()> {
     if version < 1 {
         tx.execute_batch("UPDATE threads SET indexed=NULL; PRAGMA user_version=1;")?;
     }
+    if version < 2 {
+        let mut updates = Vec::new();
+        {
+            let mut read = tx.prepare("SELECT id, summary FROM threads")?;
+            let mut rows = read.query([])?;
+            while let Some(row) = rows.next()? {
+                let id: String = row.get(0)?;
+                let mut summary = decode::<ThreadSummary>(row, 1)?;
+                if summary.live || summary.status != ThreadStatus::Idle {
+                    summary.live = false;
+                    summary.status = ThreadStatus::Idle;
+                    if let Ok(encoded) = serde_json::to_string(&summary) {
+                        updates.push((id, encoded));
+                    }
+                }
+            }
+        }
+        let mut update = tx.prepare("UPDATE threads SET summary=?2 WHERE id=?1")?;
+        for (id, encoded) in updates {
+            update.execute(params![id, encoded])?;
+        }
+        tx.execute_batch("PRAGMA user_version=2;")?;
+    }
     tx.commit()
 }
 
@@ -501,10 +524,9 @@ pub(crate) fn classified(thread: &ThreadSummary) -> bool {
 fn save(conn: &Connection, thread: &ThreadSummary, internal_flag: bool) -> Result<()> {
     let mut summary = thread.clone();
     summary.internal = internal_flag;
-    if summary.live {
-        summary.live = false;
-        summary.status = ThreadStatus::Idle;
-    }
+    // Live/active/error states are ephemeral to the current run and live in the `attached` table.
+    summary.live = false;
+    summary.status = ThreadStatus::Idle;
     summary.parent = None;
     summary.child_count = 0;
     conn.execute(
@@ -885,5 +907,61 @@ mod tests {
             .map(|t| t.native_id)
             .collect();
         assert_eq!(all_ids, vec!["cloud-stub", "local-quick", "remote-stub"]);
+    }
+
+    #[test]
+    fn normalizes_stale_error_status_in_persisted_index_on_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("index.db");
+        {
+            let conn = Connection::open(&db).unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+            conn.execute_batch("PRAGMA user_version = 1;").unwrap();
+            let mut summary = ThreadSummary {
+                id: "devin:s1".into(),
+                agent_id: "devin".into(),
+                native_id: "s1".into(),
+                title: "Finished chat".into(),
+                preview: None,
+                cwd: None,
+                created_at: Some(1),
+                updated_at: 2,
+                source: ThreadSource::Vetro,
+                origin: None,
+                status: ThreadStatus::Error,
+                live: false,
+                resumable: true,
+                parent: None,
+                child_count: 0,
+                model: None,
+                archived: false,
+                pinned: false,
+                internal: false,
+            };
+            let encoded = serde_json::to_string(&summary).unwrap();
+            conn.execute(
+                "INSERT INTO threads(id,agent,cwd,source,updated,archived,summary,internal)
+                 VALUES (?1,'devin',NULL,'vetro',2,0,?2,0)",
+                params!["devin:s1", encoded],
+            )
+            .unwrap();
+            summary.id = "devin:s2".into();
+            summary.native_id = "s2".into();
+            summary.status = ThreadStatus::Running;
+            summary.live = true;
+            let encoded = serde_json::to_string(&summary).unwrap();
+            conn.execute(
+                "INSERT INTO threads(id,agent,cwd,source,updated,archived,summary,internal)
+                 VALUES (?1,'devin',NULL,'vetro',3,0,?2,0)",
+                params!["devin:s2", encoded],
+            )
+            .unwrap();
+        }
+        let index = Index::open(dir.path()).unwrap();
+        for id in ["devin:s1", "devin:s2"] {
+            let loaded = index.get(id).unwrap().unwrap();
+            assert_eq!(loaded.status, ThreadStatus::Idle);
+            assert!(!loaded.live);
+        }
     }
 }

@@ -96,15 +96,27 @@ function spacing(previous: Segment | undefined, current: Segment) {
   if (!previous) return "";
   const before = last(previous);
   const item = first(current);
-  if (item.type === "turn_end") return "mt-3";
-  if (before.type === "turn_end") return "mt-5";
+  if (item.type === "turn_end") return "mt-1.5";
+  if (before.type === "turn_end") return "mt-6";
   if (item.type === "user_message") return "mt-6";
   if (isLogRow(before) && isLogRow(item)) return "";
   if (isLogRow(item) || isLogRow(before)) return "mt-2";
   return "mt-4";
 }
 
-function ItemView({ item, threadId }: { item: Item; threadId: string }) {
+function ItemView({
+  item,
+  threadId,
+  answerText,
+  isLastTurn,
+  onFork,
+}: {
+  item: Item;
+  threadId: string;
+  answerText?: string;
+  isLastTurn?: boolean;
+  onFork?: () => void;
+}) {
   switch (item.type) {
     case "user_message":
       return <UserMessage item={item} />;
@@ -121,7 +133,7 @@ function ItemView({ item, threadId }: { item: Item; threadId: string }) {
     case "notice":
       return <NoticeRow item={item} />;
     case "turn_end":
-      return <TurnEnd item={item} />;
+      return <TurnEnd item={item} answerText={answerText} isLast={isLastTurn} onFork={onFork} />;
   }
 }
 
@@ -245,12 +257,41 @@ function TimelineRows({ items, threadId, dockRequests }: { items: Item[]; thread
       ),
     [items, running, dockRequests],
   );
+  const turnAnswers = useMemo(() => {
+    const map = new Map<string, string>();
+    let buffer: string[] = [];
+    for (const item of items) {
+      if (item.type === "user_message") {
+        buffer = [];
+      } else if (item.type === "agent_message") {
+        if (item.text.trim()) buffer.push(item.text);
+      } else if (item.type === "turn_end") {
+        map.set(item.id, buffer.join("\n\n"));
+        buffer = [];
+      }
+    }
+    return map;
+  }, [items]);
+
+  const lastTurnEndId = useMemo(() => {
+    for (let index = segments.length - 1; index >= 0; index -= 1) {
+      const entry = segments[index]!;
+      if (entry.kind === "item" && entry.item.type === "turn_end") return entry.item.id;
+    }
+    return null;
+  }, [segments]);
+
   return (
     <ThreadCwdContext value={cwd}>
       {segments.map((current, index) =>
         current.kind === "item" ? (
           <div key={current.item.id} data-item-id={current.item.id} className={spacing(segments[index - 1], current)}>
-            <ItemView item={current.item} threadId={threadId} />
+            <ItemView
+              item={current.item}
+              threadId={threadId}
+              answerText={current.item.type === "turn_end" ? turnAnswers.get(current.item.id) : undefined}
+              isLastTurn={current.item.type === "turn_end" && current.item.id === lastTurnEndId}
+            />
           </div>
         ) : (
           <div key={`group:${current.id}`} className={spacing(segments[index - 1], current)}>
@@ -345,14 +386,33 @@ function ScrollingTimeline({ threadId, footer, dockRequests }: { threadId: strin
     return () => observer.disconnect();
   }, []);
 
-  const lastItem = items.at(-1);
-  useEffect(() => {
-    if (lastItem?.type !== "user_message") return;
+  const scrollSignal = thread?.scrollSignal ?? 0;
+  const latestUserMessageId = useMemo(() => {
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+      if (items[index]!.type === "user_message") return items[index]!.id;
+    }
+    return null;
+  }, [items]);
+  const prevScrollSignalRef = useRef(scrollSignal);
+  const prevUserMsgIdRef = useRef(latestUserMessageId);
+  useLayoutEffect(() => {
+    const signalChanged = scrollSignal !== prevScrollSignalRef.current;
+    const userMsgChanged = latestUserMessageId !== null && latestUserMessageId !== prevUserMsgIdRef.current;
+    prevScrollSignalRef.current = scrollSignal;
+    prevUserMsgIdRef.current = latestUserMessageId;
+    if (!signalChanged && !userMsgChanged) return;
     atBottomRef.current = true;
     setAtBottom(true);
     const scroller = scrollerRef.current;
-    if (scroller) scroller.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
-  }, [lastItem?.id, lastItem?.type]);
+    if (scroller) {
+      scroller.scrollTop = scroller.scrollHeight;
+      requestAnimationFrame(() => {
+        if (atBottomRef.current && scrollerRef.current) {
+          scrollerRef.current.scrollTop = scrollerRef.current.scrollHeight;
+        }
+      });
+    }
+  }, [scrollSignal, latestUserMessageId]);
 
   useEffect(() => {
     const sentinel = sentinelRef.current;

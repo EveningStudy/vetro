@@ -18,6 +18,14 @@ export type SidebarScope = "all" | "vetro";
 export type FontStyle = "sans" | "serif" | "mono";
 export type FontScale = "compact" | "default" | "large";
 export type ChatWidth = "standard" | "wide" | "full";
+export type BypassMemoryScope = "project" | "global";
+
+export interface AgentOptionMemory {
+  options?: Record<string, string>;
+  byModel?: Record<string, Record<string, string>>;
+  danger?: Record<string, string>;
+  dangerByProject?: Record<string, Record<string, string>>;
+}
 
 /** Everything the UI remembers per device. The core stores it (`prefs.get` / `prefs.set`) so it
  * survives web views without persistent storage; localStorage is only a cache for a fast start. */
@@ -44,6 +52,10 @@ export interface PrefsData {
   paperGrain?: boolean;
   /** Opaque background of the active palette; the desktop shell paints its window with it. */
   themeBg?: string;
+  /** Where dangerous/bypass permission modes are remembered: per project (default) or globally per agent. */
+  bypassMemoryScope?: BypassMemoryScope;
+  /** Remembered non-default options per agent id. */
+  agentOptions?: Record<string, AgentOptionMemory>;
 }
 
 const CACHE_KEY = "vetro:prefs";
@@ -143,6 +155,7 @@ interface UiPrefs {
   fontScale: FontScale;
   chatWidth: ChatWidth;
   paperGrain: boolean;
+  bypassMemoryScope: BypassMemoryScope;
   systemDark: boolean;
 }
 
@@ -170,6 +183,7 @@ function derived(prefs: PrefsData): UiPrefs {
     fontScale: pick(prefs.fontScale, FONT_SCALES, "default", null),
     chatWidth: pick(prefs.chatWidth, CHAT_WIDTHS, "standard", null),
     paperGrain: prefs.paperGrain === true,
+    bypassMemoryScope: prefs.bypassMemoryScope === "global" ? "global" : "project",
     systemDark: media.matches,
   };
 }
@@ -339,4 +353,112 @@ export function setDrawerWidth(width: number) {
   const drawerWidth = clampDrawerWidth(width);
   savePrefs({ drawerWidth });
   usePrefs.setState({ drawerWidth });
+}
+
+export function setBypassMemoryScope(bypassMemoryScope: BypassMemoryScope) {
+  savePrefs({ bypassMemoryScope });
+  usePrefs.setState({ bypassMemoryScope });
+}
+
+function normCwd(cwd: string | null | undefined) {
+  return cwd ? cwd.replace(/^\\\\\?\\/, "").replace(/[\\/]+$/, "").toLowerCase() : null;
+}
+
+/** Resolves remembered overrides for an agent against its currently reported options. */
+export function resolveSavedAgentOptions(
+  agentId: string,
+  cwd: string | null,
+  options: { id: string; category: string; currentValue: string; choices: { value: string; danger: boolean }[] }[],
+  scope: BypassMemoryScope,
+): Record<string, string> {
+  const memory = data.agentOptions?.[agentId];
+  if (!memory) return {};
+  const out: Record<string, string> = {};
+  const valid = (option: (typeof options)[number], value: string | undefined) =>
+    !!value && option.choices.some((choice) => choice.value === value);
+
+  const modelOption = options.find((option) => option.category === "model");
+  let activeModel = modelOption?.currentValue ?? "";
+  if (modelOption) {
+    const savedModel = memory.options?.[modelOption.id];
+    if (valid(modelOption, savedModel) && savedModel !== modelOption.currentValue) {
+      out[modelOption.id] = savedModel!;
+      activeModel = savedModel!;
+    }
+  }
+
+  const projectKey = normCwd(cwd);
+  for (const option of options) {
+    if (option.category === "model") continue;
+    let candidate: string | undefined;
+    if (option.category === "thought_level" && activeModel) {
+      candidate = memory.byModel?.[activeModel]?.[option.id];
+    }
+    if (!candidate) {
+      const dangerSource = scope === "global" ? memory.danger : projectKey ? memory.dangerByProject?.[projectKey] : undefined;
+      candidate = dangerSource?.[option.id] ?? memory.options?.[option.id];
+    }
+    if (!valid(option, candidate) || candidate === option.currentValue) continue;
+    const choice = option.choices.find((entry) => entry.value === candidate);
+    if (choice?.danger && scope === "project" && !projectKey) continue;
+    out[option.id] = candidate!;
+  }
+  return out;
+}
+
+/** Saves an explicit user option change (or removes it when restored to the agent's default). */
+export function rememberAgentOption(
+  agentId: string,
+  cwd: string | null,
+  option: { id: string; category: string; choices: { value: string; danger: boolean }[] },
+  value: string,
+  defaultValue: string | undefined,
+  activeModel: string | undefined,
+  scope: BypassMemoryScope,
+) {
+  const all = { ...(data.agentOptions ?? {}) };
+  const prev = all[agentId] ?? {};
+  const next: AgentOptionMemory = {
+    options: { ...(prev.options ?? {}) },
+    byModel: { ...(prev.byModel ?? {}) },
+    danger: { ...(prev.danger ?? {}) },
+    dangerByProject: { ...(prev.dangerByProject ?? {}) },
+  };
+  const isDefault = value === defaultValue;
+  const choice = option.choices.find((entry) => entry.value === value);
+  const projectKey = normCwd(cwd);
+
+  if (option.category === "thought_level" && activeModel) {
+    const map = { ...(next.byModel![activeModel] ?? {}) };
+    if (isDefault) delete map[option.id];
+    else map[option.id] = value;
+    if (Object.keys(map).length === 0) delete next.byModel![activeModel];
+    else next.byModel![activeModel] = map;
+  } else if (choice?.danger) {
+    delete next.options![option.id];
+    if (scope === "global") {
+      if (isDefault) delete next.danger![option.id];
+      else next.danger![option.id] = value;
+    } else if (projectKey) {
+      const map = { ...(next.dangerByProject![projectKey] ?? {}) };
+      if (isDefault) delete map[option.id];
+      else map[option.id] = value;
+      if (Object.keys(map).length === 0) delete next.dangerByProject![projectKey];
+      else next.dangerByProject![projectKey] = map;
+    }
+  } else {
+    // Switching away from a danger mode clears any stored danger override for this option.
+    delete next.danger![option.id];
+    if (projectKey && next.dangerByProject![projectKey]) {
+      const map = { ...next.dangerByProject![projectKey] };
+      delete map[option.id];
+      if (Object.keys(map).length === 0) delete next.dangerByProject![projectKey];
+      else next.dangerByProject![projectKey] = map;
+    }
+    if (isDefault) delete next.options![option.id];
+    else next.options![option.id] = value;
+  }
+
+  all[agentId] = next;
+  savePrefs({ agentOptions: all });
 }

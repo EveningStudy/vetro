@@ -94,17 +94,26 @@ impl Catalog {
                     ":danger-full-access" => "Full access",
                     other => profile["name"].as_str().unwrap_or(other),
                 };
-                Some(choice(id, name, string(profile, "description")))
+                Some(ConfigChoice {
+                    danger: id == ":danger-full-access" || id == "danger-full-access",
+                    ..choice(id, name, string(profile, "description"))
+                })
             });
         let approvals = self.approvals.iter().filter_map(|entry| {
             let id = choice_id(entry)?;
-            Some(choice(&id, entry.as_str().unwrap_or("Granular"), None))
+            Some(ConfigChoice {
+                danger: id == "never",
+                ..choice(&id, entry.as_str().unwrap_or("Granular"), None)
+            })
         });
         let sandboxes = self
             .sandboxes
             .iter()
             .filter_map(Value::as_str)
-            .map(|id| choice(id, id, None));
+            .map(|id| ConfigChoice {
+                danger: id == "danger-full-access",
+                ..choice(id, id, None)
+            });
         [
             option(
                 "model",
@@ -253,6 +262,7 @@ fn choice(value: &str, name: &str, description: Option<String>) -> ConfigChoice 
         name: name.to_owned(),
         description,
         group: None,
+        danger: false,
     }
 }
 

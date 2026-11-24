@@ -573,6 +573,7 @@ export class MockTransport implements Transport {
         options: thread.options,
         commands: thread.commands,
         usage: thread.usage,
+        queue: [],
       };
     },
     "threads.close": (params) => {
@@ -591,6 +592,11 @@ export class MockTransport implements Transport {
       if (this.runs.has(params.threadId)) throw new RpcFailure("busy", "A turn is already running");
       setTimeout(() => void this.runTurn(thread, params.content), 10);
       return {};
+    },
+    "threads.cancelQueued": () => ({}),
+    "threads.fork": (params) => {
+      const source = this.thread(params.threadId);
+      return { thread: source.summary };
     },
     "threads.interrupt": (params) => {
       const run = this.runs.get(params.threadId);
@@ -624,6 +630,16 @@ export class MockTransport implements Transport {
     "search.threads": (params) => this.search(params),
     "fs.list": (params) => this.list(params),
     "fs.find": (params) => this.find(params),
+    "fs.mkdir": (params) => {
+      this.desktopOnly();
+      const name = params.name.trim();
+      if (!name || /[\\/]/.test(name)) throw new RpcFailure("bad_request", "Invalid folder name");
+      const sep = params.parent.endsWith("\\") ? "" : "\\";
+      const created = `${params.parent}${sep}${name}`;
+      fileTree[params.parent] = [...(fileTree[params.parent] ?? []), `${name}\\`];
+      fileTree[created] = [];
+      return { path: created };
+    },
     "workspace.gitStatus": (params) => {
       if (!/[\\/]vetro$/i.test(params.cwd)) return { isRepo: false, root: null, branch: null, dirty: false, files: [] };
       return { isRepo: true, root: params.cwd, branch: "main", dirty: true, files: MOCK_GIT_FILES };

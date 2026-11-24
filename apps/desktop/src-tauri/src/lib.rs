@@ -5,50 +5,72 @@ use std::error::Error;
 use std::path::PathBuf;
 #[cfg(target_os = "windows")]
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use std::time::Duration;
 
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::webview::NewWindowResponse;
 use tauri::window::Color;
 use tauri::{
-    AppHandle, Manager, Theme, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent,
-    Wry,
+    AppHandle, Manager, RunEvent, Theme, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+    WindowEvent, Wry,
 };
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
 use tokio::sync::broadcast::error::RecvError;
 use vetro_core::WindowTheme;
 
-use crate::core::CoreHandle;
+use crate::core::{CoreHandle, ShutdownHandle};
 
 const MAIN_WINDOW: &str = "main";
+
+struct CoreShutdown(Mutex<Option<ShutdownHandle>>);
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() -> Result<()> {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_main_window(app);
         }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let app = app.handle().clone();
+            let handle_app = app.handle().clone();
             let core = tauri::async_runtime::block_on(crate::core::start());
             let close_to_tray = core
                 .as_ref()
                 .map(|handle| handle.close_to_tray)
                 .unwrap_or(false);
             let window = match core {
-                Ok(handle) => core_window(&app, handle)?,
-                Err(err) => error_window(&app, &format!("{err:#}"))?,
+                Ok(mut handle) => {
+                    app.manage(CoreShutdown(Mutex::new(handle.shutdown.take())));
+                    core_window(&handle_app, handle)?
+                }
+                Err(err) => error_window(&handle_app, &format!("{err:#}"))?,
             };
             watch_window_close(&window, close_to_tray);
-            build_tray(&app)?;
+            build_tray(&handle_app)?;
             Ok(())
         })
-        .run(tauri::generate_context!())?;
+        .build(tauri::generate_context!())?;
+    app.run(|app, event| {
+        if let RunEvent::ExitRequested { api, code, .. } = event {
+            if let Some(state) = app.try_state::<CoreShutdown>() {
+                if let Some(shutdown) = state.0.lock().unwrap().take() {
+                    api.prevent_exit();
+                    let exit_app = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let _ = tokio::time::timeout(Duration::from_secs(3), shutdown.stop()).await;
+                        exit_app.exit(code.unwrap_or(0));
+                    });
+                }
+            }
+        }
+    });
     Ok(())
 }
 
