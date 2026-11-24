@@ -24,11 +24,17 @@ use crate::{
     workspace,
 };
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct WindowTheme {
+    pub theme: Option<String>,
+    pub background: Option<String>,
+}
+
 pub struct Core {
     pub home: Home,
     registry: RwLock<Arc<Registry>>,
     pub(crate) registry_changed: watch::Sender<()>,
-    theme: watch::Sender<Option<String>>,
+    theme: watch::Sender<WindowTheme>,
     notify_tx: broadcast::Sender<NotifyParams>,
     pub(crate) store: Arc<Index>,
     pub(crate) sessions: Sessions,
@@ -45,7 +51,7 @@ impl Core {
             home.log(&format!("Index unavailable: {error}"));
             Index::temporary()
         });
-        let theme = watch::channel(pref_theme(&home.prefs("local"))).0;
+        let theme = watch::channel(window_theme(&home.prefs("local"))).0;
         Arc::new(Self {
             home,
             registry: RwLock::new(Arc::new(registry)),
@@ -62,7 +68,7 @@ impl Core {
         })
     }
 
-    pub fn theme_watch(&self) -> watch::Receiver<Option<String>> {
+    pub fn theme_watch(&self) -> watch::Receiver<WindowTheme> {
         self.theme.subscribe()
     }
 
@@ -127,7 +133,7 @@ impl Core {
         })?;
         if device_id == "local" {
             self.home.read_state(|state| {
-                let theme = pref_theme(&state.prefs["local"]);
+                let theme = window_theme(&state.prefs["local"]);
                 self.theme.send_if_modified(|current| {
                     if *current == theme {
                         return false;
@@ -881,11 +887,22 @@ pub(crate) fn check_project_path(path: &Path, projects: &[Project]) -> Result<()
     ))
 }
 
-fn pref_theme(prefs: &Value) -> Option<String> {
-    prefs
-        .get("theme")
-        .and_then(Value::as_str)
-        .map(str::to_owned)
+fn window_theme(prefs: &Value) -> WindowTheme {
+    WindowTheme {
+        theme: prefs
+            .get("theme")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        background: prefs
+            .get("themeBg")
+            .and_then(Value::as_str)
+            .filter(|color| {
+                color.strip_prefix('#').is_some_and(|hex| {
+                    hex.len() == 6 && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+                })
+            })
+            .map(str::to_owned),
+    }
 }
 
 #[cfg(test)]
@@ -897,20 +914,40 @@ mod tests {
     fn theme_watch_tracks_only_local_preferences() {
         let root = tempfile::tempdir().unwrap();
         let home = Home::open(root.path().join(".vetro"), root.path().into()).unwrap();
-        home.change_state(|state| state.prefs.insert("local".into(), json!({"theme":"dark"})))
-            .unwrap();
+        home.change_state(|state| {
+            state
+                .prefs
+                .insert("local".into(), json!({"theme":"dark", "themeBg":"#f5edd8"}))
+        })
+        .unwrap();
         let core = Core::new(home, Registry::default());
         let mut theme = core.theme_watch();
-        assert_eq!(theme.borrow().as_deref(), Some("dark"));
-        core.prefs_set("remote", json!({"theme":"light"})).unwrap();
+        assert_eq!(theme.borrow().theme.as_deref(), Some("dark"));
+        assert_eq!(theme.borrow().background.as_deref(), Some("#f5edd8"));
+        core.prefs_set("remote", json!({"theme":"light", "themeBg":"#ffffff"}))
+            .unwrap();
         assert!(!theme.has_changed().unwrap());
         for expected in ["light", "system"] {
-            core.prefs_set("local", json!({"theme":expected})).unwrap();
+            core.prefs_set("local", json!({"theme":expected, "themeBg":"#f5edd8"}))
+                .unwrap();
             assert!(theme.has_changed().unwrap());
-            assert_eq!(theme.borrow_and_update().as_deref(), Some(expected));
+            assert_eq!(theme.borrow_and_update().theme.as_deref(), Some(expected));
+        }
+        core.prefs_set("local", json!({"theme":"system", "themeBg":"#FEF9EF"}))
+            .unwrap();
+        assert!(theme.has_changed().unwrap());
+        assert_eq!(
+            theme.borrow_and_update().background.as_deref(),
+            Some("#FEF9EF")
+        );
+        for (invalid, changed) in [("red", true), ("#12345", false)] {
+            core.prefs_set("local", json!({"theme":"system", "themeBg":invalid}))
+                .unwrap();
+            assert_eq!(theme.has_changed().unwrap(), changed);
+            assert_eq!(theme.borrow_and_update().background, None);
         }
         core.prefs_set("local", json!({})).unwrap();
-        assert_eq!(*theme.borrow_and_update(), None);
+        assert_eq!(*theme.borrow_and_update(), WindowTheme::default());
     }
 
     #[test]

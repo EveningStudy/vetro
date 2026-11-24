@@ -3,10 +3,13 @@ mod core;
 use std::error::Error;
 #[cfg(not(target_os = "macos"))]
 use std::path::PathBuf;
+#[cfg(target_os = "windows")]
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::webview::NewWindowResponse;
+use tauri::window::Color;
 use tauri::{
     AppHandle, Manager, Theme, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent,
     Wry,
@@ -14,6 +17,7 @@ use tauri::{
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
 use tokio::sync::broadcast::error::RecvError;
+use vetro_core::WindowTheme;
 
 use crate::core::CoreHandle;
 
@@ -54,14 +58,36 @@ fn core_window(app: &AppHandle, mut handle: CoreHandle) -> Result<WebviewWindow>
     let initial_theme = handle
         .theme_rx
         .as_mut()
-        .and_then(|theme| native_theme(theme.borrow_and_update().as_deref()));
-    let builder = window_builder(app, WebviewUrl::External(url)).theme(initial_theme);
-    let builder = if initial_theme == Some(Theme::Dark) {
-        builder.background_color(tauri::window::Color(9, 9, 11, 255))
+        .map(|theme| theme.borrow_and_update().clone())
+        .unwrap_or_default();
+    let builder = window_builder(app, WebviewUrl::External(url))
+        .theme(native_theme(initial_theme.theme.as_deref()));
+    let builder = if let Some(background) = window_background(&initial_theme) {
+        builder.background_color(background)
     } else {
         builder
     };
+    #[cfg(target_os = "windows")]
+    let (builder, platform, chrome) = (
+        builder.decorations(false).shadow(true).transparent(false),
+        "windows",
+        "custom",
+    );
+    #[cfg(target_os = "macos")]
+    let (builder, platform, chrome) = (
+        builder
+            .title_bar_style(tauri::TitleBarStyle::Overlay)
+            .hidden_title(true),
+        "macos",
+        "overlay",
+    );
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let (platform, chrome) = (std::env::consts::OS, "native");
+
     let window = builder
+        .initialization_script(format!(
+            r#"window.__VETRO_DESKTOP__ = {{ platform: "{platform}", chrome: "{chrome}", maximized: false }};"#
+        ))
         .on_navigation({
             let app = app.clone();
             let origin = origin.clone();
@@ -83,12 +109,21 @@ fn core_window(app: &AppHandle, mut handle: CoreHandle) -> Result<WebviewWindow>
             }
         })
         .build()?;
+    #[cfg(target_os = "windows")]
+    watch_window_maximized(&window);
     if let Some(mut theme) = handle.theme_rx {
         let window = window.clone();
         tauri::async_runtime::spawn(async move {
             while theme.changed().await.is_ok() {
-                let mapped = native_theme(theme.borrow_and_update().as_deref());
+                let (mapped, background) = {
+                    let theme = theme.borrow_and_update();
+                    (
+                        native_theme(theme.theme.as_deref()),
+                        window_background(&theme),
+                    )
+                };
                 let _ = window.set_theme(mapped);
+                let _ = window.set_background_color(background);
             }
         });
     }
@@ -115,6 +150,27 @@ fn core_window(app: &AppHandle, mut handle: CoreHandle) -> Result<WebviewWindow>
         });
     }
     Ok(window)
+}
+
+fn parse_hex_color(hex: &str) -> Option<Color> {
+    let hex = hex.strip_prefix('#')?;
+    if hex.len() != 6 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let [_, red, green, blue] = u32::from_str_radix(hex, 16).ok()?.to_be_bytes();
+    Some(Color(red, green, blue, 255))
+}
+
+fn window_background(theme: &WindowTheme) -> Option<Color> {
+    theme
+        .background
+        .as_deref()
+        .and_then(parse_hex_color)
+        .or(match theme.theme.as_deref() {
+            Some("dark") => Some(Color(10, 10, 10, 255)),
+            Some("light") => Some(Color(252, 252, 252, 255)),
+            _ => None,
+        })
 }
 
 fn native_theme(pref: Option<&str>) -> Option<Theme> {
@@ -172,6 +228,23 @@ fn watch_window_close(window: &WebviewWindow, close_to_tray: bool) {
             if close_to_tray {
                 api.prevent_close();
                 let _ = w.hide();
+            }
+        }
+    });
+}
+
+#[cfg(target_os = "windows")]
+fn watch_window_maximized(window: &WebviewWindow) {
+    let maximized = AtomicBool::new(false);
+    let target = window.clone();
+    window.on_window_event(move |event| {
+        if matches!(event, WindowEvent::Resized(_) | WindowEvent::Moved(_)) {
+            let current = target.is_maximized().unwrap_or(false);
+            if maximized.swap(current, Ordering::Relaxed) != current {
+                let _ = target.eval(format!(
+                    r#"if (window.__VETRO_DESKTOP__) {{ window.__VETRO_DESKTOP__.maximized = {current}; }}
+window.dispatchEvent(new CustomEvent("vetro:window-state", {{ detail: {{ maximized: {current} }} }}));"#
+                ));
             }
         }
     });

@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Context};
 use tokio::sync::{broadcast, watch};
-use vetro_core::{home::Home, registry::Registry, server::Server, Core};
+use vetro_core::{home::Home, registry::Registry, server::Server, Core, WindowTheme};
 use vetro_proto::rpc::NotifyParams;
 
 /// Handle for the running Vetro core. The shell only needs the URL to point
@@ -8,7 +8,7 @@ use vetro_proto::rpc::NotifyParams;
 pub struct CoreHandle {
     pub url: String,
     pub close_to_tray: bool,
-    pub theme_rx: Option<watch::Receiver<Option<String>>>,
+    pub theme_rx: Option<watch::Receiver<WindowTheme>>,
     pub notify_rx: Option<broadcast::Receiver<NotifyParams>>,
 }
 

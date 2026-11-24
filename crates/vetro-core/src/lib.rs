@@ -14,7 +14,7 @@ mod sessions;
 pub mod storage;
 pub mod workspace;
 
-pub use service::Core;
+pub use service::{Core, WindowTheme};
 
 fn internal(error: impl std::fmt::Display) -> AgentError {
     AgentError::new(ErrorCode::Internal, error.to_string())
