@@ -71,6 +71,21 @@ const shots = [
   ["phone-new-thread", `/new?theme=light`, phone],
   ["phone-raw-log", `/t/${MAIN}?theme=dark&panel=raw`, phone],
   ["phone-settings", `/settings/remote?theme=dark&pairing=1`, phone],
+  ["theme-appearance-paper", `/settings/appearance?theme=light&palette=paper&chrome=windows`, desktop],
+  ["theme-appearance-zh-dark", `/settings/appearance?theme=dark&palette=parchment&chrome=windows&lang=zh`, desktop],
+  ["theme-thread-parchment", `/t/${MAIN}?theme=light&palette=parchment&chrome=windows`, desktop],
+  ["theme-thread-paper-dark-drawer", `/t/${MAIN}?theme=dark&palette=paper&chrome=windows&panel=raw`, desktop],
+  ["theme-thread-solarized-dark", `/t/${MAIN}?theme=dark&palette=solarized&chrome=windows`, desktop],
+  ["theme-thread-rose-pine", `/t/${MAIN}?theme=light&palette=rose-pine&chrome=windows`, desktop],
+  ["theme-thread-t3chat-dark", `/t/${MAIN}?theme=dark&palette=t3-chat`, desktop],
+  ["theme-thread-grove-macos", `/t/${MAIN}?theme=dark&palette=grove&chrome=macos`, desktop],
+  ["theme-thread-ocean", `/t/${MAIN}?theme=light&palette=ocean&chrome=windows`, desktop],
+  ["theme-thread-ember-dark", `/t/${MAIN}?theme=dark&palette=ember&chrome=windows`, desktop],
+  ["theme-thread-iris", `/t/${MAIN}?theme=light&palette=iris&chrome=windows`, desktop],
+  ["theme-new-thread-chrome", `/new?theme=light&palette=paper&chrome=windows`, desktop],
+  ["theme-editor", `/settings/appearance?theme=light&palette=paper&chrome=windows`, desktop, [{ type: "click", text: "New theme" }, { type: "wait", ms: 500 }]],
+  ["theme-import", `/settings/appearance?theme=dark&chrome=windows`, desktop, [{ type: "click", text: "Import JSON" }, { type: "wait", ms: 400 }]],
+  ["theme-palette-search", `/t/${MAIN}?theme=light&palette=1`, desktop, [{ type: "text", text: "paper" }, { type: "wait", ms: 600 }]],
 ].filter(([name]) => !filter || name.includes(filter));
 
 if (!existsSync(edge)) {

@@ -14,6 +14,7 @@ import { ThreadView } from "./chat/ThreadView";
 import { SidebarContent } from "./sidebar/Sidebar";
 import { Button } from "./ui/button";
 import { Tip } from "./ui/overlay";
+import { WindowControls } from "./WindowChrome";
 
 /** Whether page headers need to show on desktop to hold the expand-sidebar button. */
 export function useSidebarCollapsed() {
@@ -183,6 +184,7 @@ export function Shell() {
         )}
       </main>
       <CommandPalette />
+      <WindowControls />
       <ConnectionBanner />
       <Toasts />
     </div>

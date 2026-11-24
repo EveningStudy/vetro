@@ -1,15 +1,37 @@
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
-import { CornerDownLeftIcon, MoonIcon, PanelLeftIcon, SearchIcon, SettingsIcon, SquarePenIcon, SunIcon } from "lucide-react";
+import { CornerDownLeftIcon, MoonIcon, PaletteIcon, PanelLeftIcon, SearchIcon, SettingsIcon, SquarePenIcon, SunIcon } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { client } from "~/api/client";
 import type { SearchHit, ThreadSummary } from "~/api/types";
-import { useT } from "~/i18n";
+import { translate, useT } from "~/i18n";
 import { relativeTime } from "~/lib/format";
 import { cn, isMac } from "~/lib/utils";
-import { setTheme } from "~/state/prefs";
+import { setTheme, setThemeId, usePrefs } from "~/state/prefs";
+import { BUILT_IN_THEMES, type BuiltInTheme, type CustomTheme, resolveTheme } from "~/styles/themes";
 import { actions, useHiddenFilter, useStore } from "~/state/store";
 import { AgentIcon } from "./AgentIcon";
+import { ThemeSwatchDot, themeDisplayName, usePreviewMode } from "./settings/ThemeStudio";
 import { Kbd, Spinner } from "./ui/primitives";
+
+const THEME_WORDS = ["theme", "themes", "palette", "color", "colour", "appearance", "主题", "配色", "颜色", "外观", "皮肤"];
+const PAPER_WORDS = ["paper", "warm", "parchment", "sepia", "yellow", "纸", "暖", "黄", "护眼", "书"];
+
+function normalizeQuery(text: string) {
+  return text.trim().toLowerCase();
+}
+
+/** Themes whose name (in either language), id or category matches the query. */
+function matchThemes(query: string, themes: (BuiltInTheme | CustomTheme)[]) {
+  const q = normalizeQuery(query);
+  if (!q || (q.length < 2 && /^[\x20-\x7e]+$/.test(q))) return [];
+  if (THEME_WORDS.some((word) => word.startsWith(q) || q.startsWith(word))) return themes;
+  const paperQuery = PAPER_WORDS.some((word) => q.includes(word));
+  return themes.filter((theme) => {
+    const names = "nameKey" in theme ? [translate("en", theme.nameKey), translate("zh", theme.nameKey)] : [theme.name];
+    if (names.some((name) => name.toLowerCase().includes(q)) || theme.id.includes(q)) return true;
+    return paperQuery && "category" in theme && theme.category === "paper";
+  });
+}
 
 type Entry = { key: string; icon: ReactNode; title: ReactNode; detail?: ReactNode; context?: string; meta?: string; run: () => void };
 
@@ -36,6 +58,9 @@ export function CommandPalette() {
   const projects = useStore((s) => s.projects);
   const visible = useHiddenFilter();
   const showHidden = useStore((s) => s.filters.showHidden);
+  const themeId = usePrefs((s) => s.themeId);
+  const customThemes = usePrefs((s) => s.customThemes);
+  const previewMode = usePreviewMode();
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<SearchHit[] | null>(null);
   const [searching, setSearching] = useState(false);
@@ -89,7 +114,24 @@ export function CommandPalette() {
       meta: relativeTime(thread.updatedAt, t),
       run: () => openThread(thread),
     });
-    if (hits !== null) return [{ label: t("palette.results"), entries: hits.map((hit) => threadEntry(hit.thread, <Snippet html={hit.snippet} />)) }];
+    const activeTheme = resolveTheme(themeId, customThemes).theme.id;
+    const themeEntry = (theme: BuiltInTheme | CustomTheme): Entry => ({
+      key: `theme:${theme.id}`,
+      icon: <ThemeSwatchDot theme={theme} mode={previewMode} />,
+      title: themeDisplayName(theme, t),
+      meta: theme.id === activeTheme ? t("palette.current") : undefined,
+      run: () => {
+        setThemeId(theme.id);
+        close();
+      },
+    });
+    const themeMatches = matchThemes(query, [...BUILT_IN_THEMES, ...customThemes]).map(themeEntry);
+    if (hits !== null || themeMatches.length > 0) {
+      return [
+        { label: t("palette.themes"), entries: themeMatches },
+        { label: t("palette.results"), entries: (hits ?? []).map((hit) => threadEntry(hit.thread, <Snippet html={hit.snippet} />)) },
+      ];
+    }
     const recent = Object.values(threads)
       .filter((thread) => !thread.archived && visible(thread))
       .sort((a, b) => b.updatedAt - a.updatedAt)
@@ -135,12 +177,21 @@ export function CommandPalette() {
           close();
         },
       },
+      {
+        key: "themes",
+        icon: <PaletteIcon className="size-4 text-muted-foreground" />,
+        title: t("palette.browseThemes"),
+        run: () => {
+          close();
+          actions.navigate({ view: "settings", section: "appearance" });
+        },
+      },
     ];
     return [
       { label: t("palette.recent"), entries: recent },
       { label: t("palette.actions"), entries: commands },
     ];
-  }, [hits, threads, t, visible, agents, projects]);
+  }, [hits, threads, t, visible, agents, projects, query, themeId, customThemes, previewMode]);
 
   const flat = sections.flatMap((section) => section.entries);
   useEffect(() => setActive(0), [hits, query]);

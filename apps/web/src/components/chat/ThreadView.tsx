@@ -33,6 +33,7 @@ import { MobileSidebarButton } from "../Shell";
 import { Button } from "../ui/button";
 import { Menu, MenuItem, MenuItemHint, MenuPopup, MenuSeparator, MenuTrigger, Tip } from "../ui/overlay";
 import { Badge, Spinner } from "../ui/primitives";
+import { useHeaderChromeClass, useWindowDragProps } from "../WindowChrome";
 import { RpcFailure } from "~/api/protocol";
 import { Composer } from "./Composer";
 import { RequestItem } from "./Items";
@@ -152,8 +153,10 @@ function DockedRequests({ thread }: { thread: OpenThread }) {
 }
 
 function BareHeader() {
+  const drag = useWindowDragProps();
+  const chromeClass = useHeaderChromeClass("main");
   return (
-    <header className="flex h-(--workspace-topbar-height) shrink-0 items-center gap-2 px-(--workspace-gutter)">
+    <header {...drag} className={cn("flex h-(--workspace-topbar-height) shrink-0 items-center gap-2 px-(--workspace-gutter)", chromeClass)}>
       <MobileSidebarButton />
       <Spinner className="size-3.5 text-muted-foreground" />
     </header>
@@ -179,6 +182,7 @@ function InlineTitle({ threadId, title, editing, onEditingChange }: { threadId: 
         autoFocus
         defaultValue={title}
         aria-label={t("thread.renameTitle")}
+        data-no-drag
         onFocus={(event) => event.currentTarget.select()}
         onKeyDown={(event) => {
           if (event.key === "Enter") {
@@ -197,6 +201,7 @@ function InlineTitle({ threadId, title, editing, onEditingChange }: { threadId: 
   }
   return (
     <h1
+      data-no-drag
       onDoubleClick={() => onEditingChange(true)}
       title={t("thread.renameDblClick")}
       className="min-w-0 cursor-default truncate text-sm font-medium text-foreground select-none"
@@ -314,6 +319,8 @@ function ThreadHeader({ thread, threadId }: { thread: OpenThread | undefined; th
   });
   const local = useIsLocalDesktop();
   const [editing, setEditing] = useState(false);
+  const drag = useWindowDragProps();
+  const chromeClass = useHeaderChromeClass("main");
   const cwd = summary.cwd?.trim() ? summary.cwd : null;
   const branch = useStore((s) => (cwd ? s.gitStatus[cwd]?.branch : null));
   const idle = summary.status === "idle" || summary.status === "error";
@@ -333,7 +340,7 @@ function ThreadHeader({ thread, threadId }: { thread: OpenThread | undefined; th
   );
 
   return (
-    <header className="flex h-(--workspace-topbar-height) shrink-0 items-center gap-2 px-(--workspace-gutter)">
+    <header {...drag} className={cn("flex h-(--workspace-topbar-height) shrink-0 items-center gap-2 px-(--workspace-gutter)", chromeClass)}>
       <MobileSidebarButton />
       <div className="flex min-w-0 flex-1 flex-col justify-center">
         <div className="flex min-w-0 items-center gap-2">

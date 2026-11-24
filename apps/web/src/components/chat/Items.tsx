@@ -83,7 +83,7 @@ export const UserMessage = memo(function UserMessage({ item }: { item: ItemOf<"u
       ) : null}
       {text ? (
         <div className="min-w-0 max-w-[80%] rounded-2xl bg-message px-4 py-2.5 text-message-foreground">
-          <div className="whitespace-pre-wrap break-words text-sm leading-relaxed">{text}</div>
+          <div className="chat-prose whitespace-pre-wrap break-words text-sm leading-relaxed">{text}</div>
           {files.length > 0 ? (
             <div className="mt-2 flex flex-wrap gap-1.5">
               {files.map((file, index) =>

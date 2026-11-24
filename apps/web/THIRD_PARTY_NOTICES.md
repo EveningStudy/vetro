@@ -20,6 +20,7 @@ terminal or browser-preview code is included.
 | `src/components/chat/Items.tsx` | User message bubble styling from `TimelineUserMessageRow.tsx`. |
 | `src/components/AgentIcon.tsx`, `src/assets/antigravity.png` | OpenAI and Claude marks from `src/components/Icons.tsx`; the Antigravity image from `apps/mobile/assets/antigravity.png`. The marks belong to their owners and are used only to identify each agent. |
 | `src/components/QrCode.tsx` | QR path rendering from `src/components/ui/qr-code.tsx`. |
+| `src/styles/themes.ts` | The T3 Chat, Grove, Ocean, Ember and Iris palettes and the shape of the ThemeFile v1 JSON format that the importer accepts. |
 | `src/lib/qrCode.ts` | T3 Code's vendored copy (`packages/shared/src/qrCode.ts`) of the Project Nayuki QR Code generator; its own MIT notice is kept in the file. |
 
 ```

@@ -10,6 +10,7 @@ import { errorMessage, toast } from "~/state/toast";
 import { Button } from "./ui/button";
 import { Tip } from "./ui/overlay";
 import { Spinner } from "./ui/primitives";
+import { useHeaderChromeClass, useWindowDragProps } from "./WindowChrome";
 
 type Direction = RawEntry["direction"];
 const DIRECTIONS: Direction[] = ["spawn", "sent", "received", "stderr"];
@@ -47,6 +48,8 @@ const RawLine = memo(function RawLine({ entry }: { entry: RawEntry }) {
 /** The wire log: the evidence that Vetro forwards exactly what the user typed and nothing else. */
 export function RawLogPanel({ threadId }: { threadId: string }) {
   const t = useT();
+  const drag = useWindowDragProps();
+  const chromeClass = useHeaderChromeClass("drawer");
   const [entries, setEntries] = useState<RawEntry[] | null>(null);
   const [filter, setFilter] = useState<Direction | null>(null);
   const [loading, setLoading] = useState(false);
@@ -82,7 +85,7 @@ export function RawLogPanel({ threadId }: { threadId: string }) {
   const shown = (entries ?? []).filter((entry) => !filter || entry.direction === filter);
   return (
     <>
-      <div className="flex h-(--workspace-topbar-height) shrink-0 items-center gap-2 ps-4 pe-2">
+      <div {...drag} className={cn("flex h-(--workspace-topbar-height) shrink-0 items-center gap-2 ps-4 pe-2", chromeClass)}>
         <div className="min-w-0 flex-1">
           <div className="text-sm font-medium">{t("raw.title")}</div>
           <div className="line-clamp-2 text-xs text-muted-foreground" title={t("raw.subtitle")}>{t("raw.subtitle")}</div>

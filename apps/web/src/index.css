@@ -21,7 +21,7 @@
   --glass-blur: 12px;
   --glass-opacity: 80%;
   --glass-saturation: 1.14;
-  --workspace-topbar-height: 52px;
+  --workspace-topbar-height: 48px;
   --chat-content-max-width: 46rem;
   --workspace-gutter: 0.75rem;
 
@@ -40,6 +40,7 @@
 @theme {
   --font-sans: "Inter Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, "Microsoft YaHei UI", "PingFang SC", sans-serif;
   --font-mono: ui-monospace, "SF Mono", "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+  --font-serif: "Iowan Old Style", "Georgia", "Noto Serif SC", "Songti SC", "STSong", serif;
 }
 
 @theme inline {
@@ -359,10 +360,37 @@ kbd,
   background: transparent;
 }
 
+/* Paper texture: a faint static grain over the whole window, never intercepting input. */
+
+html[data-paper-grain="true"]::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  pointer-events: none;
+  opacity: 0.028;
+  mix-blend-mode: multiply;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 0 0 0 0 1'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 160px 160px;
+}
+html.dark[data-paper-grain="true"]::after {
+  opacity: 0.035;
+  mix-blend-mode: soft-light;
+}
+
 /* Chat markdown */
 
+.chat-markdown,
+.chat-prose {
+  font-family: var(--chat-font-family, var(--font-sans));
+  font-size: var(--chat-font-size, inherit);
+}
 .chat-markdown {
   overflow-wrap: anywhere;
+}
+.chat-markdown :is(pre, code, kbd, .font-mono),
+.chat-prose :is(pre, code, kbd, .font-mono) {
+  font-family: var(--font-mono);
 }
 @keyframes caret-blink {
   50% {

@@ -18,11 +18,18 @@ import { useT } from "~/i18n";
 import { relativeTime, shortVersion } from "~/lib/format";
 import { cn } from "~/lib/utils";
 import {
+  type ChatWidth,
+  type FontScale,
+  type FontStyle,
   type LanguagePref,
   type SidebarScope,
   type ThemePref,
+  setChatWidth,
+  setFontScale,
+  setFontStyle,
   setHideDisabledAgentHistory,
   setLanguage,
+  setPaperGrain,
   setSidebarActivityDays,
   setSidebarScope,
   setTheme,
@@ -35,10 +42,13 @@ import { CustomAgents } from "./CustomAgents";
 import { SignInMethods } from "../SignIn";
 import { QrCodeSvg } from "../QrCode";
 import { MobileSidebarButton } from "../Shell";
+import { useHeaderChromeClass, useWindowDragProps } from "../WindowChrome";
+import { ThemeGallery } from "./ThemeStudio";
 import { useNow } from "../hooks";
 import { Button } from "../ui/button";
 import { Menu, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from "../ui/overlay";
 import { Badge, Input, Label, Spinner, Switch, Textarea } from "../ui/primitives";
+import { Segmented } from "../ui/segmented";
 
 const SECTIONS: { id: SettingsSection; icon: typeof BotIcon }[] = [
   { id: "agents", icon: BotIcon },
@@ -49,9 +59,11 @@ const SECTIONS: { id: SettingsSection; icon: typeof BotIcon }[] = [
 
 export function SettingsView({ section }: { section: SettingsSection }) {
   const t = useT();
+  const drag = useWindowDragProps();
+  const chromeClass = useHeaderChromeClass("main-full");
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <header className="flex h-(--workspace-topbar-height) shrink-0 items-center gap-2 px-(--workspace-gutter)">
+      <header {...drag} className={cn("flex h-(--workspace-topbar-height) shrink-0 items-center gap-2 px-(--workspace-gutter)", chromeClass)}>
         <MobileSidebarButton />
         <h1 className="text-sm font-medium">{t("settings.title")}</h1>
       </header>
@@ -96,7 +108,7 @@ function SectionTitle({ title, action }: { title: string; action?: ReactNode }) 
 }
 
 function Group({ children, className }: { children: ReactNode; className?: string }) {
-  return <div className={cn("divide-y overflow-hidden rounded-xl border bg-card/70 dark:bg-white/[0.015]", className)}>{children}</div>;
+  return <div className={cn("divide-y overflow-hidden rounded-xl border bg-card/80", className)}>{children}</div>;
 }
 
 function Row({ label, hint, children }: { label: ReactNode; hint?: ReactNode; children?: ReactNode }) {
@@ -454,29 +466,6 @@ function RemoteSection() {
   );
 }
 
-function Segmented<T extends string>({ value, options, onChange }: { value: T; options: { value: T; label: string; icon?: typeof SunIcon }[]; onChange: (value: T) => void }) {
-  return (
-    <div className="flex rounded-lg bg-input/40 p-0.5" role="radiogroup">
-      {options.map((option) => (
-        <button
-          key={option.value}
-          type="button"
-          role="radio"
-          aria-checked={value === option.value}
-          onClick={() => onChange(option.value)}
-          className={cn(
-            "flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium text-muted-foreground hover:text-foreground",
-            value === option.value && "bg-background text-foreground shadow-xs dark:bg-input/72",
-          )}
-        >
-          {option.icon ? <option.icon className="size-3.5" /> : null}
-          {option.label}
-        </button>
-      ))}
-    </div>
-  );
-}
-
 const PRESET_DAYS = [7, 14, 30, 0];
 
 function ActivityWindow() {
@@ -588,6 +577,10 @@ function AppearanceSection() {
   const scope = usePrefs((s) => s.sidebarScope);
   const hideDisabled = usePrefs((s) => s.hideDisabledAgentHistory);
   const showInternal = useStore((s) => s.filters.showInternal);
+  const fontStyle = usePrefs((s) => s.fontStyle);
+  const fontScale = usePrefs((s) => s.fontScale);
+  const chatWidth = usePrefs((s) => s.chatWidth);
+  const paperGrain = usePrefs((s) => s.paperGrain);
   return (
     <section>
       <SectionTitle title={t("settings.appearance")} />
@@ -613,6 +606,46 @@ function AppearanceSection() {
               { value: "zh", label: "简体中文" },
             ]}
           />
+        </Row>
+      </Group>
+      <ThemeGallery />
+      <h3 className="mt-6 mb-2 text-sm font-medium text-muted-foreground">{t("settings.readingLayout")}</h3>
+      <Group>
+        <Row label={t("settings.fontStyle")} hint={t("settings.fontStyleHint")}>
+          <Segmented<FontStyle>
+            value={fontStyle}
+            onChange={setFontStyle}
+            options={[
+              { value: "sans", label: t("settings.font.sans") },
+              { value: "serif", label: t("settings.font.serif") },
+              { value: "mono", label: t("settings.font.mono") },
+            ]}
+          />
+        </Row>
+        <Row label={t("settings.fontScale")}>
+          <Segmented<FontScale>
+            value={fontScale}
+            onChange={setFontScale}
+            options={[
+              { value: "compact", label: t("settings.fontScale.compact") },
+              { value: "default", label: t("settings.fontScale.default") },
+              { value: "large", label: t("settings.fontScale.large") },
+            ]}
+          />
+        </Row>
+        <Row label={t("settings.chatWidth")}>
+          <Segmented<ChatWidth>
+            value={chatWidth}
+            onChange={setChatWidth}
+            options={[
+              { value: "standard", label: t("settings.chatWidth.standard") },
+              { value: "wide", label: t("settings.chatWidth.wide") },
+              { value: "full", label: t("settings.chatWidth.full") },
+            ]}
+          />
+        </Row>
+        <Row label={t("settings.paperGrain")} hint={t("settings.paperGrainHint")}>
+          <Switch checked={paperGrain} aria-label={t("settings.paperGrain")} onCheckedChange={setPaperGrain} />
         </Row>
       </Group>
       <h3 className="mt-6 mb-2 text-sm font-medium text-muted-foreground">{t("settings.sidebarHistory")}</h3>

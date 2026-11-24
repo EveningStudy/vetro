@@ -14,12 +14,39 @@
         try {
           const url = new URL(location.href);
           const forced = url.searchParams.get("theme");
+          const palette = url.searchParams.get("palette");
           let stored = "system";
           try { stored = JSON.parse(localStorage.getItem("vetro:prefs") || "{}").theme || "system"; } catch {}
           const pref = forced || stored;
-          const dark = pref === "dark" || (pref === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
+          let dark = pref === "dark" || (pref === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
+          const hex = /^#[0-9a-f]{6}$/i;
+          const palettes = {
+            default: ["#fcfcfc", "#000000"],
+            paper: ["#faf7f0", "#1c1917"],
+            parchment: ["#f5edd8", "#1f1b14"],
+            solarized: ["#fdf6e3", "#002b36"],
+            "rose-pine": ["#faf4ed", "#232136"],
+            "t3-chat": ["#fbf6fb", "#1d1822"],
+            grove: ["#f4f7f5", "#1c2621"],
+            ocean: ["#f5f7fa", "#18212b"],
+            ember: ["#f9f6f3", "#241d18"],
+            iris: ["#f7f6fa", "#1c1829"],
+          };
+          let bg = dark ? "#000000" : "#fcfcfc";
+          if (palette && Object.prototype.hasOwnProperty.call(palettes, palette)) {
+            bg = palettes[palette][dark ? 1 : 0];
+          } else {
+            let bootBg = null;
+            let bootMode = null;
+            try {
+              bootBg = localStorage.getItem("vetro:boot-bg");
+              bootMode = localStorage.getItem("vetro:boot-mode");
+            } catch {}
+            if (bootMode === "forced-dark" || bootMode === "forced-light") dark = bootMode === "forced-dark";
+            if (bootBg && hex.test(bootBg) && (bootMode === (dark ? "dark" : "light") || bootMode === (dark ? "forced-dark" : "forced-light"))) bg = bootBg;
+          }
           document.documentElement.classList.toggle("dark", dark);
-          document.documentElement.style.backgroundColor = dark ? "#000" : "#fcfcfc";
+          document.documentElement.style.backgroundColor = bg;
         } catch {}
       })();
     </script>

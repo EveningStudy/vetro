@@ -14,6 +14,7 @@ import { RawLogPanel } from "./RawLogPanel";
 import { Button } from "./ui/button";
 import { Tip } from "./ui/overlay";
 import { Spinner } from "./ui/primitives";
+import { useHeaderChromeClass, useWindowDragProps } from "./WindowChrome";
 
 const MAX_VIEWPORT_SHARE = 0.72;
 
@@ -100,6 +101,8 @@ function ChildStatus({ thread }: { thread: ThreadSummary }) {
 
 function ChildSessionsList({ parentId }: { parentId: string }) {
   const t = useT();
+  const drag = useWindowDragProps();
+  const chromeClass = useHeaderChromeClass("drawer");
   const now = useNow(30_000);
   const threads = useStore((s) => s.threads);
   const parent = useStore((s) => s.threads[parentId] ?? s.open[parentId]?.summary);
@@ -119,7 +122,7 @@ function ChildSessionsList({ parentId }: { parentId: string }) {
 
   return (
     <>
-      <div className="flex h-(--workspace-topbar-height) shrink-0 items-center gap-2 border-b ps-4 pe-2">
+      <div {...drag} className={cn("flex h-(--workspace-topbar-height) shrink-0 items-center gap-2 border-b ps-4 pe-2", chromeClass)}>
         <CornerDownRightIcon className="size-4 shrink-0 text-muted-foreground" />
         <span className="min-w-0 flex-1 truncate text-sm font-medium">
           {t("drawer.children", { n: Math.max(children.length, parent?.childCount ?? 0) })}
@@ -156,6 +159,8 @@ function ChildSessionsList({ parentId }: { parentId: string }) {
 
 function ChildSessionPeek({ threadId, fromParentId }: { threadId: string; fromParentId?: string }) {
   const t = useT();
+  const drag = useWindowDragProps();
+  const chromeClass = useHeaderChromeClass("drawer");
   const summary = useStore((s) => s.threads[threadId] ?? s.open[threadId]?.summary);
   const agentId = summary?.agentId ?? threadId.split(":")[0]!;
 
@@ -166,7 +171,7 @@ function ChildSessionPeek({ threadId, fromParentId }: { threadId: string; fromPa
 
   return (
     <>
-      <div className="flex h-(--workspace-topbar-height) shrink-0 items-center gap-2 border-b ps-2 pe-2">
+      <div {...drag} className={cn("flex h-(--workspace-topbar-height) shrink-0 items-center gap-2 border-b ps-2 pe-2", chromeClass)}>
         {fromParentId ? (
           <Tip label={t("drawer.backToList")}>
             <Button size="icon-sm" variant="ghost" aria-label={t("drawer.backToList")} onClick={() => actions.openChildrenDrawer(fromParentId)}>

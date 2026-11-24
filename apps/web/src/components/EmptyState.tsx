@@ -6,13 +6,17 @@ import { MobileSidebarButton, useSidebarCollapsed } from "./Shell";
 import { Button } from "./ui/button";
 import { Kbd } from "./ui/primitives";
 import { VetroMark } from "./VetroMark";
+import { useHeaderChromeClass, useIntegratedTitleBar, useWindowDragProps } from "./WindowChrome";
 
 export function EmptyState() {
   const t = useT();
   const collapsed = useSidebarCollapsed();
+  const integrated = useIntegratedTitleBar();
+  const drag = useWindowDragProps();
+  const chromeClass = useHeaderChromeClass("main-full");
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <header className={cn("flex h-(--workspace-topbar-height) shrink-0 items-center px-(--workspace-gutter)", !collapsed && "md:hidden")}>
+      <header {...drag} className={cn("flex h-(--workspace-topbar-height) shrink-0 items-center px-(--workspace-gutter)", !collapsed && !integrated && "md:hidden", chromeClass)}>
         <MobileSidebarButton />
       </header>
       <div className="flex flex-1 flex-col items-center justify-center gap-4 px-6 text-center">

@@ -1,8 +1,23 @@
 import { create } from "zustand";
+import {
+  type CustomTheme,
+  type ThemeMode,
+  type ThemePaletteTokens,
+  DEFAULT_THEME_ID,
+  findBuiltInTheme,
+  resolveTheme,
+  sanitizeCustomTheme,
+  themeMode,
+  themeTokens,
+  writeTokens,
+} from "~/styles/themes";
 
 export type ThemePref = "light" | "dark" | "system";
 export type LanguagePref = "en" | "zh" | "system";
 export type SidebarScope = "all" | "vetro";
+export type FontStyle = "sans" | "serif" | "mono";
+export type FontScale = "compact" | "default" | "large";
+export type ChatWidth = "standard" | "wide" | "full";
 
 /** Everything the UI remembers per device. The core stores it (`prefs.get` / `prefs.set`) so it
  * survives web views without persistent storage; localStorage is only a cache for a fast start. */
@@ -21,6 +36,14 @@ export interface PrefsData {
   hideDisabledAgentHistory?: boolean;
   lastAgent?: string;
   lastProject?: string;
+  themeId?: string;
+  customThemes?: CustomTheme[];
+  fontStyle?: FontStyle;
+  fontScale?: FontScale;
+  chatWidth?: ChatWidth;
+  paperGrain?: boolean;
+  /** Opaque background of the active palette; the desktop shell paints its window with it. */
+  themeBg?: string;
 }
 
 const CACHE_KEY = "vetro:prefs";
@@ -81,6 +104,9 @@ export function onPrefsLoaded(listener: (prefs: PrefsData) => void) {
 
 const THEMES = ["light", "dark", "system"] as const;
 const LANGUAGES = ["en", "zh", "system"] as const;
+const FONT_STYLES = ["sans", "serif", "mono"] as const;
+const FONT_SCALES = ["compact", "default", "large"] as const;
+const CHAT_WIDTHS = ["standard", "wide", "full"] as const;
 
 function pick<T extends string>(value: string | undefined, allowed: readonly T[], fallback: T, override: string | null): T {
   const chosen = override ?? value;
@@ -98,6 +124,11 @@ function activityDays(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.round(value) : 14;
 }
 
+function customThemes(value: unknown): CustomTheme[] {
+  if (!Array.isArray(value)) return [];
+  return value.map(sanitizeCustomTheme).filter((theme): theme is CustomTheme => theme !== null);
+}
+
 interface UiPrefs {
   theme: ThemePref;
   language: LanguagePref;
@@ -106,6 +137,22 @@ interface UiPrefs {
   sidebarCollapsed: boolean;
   sidebarScope: SidebarScope;
   drawerWidth: number;
+  themeId: string;
+  customThemes: CustomTheme[];
+  fontStyle: FontStyle;
+  fontScale: FontScale;
+  chatWidth: ChatWidth;
+  paperGrain: boolean;
+  systemDark: boolean;
+}
+
+const media = matchMedia("(prefers-color-scheme: dark)");
+
+/** `?palette=<theme id>` previews a theme for one session (screenshots); other values are ignored. */
+function paletteOverride(prefs: PrefsData): string | null {
+  const id = query.get("palette");
+  if (!id) return null;
+  return findBuiltInTheme(id) || prefs.customThemes?.some((theme) => theme?.id === id) ? id : null;
 }
 
 function derived(prefs: PrefsData): UiPrefs {
@@ -117,29 +164,143 @@ function derived(prefs: PrefsData): UiPrefs {
     sidebarCollapsed: prefs.sidebarCollapsed ?? false,
     sidebarScope: prefs.sidebarScope === "vetro" ? "vetro" : "all",
     drawerWidth: clampDrawerWidth(typeof prefs.drawerWidth === "number" ? prefs.drawerWidth : 480),
+    themeId: paletteOverride(prefs) ?? (typeof prefs.themeId === "string" && prefs.themeId ? prefs.themeId : DEFAULT_THEME_ID),
+    customThemes: customThemes(prefs.customThemes),
+    fontStyle: pick(prefs.fontStyle, FONT_STYLES, "sans", null),
+    fontScale: pick(prefs.fontScale, FONT_SCALES, "default", null),
+    chatWidth: pick(prefs.chatWidth, CHAT_WIDTHS, "standard", null),
+    paperGrain: prefs.paperGrain === true,
+    systemDark: media.matches,
   };
 }
 
 export const usePrefs = create<UiPrefs>(() => derived(data));
 
-const media = matchMedia("(prefers-color-scheme: dark)");
+const FONT_FAMILIES: Record<FontStyle, string> = { sans: "var(--font-sans)", serif: "var(--font-serif)", mono: "var(--font-mono)" };
+const FONT_SIZES: Record<FontScale, string> = { compact: "0.8125rem", default: "0.875rem", large: "0.96875rem" };
+const CHAT_MAX_WIDTHS: Record<ChatWidth, string> = { standard: "46rem", wide: "60rem", full: "100%" };
+const BOOT_BG_KEY = "vetro:boot-bg";
+const BOOT_MODE_KEY = "vetro:boot-mode";
 
-export function applyTheme() {
-  const { theme } = usePrefs.getState();
-  const dark = theme === "dark" || (theme === "system" && media.matches);
-  const root = document.documentElement;
-  if (root.classList.contains("dark") === dark) return;
-  root.classList.add("no-transitions");
-  root.classList.toggle("dark", dark);
-  root.style.backgroundColor = "";
-  requestAnimationFrame(() => root.classList.remove("no-transitions"));
+let preview: { mode: ThemeMode; tokens: ThemePaletteTokens } | null = null;
+
+export function preferredMode(theme: ThemePref, systemDark: boolean): ThemeMode {
+  return theme === "dark" || (theme === "system" && systemDark) ? "dark" : "light";
 }
 
-media.addEventListener("change", applyTheme);
+/** The mode and palette the saved preferences select (ignoring any editor preview). */
+function savedPalette() {
+  const state = usePrefs.getState();
+  const resolved = resolveTheme(state.themeId, state.customThemes);
+  const preferred = preferredMode(state.theme, state.systemDark);
+  const mode = themeMode(resolved, preferred);
+  return {
+    mode,
+    tokens: themeTokens(resolved, mode),
+    forced: resolved.kind === "custom" && resolved.theme.appearance !== "both",
+    isDefault: resolved.kind === "builtin" && resolved.theme.id === DEFAULT_THEME_ID,
+  };
+}
+
+export function applyTheme() {
+  const state = usePrefs.getState();
+  const saved = savedPalette();
+  const { mode, tokens } = preview ?? saved;
+  const root = document.documentElement;
+  const dark = mode === "dark";
+  const switching = root.classList.contains("dark") !== dark;
+  if (switching) {
+    root.classList.add("no-transitions");
+    root.classList.toggle("dark", dark);
+  }
+  writeTokens(root, !preview && saved.isDefault ? null : tokens);
+  root.style.backgroundColor = "";
+  root.dataset.fontStyle = state.fontStyle;
+  root.dataset.fontScale = state.fontScale;
+  root.style.setProperty("--chat-font-family", FONT_FAMILIES[state.fontStyle]);
+  root.style.setProperty("--chat-font-size", FONT_SIZES[state.fontScale]);
+  root.style.setProperty("--chat-content-max-width", CHAT_MAX_WIDTHS[state.chatWidth]);
+  if (state.paperGrain) root.dataset.paperGrain = "true";
+  else delete root.dataset.paperGrain;
+  if (switching) requestAnimationFrame(() => root.classList.remove("no-transitions"));
+  if (paletteOverride(data) !== null) return;
+  const bgHex = saved.tokens.bgHex;
+  try {
+    localStorage.setItem(BOOT_BG_KEY, bgHex);
+    localStorage.setItem(BOOT_MODE_KEY, saved.forced ? `forced-${saved.mode}` : saved.mode);
+  } catch {
+    // No persistent storage; the boot script falls back to the default background.
+  }
+  if (data.themeBg !== bgHex) savePrefs({ themeBg: bgHex });
+}
+
+/** Shows a palette on the live app without saving it, until `clearThemePreview`. */
+export function previewThemeTokens(mode: ThemeMode, tokens: ThemePaletteTokens) {
+  preview = { mode, tokens };
+  applyTheme();
+}
+
+export function clearThemePreview() {
+  if (!preview) return;
+  preview = null;
+  applyTheme();
+}
+
+media.addEventListener("change", () => {
+  usePrefs.setState({ systemDark: media.matches });
+  applyTheme();
+});
 
 export function setTheme(theme: ThemePref) {
   savePrefs({ theme });
   usePrefs.setState({ theme });
+  applyTheme();
+}
+
+export function setThemeId(themeId: string) {
+  savePrefs({ themeId });
+  usePrefs.setState({ themeId });
+  applyTheme();
+}
+
+export function saveCustomTheme(theme: CustomTheme) {
+  const current = usePrefs.getState().customThemes;
+  const customThemes = current.some((entry) => entry.id === theme.id) ? current.map((entry) => (entry.id === theme.id ? theme : entry)) : [...current, theme];
+  savePrefs({ customThemes });
+  usePrefs.setState({ customThemes });
+  applyTheme();
+}
+
+export function deleteCustomTheme(id: string) {
+  const state = usePrefs.getState();
+  const customThemes = state.customThemes.filter((entry) => entry.id !== id);
+  const themeId = state.themeId === id ? DEFAULT_THEME_ID : state.themeId;
+  savePrefs(themeId === state.themeId ? { customThemes } : { customThemes, themeId });
+  usePrefs.setState({ customThemes, themeId });
+  applyTheme();
+}
+
+export function setFontStyle(fontStyle: FontStyle) {
+  savePrefs({ fontStyle });
+  usePrefs.setState({ fontStyle });
+  applyTheme();
+}
+
+export function setFontScale(fontScale: FontScale) {
+  savePrefs({ fontScale });
+  usePrefs.setState({ fontScale });
+  applyTheme();
+}
+
+export function setChatWidth(chatWidth: ChatWidth) {
+  savePrefs({ chatWidth });
+  usePrefs.setState({ chatWidth });
+  applyTheme();
+}
+
+export function setPaperGrain(paperGrain: boolean) {
+  savePrefs({ paperGrain });
+  usePrefs.setState({ paperGrain });
   applyTheme();
 }
 

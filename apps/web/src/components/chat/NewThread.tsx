@@ -14,6 +14,7 @@ import { FolderBrowser } from "../FolderBrowser";
 import { MobileSidebarButton, useSidebarCollapsed } from "../Shell";
 import { Menu, MenuGroupLabel, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from "../ui/overlay";
 import { Spinner } from "../ui/primitives";
+import { useHeaderChromeClass, useIntegratedTitleBar, useWindowDragProps } from "../WindowChrome";
 import { Composer } from "./Composer";
 import { ProjectPicker } from "./ProjectPicker";
 import { composerControlClass } from "./OptionPicker";
@@ -138,10 +139,16 @@ export function NewThread({ projectPath, agentId: routeAgent }: { projectPath: s
   const unknownFolder = remoteClient && !!effectiveCwd && !projects.some((p) => p.path === effectiveCwd);
   const agentName = agent?.name ?? "";
   const sidebarCollapsed = useSidebarCollapsed();
+  const integratedTitleBar = useIntegratedTitleBar();
+  const drag = useWindowDragProps();
+  const chromeClass = useHeaderChromeClass("main-full");
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <header className={cn("flex h-(--workspace-topbar-height) shrink-0 items-center gap-2 px-(--workspace-gutter)", !sidebarCollapsed && "md:hidden")}>
+      <header
+        {...drag}
+        className={cn("flex h-(--workspace-topbar-height) shrink-0 items-center gap-2 px-(--workspace-gutter)", !sidebarCollapsed && !integratedTitleBar && "md:hidden", chromeClass)}
+      >
         <MobileSidebarButton />
       </header>
       <div className="flex min-h-0 flex-1 flex-col justify-center overflow-y-auto px-(--workspace-gutter) pb-[calc(1rem+env(safe-area-inset-bottom))] max-sm:justify-end">

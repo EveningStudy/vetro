@@ -57,6 +57,7 @@ import {
   Tip,
 } from "../ui/overlay";
 import { Kbd } from "../ui/primitives";
+import { useHeaderChromeClass, useWindowDragProps } from "../WindowChrome";
 import { VetroMark } from "../VetroMark";
 
 const SOURCES: ThreadSource[] = ["vetro", "desktop", "cli", "exec", "ide", "cloud", "unknown"];
@@ -725,6 +726,8 @@ function normalize(path: string | null) {
 export function SidebarContent() {
   const t = useT();
   const now = useNow(30_000);
+  const drag = useWindowDragProps();
+  const chromeClass = useHeaderChromeClass("sidebar");
   const projects = useStore((s) => s.projects);
   const threads = useStore((s) => s.threads);
   const filters = useStore((s) => s.filters);
@@ -942,7 +945,7 @@ export function SidebarContent() {
   return (
     <RenameContext value={setRenaming}>
       <div className="flex h-full min-h-0 flex-col">
-        <div className="flex h-(--workspace-topbar-height) shrink-0 items-center gap-1 ps-4 pe-2">
+        <div {...drag} className={cn("flex h-(--workspace-topbar-height) shrink-0 items-center gap-1 ps-4 pe-2", chromeClass)}>
           <VetroMark className="size-4.5" />
           <span className="ms-1 flex-1 truncate font-semibold text-sm tracking-tight">{t("app.name")}</span>
           <FilterMenu />

@@ -12,6 +12,7 @@ import { OpenFileButton } from "../OpenFileButton";
 import { Button } from "../ui/button";
 import { Tip } from "../ui/overlay";
 import { Spinner } from "../ui/primitives";
+import { useHeaderChromeClass, useWindowDragProps } from "../WindowChrome";
 
 type DiffContent = Extract<ToolContent, { type: "diff" }>;
 
@@ -169,6 +170,8 @@ function Expanded({ children }: { children: React.ReactNode }) {
  * edits when the folder is not a repository. */
 export function ChangesPanel({ threadId }: { threadId: string }) {
   const t = useT();
+  const drag = useWindowDragProps();
+  const chromeClass = useHeaderChromeClass("drawer");
   const cwd = useStore((s) => (s.threads[threadId] ?? s.open[threadId]?.summary)?.cwd ?? null);
   const status = useStore((s) => (cwd ? s.gitStatus[cwd] : undefined));
   const edited = useEditedFiles(threadId);
@@ -210,7 +213,7 @@ export function ChangesPanel({ threadId }: { threadId: string }) {
 
   return (
     <>
-      <div className="flex h-(--workspace-topbar-height) shrink-0 items-center gap-2 border-b ps-4 pe-2">
+      <div {...drag} className={cn("flex h-(--workspace-topbar-height) shrink-0 items-center gap-2 border-b ps-4 pe-2", chromeClass)}>
         <FileDiffIcon className="size-4 shrink-0 text-muted-foreground" />
         <span className="text-sm font-medium">{t("changes.title")}</span>
         {repo?.branch ? (
