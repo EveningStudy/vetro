@@ -5,7 +5,7 @@ import type { RawEntry } from "~/api/types";
 import { useT } from "~/i18n";
 import { clockTime } from "~/lib/format";
 import { cn, copyText } from "~/lib/utils";
-import { useStore } from "~/state/store";
+import { actions, useStore } from "~/state/store";
 import { errorMessage, toast } from "~/state/toast";
 import { Button } from "./ui/button";
 import { Tip } from "./ui/overlay";
@@ -80,10 +80,8 @@ export function RawLogPanel({ threadId }: { threadId: string }) {
   }, [entries]);
 
   const shown = (entries ?? []).filter((entry) => !filter || entry.direction === filter);
-  const close = () => useStore.setState({ rawPanelOpen: false });
-
   return (
-    <aside className="fixed inset-0 z-40 flex min-h-0 flex-col bg-background pt-[env(safe-area-inset-top)] md:static md:z-auto md:w-[min(30rem,45vw)] md:shrink-0 md:border-l md:pt-0 lg:w-[32rem]">
+    <>
       <div className="flex h-(--workspace-topbar-height) shrink-0 items-center gap-2 ps-4 pe-2">
         <div className="min-w-0 flex-1">
           <div className="text-sm font-medium">{t("raw.title")}</div>
@@ -105,7 +103,7 @@ export function RawLogPanel({ threadId }: { threadId: string }) {
           <CopyIcon />
           {t("raw.copyAll")}
         </Button>
-        <Button size="icon-sm" variant="ghost" aria-label={t("common.close")} onClick={close}>
+        <Button size="icon-sm" variant="ghost" aria-label={t("common.close")} onClick={actions.closeDrawer}>
           <XIcon />
         </Button>
       </div>
@@ -142,6 +140,6 @@ export function RawLogPanel({ threadId }: { threadId: string }) {
           </>
         )}
       </div>
-    </aside>
+    </>
   );
 }

@@ -40,6 +40,8 @@ export type Route =
 
 export type SettingsSection = "agents" | "remote" | "appearance" | "about";
 
+export type RightDrawer = { kind: "raw" } | { kind: "child"; threadId: string };
+
 export interface Filters {
   agentIds: string[];
   sources: ThreadSource[];
@@ -61,7 +63,7 @@ interface State {
   route: Route;
   filters: Filters;
   projectExpanded: Record<string, boolean>;
-  rawPanelOpen: boolean;
+  rightDrawer: RightDrawer | null;
   paletteOpen: boolean;
   mobileSidebarOpen: boolean;
   drafts: Record<string, string>;
@@ -115,7 +117,7 @@ export const useStore = create<State>(() => ({
   route: routeFromLocation(),
   filters: { agentIds: [], sources: [], showArchived: false, showHidden: false, showInternal: false, ...(getPrefs().filters as Partial<Filters> | undefined) },
   projectExpanded: getPrefs().projectExpanded ?? {},
-  rawPanelOpen: new URLSearchParams(location.search).get("panel") === "raw",
+  rightDrawer: new URLSearchParams(location.search).get("panel") === "raw" ? { kind: "raw" } : null,
   paletteOpen: new URLSearchParams(location.search).get("palette") === "1",
   mobileSidebarOpen: new URLSearchParams(location.search).get("sidebar") === "1",
   drafts: {},
@@ -296,7 +298,15 @@ export function startSync() {
     if (reconnected) for (const id of Object.keys(get().open)) void actions.openThread(id, true);
   });
   api.start();
-  window.addEventListener("popstate", () => set({ route: routeFromLocation(), mobileSidebarOpen: false }));
+  window.addEventListener("popstate", () => {
+    const route = routeFromLocation();
+    set({ route, mobileSidebarOpen: false, ...(leavesChildDrawer(get().route, route) ? { rightDrawer: null } : {}) });
+  });
+}
+
+function leavesChildDrawer(from: Route, to: Route) {
+  if (get().rightDrawer?.kind !== "child") return false;
+  return from.view !== to.view || (from.view === "thread" && to.view === "thread" && from.threadId !== to.threadId);
 }
 
 const opening = new Map<string, Promise<void>>();
@@ -311,7 +321,23 @@ export const actions = {
     const url = routeToUrl(route);
     if (replace) history.replaceState(null, "", url);
     else if (url !== `${location.pathname}${location.search}`) history.pushState(null, "", url);
-    set({ route, mobileSidebarOpen: false });
+    set({ route, mobileSidebarOpen: false, ...(leavesChildDrawer(get().route, route) ? { rightDrawer: null } : {}) });
+  },
+
+  openRawDrawer() {
+    set({ rightDrawer: { kind: "raw" } });
+  },
+
+  openChildDrawer(threadId: string) {
+    set({ rightDrawer: { kind: "child", threadId } });
+  },
+
+  closeDrawer() {
+    set({ rightDrawer: null });
+  },
+
+  toggleRawDrawer() {
+    set({ rightDrawer: get().rightDrawer?.kind === "raw" ? null : { kind: "raw" } });
   },
 
   openThread(threadId: string, force = false): Promise<void> {

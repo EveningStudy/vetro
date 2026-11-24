@@ -17,7 +17,7 @@ import { copyText } from "~/lib/utils";
 import { type OpenThread, actions, useStore } from "~/state/store";
 import { toast } from "~/state/toast";
 import { AgentIcon } from "../AgentIcon";
-import { RawLogPanel } from "../RawLogPanel";
+import { RightDrawer } from "../RightDrawer";
 import { MobileSidebarButton } from "../Shell";
 import { Button } from "../ui/button";
 import { Dialog, DialogDescription, DialogPopup, DialogTitle, Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger, Tip } from "../ui/overlay";
@@ -29,11 +29,12 @@ import { prepare } from "./OptionPicker";
 import { sourceLabel } from "./sourceLabel";
 import { Timeline } from "./Timeline";
 
+let expandChildrenOnLoad = new URLSearchParams(location.search).get("expand") === "children";
+
 export function ThreadView({ threadId }: { threadId: string }) {
   const t = useT();
   const thread = useStore((s) => s.open[threadId]);
   const summary = useStore((s) => s.threads[threadId] ?? s.open[threadId]?.summary);
-  const rawOpen = useStore((s) => s.rawPanelOpen);
   const [failure, setFailure] = useState<unknown>(null);
   const [attempt, setAttempt] = useState(0);
   const agent = useStore((s) => s.agents.find((a) => a.id === (summary?.agentId ?? threadId.split(":")[0])));
@@ -44,6 +45,17 @@ export function ThreadView({ threadId }: { threadId: string }) {
     actions.openThread(threadId).catch((error: unknown) => setFailure(error ?? true));
     return () => actions.release(threadId);
   }, [threadId, attempt]);
+
+  const firstChild = useStore((s) => {
+    if (!expandChildrenOnLoad) return undefined;
+    for (const item of s.open[threadId]?.items ?? []) if (item.type === "tool_call" && item.childThreadIds[0]) return item.childThreadIds[0];
+    return undefined;
+  });
+  useEffect(() => {
+    if (!firstChild || !expandChildrenOnLoad) return;
+    expandChildrenOnLoad = false;
+    actions.openChildDrawer(firstChild);
+  }, [firstChild]);
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1">
@@ -72,10 +84,12 @@ export function ThreadView({ threadId }: { threadId: string }) {
           </>
         )}
       </div>
-      {rawOpen ? <RawLogPanel threadId={threadId} /> : null}
+      <RightDrawer threadId={threadId} />
     </div>
   );
 }
+
+const rawLogShortcut = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘⇧L" : "Ctrl+Shift+L";
 
 function BareHeader() {
   return (
@@ -92,7 +106,6 @@ function ThreadHeader({ thread, threadId }: { thread: OpenThread | undefined; th
   const agent = useStore((s) => s.agents.find((a) => a.id === summary.agentId));
   const home = useStore((s) => s.app?.homeDir);
   const parent = useStore((s) => (summary.parent ? s.threads[summary.parent.threadId] : undefined));
-  const rawOpen = useStore((s) => s.rawPanelOpen);
   const [renaming, setRenaming] = useState(false);
   const modelOption = thread?.options.find((option) => option.category === "model");
   const model = (modelOption && prepare(modelOption).find((choice) => choice.value === modelOption.currentValue)?.label) ?? summary.model;
@@ -149,12 +162,15 @@ function ThreadHeader({ thread, threadId }: { thread: OpenThread | undefined; th
               </span>
             </>
           ) : null}
+          {summary.source !== "vetro" ? (
+            <>
+              <span className="text-muted-foreground/50 max-sm:hidden">·</span>
+              <span className="shrink-0 text-muted-foreground/80 max-sm:hidden">{t("thread.from", { source: sourceLabel(summary, agent?.name, t) })}</span>
+            </>
+          ) : null}
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-1.5">
-        <Badge variant="outline" className="max-sm:hidden">
-          {sourceLabel(summary, agent?.name, t)}
-        </Badge>
         {!summary.resumable ? (
           <Tip label={t("thread.readOnlyHint", { agent: agent?.name ?? summary.agentId })}>
             <Badge variant="warning">
@@ -164,18 +180,6 @@ function ThreadHeader({ thread, threadId }: { thread: OpenThread | undefined; th
           </Tip>
         ) : null}
         {summary.archived ? <Badge variant="secondary">{t("sidebar.archived")}</Badge> : null}
-        <Tip label={t("thread.rawLog")}>
-          <Button
-            size="icon-sm"
-            variant="ghost"
-            aria-label={t("thread.rawLog")}
-            aria-pressed={rawOpen}
-            data-pressed={rawOpen ? "" : undefined}
-            onClick={() => useStore.setState({ rawPanelOpen: !rawOpen })}
-          >
-            <ScrollTextIcon />
-          </Button>
-        </Tip>
         <Menu>
           <MenuTrigger render={<Button size="icon-sm" variant="ghost" aria-label={t("thread.more")} />}>
             <MoreHorizontalIcon />
@@ -189,9 +193,10 @@ function ThreadHeader({ thread, threadId }: { thread: OpenThread | undefined; th
               {summary.archived ? <ArchiveRestoreIcon /> : <ArchiveIcon />}
               {summary.archived ? t("thread.unarchive") : t("thread.archive")}
             </MenuItem>
-            <MenuItem onClick={() => useStore.setState({ rawPanelOpen: true })}>
+            <MenuItem onClick={actions.openRawDrawer}>
               <ScrollTextIcon />
               {t("thread.rawLog")}
+              <kbd className="ms-auto font-sans text-xs text-muted-foreground">{rawLogShortcut}</kbd>
             </MenuItem>
             {parent ? (
               <MenuItem onClick={() => actions.navigate({ view: "thread", threadId: parent.id })}>

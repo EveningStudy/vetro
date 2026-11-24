@@ -1,4 +1,4 @@
-import { FileIcon, ImagePlusIcon, SlashIcon, XIcon } from "lucide-react";
+import { FileIcon, ImagePlusIcon, SlashIcon, SlidersHorizontalIcon, XIcon } from "lucide-react";
 import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { client } from "~/api/client";
 import type { ConfigOption, ContentBlock, SlashCommand, ThreadUsage } from "~/api/types";
@@ -7,7 +7,7 @@ import { formatTokens } from "~/lib/format";
 import { cn } from "~/lib/utils";
 import { actions, useStore } from "~/state/store";
 import { errorMessage, toast } from "~/state/toast";
-import { Tip } from "../ui/overlay";
+import { Popover, PopoverPopup, PopoverTrigger, Tip } from "../ui/overlay";
 import { Spinner } from "../ui/primitives";
 import { OptionPicker, composerControlClass } from "./OptionPicker";
 
@@ -42,6 +42,21 @@ function readImage(file: File): Promise<Omit<Attachment, "id">> {
 }
 
 let attachmentSeq = 0;
+
+/** The bar shows one model, one thinking level and one mode picker; the rest go behind a button. */
+function partitionOptions(options: ConfigOption[]) {
+  const modes = options.filter((option) => option.category === "mode");
+  const picks = [
+    options.find((option) => option.category === "model"),
+    options.find((option) => option.category === "thought_level"),
+    modes.find((option) => /permission/i.test(option.id)) ?? modes[0],
+  ];
+  const chosen = new Set(picks.filter((option) => option !== undefined).map((option) => option.id));
+  return {
+    primary: options.filter((option) => chosen.has(option.id)),
+    extra: options.filter((option) => !chosen.has(option.id)),
+  };
+}
 
 export interface ComposerProps {
   draftKey: string;
@@ -169,6 +184,7 @@ export function Composer(props: ComposerProps) {
     }
   };
 
+  const { primary, extra } = useMemo(() => partitionOptions(props.options), [props.options]);
   const showStop = props.running && !hasContent && props.onStop;
   const contextUsed = props.usage?.lastTurn?.contextUsed ?? props.usage?.lastTurn?.input ?? null;
   const contextWindow = props.usage?.lastTurn?.contextWindow ?? props.usage?.total?.contextWindow ?? null;
@@ -301,7 +317,7 @@ export function Composer(props: ComposerProps) {
                 <ImagePlusIcon />
               </button>
             </Tip>
-            {props.options.map((option) => (
+            {primary.map((option) => (
               <OptionPicker
                 key={option.id}
                 option={option}
@@ -310,6 +326,25 @@ export function Composer(props: ComposerProps) {
                 onChange={(value) => props.onOptionChange(option.id, value)}
               />
             ))}
+            {extra.length > 0 ? (
+              <Popover>
+                <Tip label={t("composer.moreOptions")}>
+                  <PopoverTrigger disabled={props.readOnly} className={cn(composerControlClass, "px-1.5")} aria-label={t("composer.moreOptions")}>
+                    <SlidersHorizontalIcon />
+                  </PopoverTrigger>
+                </Tip>
+                <PopoverPopup side="top" align="start" className="w-80 p-1.5">
+                  {extra.map((option) => (
+                    <div key={option.id} className="flex min-w-0 items-center justify-between gap-3 rounded-md ps-2">
+                      <span className="min-w-0 truncate text-sm text-muted-foreground" title={option.description ?? option.name}>
+                        {option.name}
+                      </span>
+                      <OptionPicker option={option} disabled={props.readOnly} onChange={(value) => props.onOptionChange(option.id, value)} />
+                    </div>
+                  ))}
+                </PopoverPopup>
+              </Popover>
+            ) : null}
           </div>
           <input
             ref={fileInputRef}

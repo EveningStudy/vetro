@@ -227,6 +227,11 @@ function AgentPicker({ agents, current, onChange }: { agents: AgentInfo[]; curre
                       <KeyRoundIcon className="size-3" />
                       {t("composer.needsSignIn")}
                     </span>
+                  ) : agent.auth.provider ? (
+                    <span className="truncate text-xs text-muted-foreground">
+                      {t("settings.via", { provider: agent.auth.provider })}
+                      {agent.auth.endpoint ? <span className="font-mono text-[11px]"> · {agent.auth.endpoint}</span> : null}
+                    </span>
                   ) : agent.auth.account ? (
                     <span className="text-xs text-muted-foreground">{agent.auth.account}</span>
                   ) : null}

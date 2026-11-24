@@ -1,18 +1,18 @@
-import { ArrowDownIcon } from "lucide-react";
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { Item } from "~/api/types";
-import { useT } from "~/i18n";
+import { ArrowDownIcon, LayersIcon } from "lucide-react";
+import { Fragment, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { Item, ItemOf } from "~/api/types";
+import { type MessageKey, type Translate, useT } from "~/i18n";
 import { actions, useStore } from "~/state/store";
 import { Button } from "../ui/button";
 import { Spinner } from "../ui/primitives";
 import { ThreadCwdContext } from "./threadContext";
 import { AgentMessage, NoticeRow, PlanCard, Reasoning, RequestItem, ToolCallRow, TurnEnd, UserMessage } from "./Items";
+import { diffStats } from "./ToolDetails";
+import { WorkLogRow } from "./WorkLog";
 
 const INITIAL_WINDOW = 120;
 const PAGE = 80;
 const BOTTOM_SLACK = 48;
-
-const expandChildrenByDefault = new URLSearchParams(location.search).get("expand") === "children";
 
 function isLogRow(item: Item) {
   return (
@@ -23,17 +23,73 @@ function isLogRow(item: Item) {
   );
 }
 
-function spacing(previous: Item | undefined, item: Item) {
+/** Intermediate work that folds into a group; everything else stays on the timeline. */
+function isFoldable(item: Item) {
+  switch (item.type) {
+    case "reasoning":
+      return true;
+    case "tool_call":
+      return item.status !== "failed" && item.childThreadIds.length === 0;
+    case "notice":
+      return item.level === "info";
+    case "request":
+      return item.resolution !== null;
+    default:
+      return false;
+  }
+}
+
+type Segment = { kind: "item"; item: Item } | { kind: "group"; id: string; items: Item[]; live: boolean };
+
+function isLive(item: Item) {
+  if (item.type === "reasoning") return item.streaming;
+  if (item.type === "tool_call") return item.status === "in_progress" || item.status === "pending";
+  return false;
+}
+
+function segment(items: Item[], running: boolean): Segment[] {
+  const segments: Segment[] = [];
+  for (const item of items) {
+    const last = segments.at(-1);
+    if (!isFoldable(item)) segments.push({ kind: "item", item });
+    else if (last?.kind === "group") last.items.push(item);
+    else segments.push({ kind: "group", id: item.id, items: [item], live: false });
+  }
+  if (!running) return segments;
+  for (let index = segments.length - 1; index >= 0; index -= 1) {
+    const current = segments[index]!;
+    if (current.kind === "item") {
+      const item = current.item;
+      if (item.type === "turn_end" || (item.type === "agent_message" && !item.streaming)) break;
+      continue;
+    }
+    current.live = isLive(current.items.at(-1)!);
+    break;
+  }
+  return segments;
+}
+
+function first(segment: Segment) {
+  return segment.kind === "item" ? segment.item : segment.items[0]!;
+}
+
+function last(segment: Segment) {
+  return segment.kind === "item" ? segment.item : segment.items.at(-1)!;
+}
+
+function spacing(previous: Segment | undefined, current: Segment) {
   if (!previous) return "";
+  const before = last(previous);
+  const item = first(current);
   if (item.type === "turn_end") return "mt-3";
-  if (previous.type === "turn_end") return "mt-5";
+  if (before.type === "turn_end") return "mt-5";
   if (item.type === "user_message") return "mt-6";
-  if (isLogRow(previous) && isLogRow(item)) return "";
-  if (isLogRow(item) || isLogRow(previous)) return "mt-2";
+  if (isLogRow(before) && isLogRow(item)) return "";
+  if (isLogRow(item) || isLogRow(before)) return "mt-2";
   return "mt-4";
 }
 
-function ItemView({ item, threadId, expandChildren }: { item: Item; threadId: string; expandChildren: boolean }) {
+function ItemView({ item, threadId }: { item: Item; threadId: string }) {
   switch (item.type) {
     case "user_message":
       return <UserMessage item={item} />;
@@ -42,7 +98,7 @@ function ItemView({ item, threadId, expandChildren }: { item: Item; threadId: st
     case "reasoning":
       return <Reasoning item={item} />;
     case "tool_call":
-      return <ToolCallRow item={item} expandChildren={expandChildren} />;
+      return <ToolCallRow item={item} />;
     case "plan":
       return <PlanCard item={item} />;
     case "request":
@@ -54,47 +110,140 @@ function ItemView({ item, threadId, expandChildren }: { item: Item; threadId: st
   }
 }
 
-function TimelineRows({
-  items,
-  threadId,
-  expandChildren,
-}: {
-  items: Item[];
-  threadId: string;
-  expandChildren: boolean;
-}) {
-  const cwd = useStore((s) => s.open[threadId]?.summary.cwd ?? null);
-  const rows = items.filter((item) => item.type !== "agent_message" || item.streaming || item.text.trim() !== "");
+function plural(t: Translate, n: number, one: MessageKey, many: MessageKey) {
+  return n === 1 ? t(one) : t(many, { n });
+}
+
+function workSummary(items: Item[], t: Translate): ReactNode[] {
+  const tools = items.filter((item): item is ItemOf<"tool_call"> => item.type === "tool_call");
+  const count = (kinds: string[]) => tools.filter((tool) => kinds.includes(tool.kind)).length;
+  const read = count(["read", "search"]);
+  const edits = tools.filter((tool) => ["edit", "delete", "move"].includes(tool.kind));
+  const commands = count(["execute"]);
+  const web = count(["fetch", "mcp"]);
+  let additions = 0;
+  let deletions = 0;
+  for (const tool of edits) {
+    const stats = diffStats(tool.content);
+    additions += stats.additions;
+    deletions += stats.deletions;
+  }
+  const parts: ReactNode[] = [plural(t, items.length, "group.workedOne", "group.worked")];
+  if (read) parts.push(plural(t, read, "group.readOne", "group.read"));
+  if (edits.length)
+    parts.push(
+      <span key="edits">
+        {plural(t, edits.length, "group.editedOne", "group.edited")}
+        {additions + deletions > 0 ? (
+          <span className="ms-1 font-mono text-xs tabular-nums">
+            (<span className="text-diff-addition-foreground">+{additions}</span>{" "}
+            <span className="text-diff-deletion-foreground">−{deletions}</span>)
+          </span>
+        ) : null}
+      </span>,
+    );
+  if (commands) parts.push(plural(t, commands, "group.ranOne", "group.ran"));
+  if (web) parts.push(plural(t, web, "group.webOne", "group.web"));
+  return parts;
+}
+
+function GroupItems({ items, threadId }: { items: Item[]; threadId: string }) {
   return (
-    <ThreadCwdContext value={cwd}>
-      {rows.map((item, index) => (
-        <div
-          key={item.id}
-          data-item-id={item.id}
-          className={spacing(rows[index - 1], item)}
-        >
-          <ItemView item={item} threadId={threadId} expandChildren={expandChildren} />
+    <div className="ms-3 mt-0.5 mb-1 border-l border-border/70 ps-2">
+      {items.map((item) => (
+        <div key={item.id} data-item-id={item.id}>
+          <ItemView item={item} threadId={threadId} />
         </div>
       ))}
+    </div>
+  );
+}
+
+function WorkGroup({ items, live, threadId }: { items: Item[]; live: boolean; threadId: string }) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  if (items.length === 1) {
+    return (
+      <div data-item-id={items[0]!.id}>
+        <ItemView item={items[0]!} threadId={threadId} />
+      </div>
+    );
+  }
+
+  if (live) {
+    const done = items.slice(0, -1);
+    const current = items.at(-1)!;
+    return (
+      <div data-work-group="live">
+        <WorkLogRow
+          icon={<LayersIcon className="size-4" />}
+          expanded={open}
+          onToggle={() => setOpen(!open)}
+          label={<span className="text-secondary-label">{plural(t, done.length, "group.completedOne", "group.completed")}</span>}
+        >
+          {open ? <GroupItems items={done} threadId={threadId} /> : null}
+        </WorkLogRow>
+        <div data-item-id={current.id}>
+          <ItemView item={current} threadId={threadId} />
+        </div>
+      </div>
+    );
+  }
+
+  const parts = workSummary(items, t);
+  return (
+    <div data-work-group="done">
+      <WorkLogRow
+        icon={<LayersIcon className="size-4" />}
+        expanded={open}
+        onToggle={() => setOpen(!open)}
+        label={
+          <span className="text-secondary-label">
+            {parts.map((part, index) => (
+              <Fragment key={index}>
+                {index > 0 ? <span className="text-muted-foreground/60"> · </span> : null}
+                {part}
+              </Fragment>
+            ))}
+          </span>
+        }
+      >
+        {open ? <GroupItems items={items} threadId={threadId} /> : null}
+      </WorkLogRow>
+    </div>
+  );
+}
+
+function TimelineRows({ items, threadId }: { items: Item[]; threadId: string }) {
+  const cwd = useStore((s) => s.open[threadId]?.summary.cwd ?? null);
+  const running = useStore((s) => {
+    const status = s.open[threadId]?.summary.status;
+    return status === "running" || status === "awaiting_input";
+  });
+  const segments = useMemo(
+    () => segment(items.filter((item) => item.type !== "agent_message" || item.streaming || item.text.trim() !== ""), running),
+    [items, running],
+  );
+  return (
+    <ThreadCwdContext value={cwd}>
+      {segments.map((current, index) =>
+        current.kind === "item" ? (
+          <div key={current.item.id} data-item-id={current.item.id} className={spacing(segments[index - 1], current)}>
+            <ItemView item={current.item} threadId={threadId} />
+          </div>
+        ) : (
+          <div key={`group:${current.id}`} className={spacing(segments[index - 1], current)}>
+            <WorkGroup items={current.items} live={current.live} threadId={threadId} />
+          </div>
+        ),
+      )}
     </ThreadCwdContext>
   );
 }
 
-/** A thread's items. Top-level timelines own the scroller: they window long threads, load older
- * pages on demand and stay pinned to the bottom while streaming unless the user scrolled up. */
-export function Timeline({ threadId, nested = false, footer }: { threadId: string; nested?: boolean; footer?: React.ReactNode }) {
-  const t = useT();
-  const thread = useStore((s) => s.open[threadId]);
-  const items = thread?.items;
-
-  if (nested) {
-    if (!items) return null;
-    return items.length === 0 ? (
-      <div className="py-2 text-sm text-muted-foreground">{t("thread.empty")}</div>
-    ) : (
-      <TimelineRows items={items} threadId={threadId} expandChildren={false} />
-    );
-  }
+/** A thread's items. The timeline owns the scroller: it windows long threads, loads older
+ * pages on demand and stays pinned to the bottom while streaming unless the user scrolled up. */
+export function Timeline({ threadId, footer }: { threadId: string; footer?: React.ReactNode }) {
   return <ScrollingTimeline key={threadId} threadId={threadId} footer={footer} />;
 }
 
@@ -216,7 +365,7 @@ function ScrollingTimeline({ threadId, footer }: { threadId: string; footer?: Re
             <div className="py-16 text-center text-sm text-muted-foreground">{t("thread.empty")}</div>
           ) : (
             <Fragment>
-              <TimelineRows items={visible} threadId={threadId} expandChildren={expandChildrenByDefault} />
+              <TimelineRows items={visible} threadId={threadId} />
             </Fragment>
           )}
           {footer}

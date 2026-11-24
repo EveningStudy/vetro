@@ -7,7 +7,6 @@ import {
   CircleDashedIcon,
   CircleDotIcon,
   CopyIcon,
-  ExternalLinkIcon,
   FileIcon,
   FilePenIcon,
   FileTextIcon,
@@ -24,7 +23,7 @@ import {
   WrenchIcon,
   XIcon,
 } from "lucide-react";
-import { memo, useEffect, useState } from "react";
+import { memo, useState } from "react";
 import type { ItemOf, Question, ToolKind } from "~/api/types";
 import { type Translate, useT } from "~/i18n";
 import { clockTime, formatDuration, formatTokens } from "~/lib/format";
@@ -32,11 +31,8 @@ import { cn, copyText } from "~/lib/utils";
 import { actions, useStore } from "~/state/store";
 import { AgentIcon } from "../AgentIcon";
 import { Button } from "../ui/button";
-import { Tip } from "../ui/overlay";
-import { Badge, Spinner } from "../ui/primitives";
+import { Spinner } from "../ui/primitives";
 import { Markdown } from "./Markdown";
-import { sourceLabel } from "./sourceLabel";
-import { Timeline } from "./Timeline";
 import { DiffBlock, JsonBlock, TerminalBlock, TextBlock, diffStats } from "./ToolDetails";
 import { WorkLogDetails, WorkLogRow } from "./WorkLog";
 
@@ -195,7 +191,7 @@ function toolSummary(item: ItemOf<"tool_call">) {
   );
 }
 
-export const ToolCallRow = memo(function ToolCallRow({ item, expandChildren }: { item: ItemOf<"tool_call">; expandChildren?: boolean }) {
+export const ToolCallRow = memo(function ToolCallRow({ item }: { item: ItemOf<"tool_call"> }) {
   const t = useT();
   const [open, setOpen] = useState(false);
   const [showRaw, setShowRaw] = useState(false);
@@ -253,51 +249,42 @@ export const ToolCallRow = memo(function ToolCallRow({ item, expandChildren }: {
         ) : null}
       </WorkLogRow>
       {item.childThreadIds.map((childId) => (
-        <ChildSession key={childId} threadId={childId} defaultOpen={expandChildren} />
+        <ChildSessionCapsule key={childId} threadId={childId} />
       ))}
     </div>
   );
 });
 
-function ChildSession({ threadId, defaultOpen = false }: { threadId: string; defaultOpen?: boolean }) {
+function ChildSessionCapsule({ threadId }: { threadId: string }) {
   const t = useT();
-  const [open, setOpen] = useState(defaultOpen);
   const summary = useStore((s) => s.threads[threadId] ?? s.open[threadId]?.summary);
-  const loaded = useStore((s) => !!s.open[threadId]);
-  const agent = useStore((s) => s.agents.find((a) => a.id === (summary?.agentId ?? threadId.split(":")[0])));
-  useEffect(() => {
-    if (!open) return;
-    actions.retain(threadId);
-    return () => actions.release(threadId);
-  }, [open, threadId]);
-
-  const confidence = summary?.parent?.confidence;
+  const agentId = summary?.agentId ?? threadId.split(":")[0]!;
+  const agent = useStore((s) => s.agents.find((a) => a.id === agentId));
+  const active = useStore((s) => s.rightDrawer?.kind === "child" && s.rightDrawer.threadId === threadId);
+  const running = summary?.status === "running" || summary?.status === "awaiting_input";
   return (
-    <div className="my-1 ms-7 overflow-hidden rounded-xl border bg-card/60 dark:bg-white/[0.015]">
-      <div className="flex min-h-10 items-center gap-2 ps-3 pe-1.5">
-        <button type="button" onClick={() => setOpen(!open)} className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 py-2 text-left" aria-expanded={open}>
-          <AgentIcon agentId={summary?.agentId ?? threadId.split(":")[0]!} className="size-4" />
-          <span className="shrink-0 text-sm font-medium">{t("item.childSession", { agent: agent?.name ?? summary?.agentId ?? "" })}</span>
-          <span className="min-w-0 truncate text-sm text-muted-foreground">{summary?.title}</span>
-          {summary ? <Badge variant="outline" className="max-sm:hidden">{sourceLabel(summary, agent?.name, t)}</Badge> : null}
-          {summary?.status === "running" ? <Spinner className="size-3.5 text-info-foreground" /> : null}
-        </button>
-        {confidence ? (
-          <Tip label={t(confidence === "exact" ? "item.linkExact" : confidence === "prompt" ? "item.linkPrompt" : "item.linkHeuristic")}>
-            <span className={cn("hidden size-1.5 shrink-0 rounded-full sm:block", confidence === "exact" ? "bg-success" : confidence === "prompt" ? "bg-info" : "bg-warning")} />
-          </Tip>
-        ) : null}
-        <Button size="xs" variant="ghost-muted" onClick={() => actions.navigate({ view: "thread", threadId })}>
-          <span className="max-sm:hidden">{t("item.openSession")}</span>
-          <ExternalLinkIcon />
-        </Button>
-      </div>
-      {open ? (
-        <div className="max-h-[32rem] overflow-y-auto border-t px-3 py-3">
-          {loaded ? <Timeline threadId={threadId} nested /> : <Spinner className="mx-auto my-4 block text-muted-foreground" />}
-        </div>
+    <button
+      type="button"
+      data-child-capsule={threadId}
+      aria-pressed={active}
+      onClick={() => actions.openChildDrawer(threadId)}
+      className={cn(
+        "group/capsule my-1 ms-7 flex w-[calc(100%-1.75rem)] min-w-0 cursor-pointer items-center gap-2 rounded-lg border bg-card/60 px-2.5 py-1.5 text-left text-sm transition-colors hover:bg-accent/60 dark:bg-white/[0.015]",
+        active && "border-ring/50 bg-accent/70 ring-1 ring-ring/25",
+      )}
+    >
+      <AgentIcon agentId={agentId} className="size-4 shrink-0" />
+      <span className="shrink-0 font-medium">{t("item.delegatedTo", { agent: agent?.name ?? agentId })}</span>
+      <span className="min-w-0 flex-1 truncate text-muted-foreground">{summary?.title}</span>
+      {running ? (
+        <Spinner className="size-3.5 shrink-0 text-info-foreground" />
+      ) : summary?.status === "error" ? (
+        <CircleAlertIcon className="size-3.5 shrink-0 text-error" />
+      ) : summary ? (
+        <CircleCheckIcon className="size-3.5 shrink-0 text-success" />
       ) : null}
-    </div>
+      <span className="shrink-0 text-xs text-muted-foreground group-hover/capsule:text-foreground">{t("item.inspect")}</span>
+    </button>
   );
 }
 

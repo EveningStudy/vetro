@@ -3,7 +3,7 @@ import { CircleAlertIcon, CircleCheckIcon, InfoIcon, PanelLeftIcon, WifiOffIcon,
 import { useEffect } from "react";
 import { useT } from "~/i18n";
 import { cn } from "~/lib/utils";
-import { useStore } from "~/state/store";
+import { actions, useStore } from "~/state/store";
 import { dismiss, useToasts } from "~/state/toast";
 import { CommandPalette } from "./CommandPalette";
 import { EmptyState } from "./EmptyState";
@@ -77,6 +77,10 @@ function Toasts() {
   );
 }
 
+function overlayOpen() {
+  return document.querySelector('[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"]') !== null;
+}
+
 export function Shell() {
   const route = useStore((s) => s.route);
 
@@ -85,6 +89,16 @@ export function Shell() {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
         useStore.setState((state) => ({ paletteOpen: !state.paletteOpen }));
+        return;
+      }
+      const state = useStore.getState();
+      if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "l" && state.route.view === "thread") {
+        event.preventDefault();
+        actions.toggleRawDrawer();
+        return;
+      }
+      if (event.key === "Escape" && !event.defaultPrevented && state.rightDrawer && !state.paletteOpen && !state.mobileSidebarOpen && !overlayOpen()) {
+        actions.closeDrawer();
       }
     };
     window.addEventListener("keydown", onKey);
