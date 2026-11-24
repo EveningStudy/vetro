@@ -17,6 +17,7 @@ import type {
   SlashCommand,
   ThreadEvent,
   ThreadSource,
+  ThreadStatus,
   ThreadSummary,
   ThreadUsage,
 } from "~/api/types";
@@ -168,13 +169,15 @@ function patchOpen(threadId: string, patch: (thread: OpenThread) => Partial<Open
 }
 
 const BUSY = new Set<ThreadSummary["status"]>(["running", "awaiting_input"]);
+const ACTIVE = new Set<ThreadStatus>(["awaiting_input", "error", "running"]);
+const ACTIVE_ORDER: Partial<Record<ThreadStatus, number>> = { awaiting_input: 0, error: 1, running: 2 };
 
 function isThreadVisible(threadId: string) {
   const route = get().route;
   return route.view === "thread" && route.threadId === threadId && !document.hidden;
 }
 
-function notify(thread: ThreadSummary, key: "notify.finished" | "notify.needsInput") {
+function notify(thread: ThreadSummary, key: "notify.finished" | "notify.needsInput" | "notify.failed") {
   const { app, settings } = get();
   if (!app || app.remoteClient || settings?.notificationsEnabled === false) return;
   const lang = resolvedLanguage(usePrefs.getState().language);
@@ -186,6 +189,7 @@ function notify(thread: ThreadSummary, key: "notify.finished" | "notify.needsInp
 /** Status transitions of threads the user is not looking at: mark finished ones unread and ask the
  * desktop for a notification. */
 function noticeTransitions(threads: ThreadSummary[]) {
+  if (!get().threadsLoaded) return;
   let unread: Record<string, boolean> | null = null;
   for (const thread of threads) {
     const before = get().threads[thread.id] ?? get().open[thread.id]?.summary;
@@ -196,6 +200,8 @@ function noticeTransitions(threads: ThreadSummary[]) {
       notify(thread, "notify.finished");
     } else if (thread.status === "awaiting_input") {
       notify(thread, "notify.needsInput");
+    } else if (thread.status === "error") {
+      notify(thread, "notify.failed");
     }
   }
   if (unread) set({ unreadCompleted: unread });
@@ -384,6 +390,29 @@ function leavesChildDrawer(from: Route, to: Route) {
 
 const gitInflight = new Map<string, Promise<GitStatusResult | null>>();
 
+/** Root threads in sidebar order — attention (waiting, failed, running) first, then newest —
+ * restricted to what the sidebar would list. Backs Alt+Arrow cycling and Alt+1..9 jumps. */
+function sidebarOrder() {
+  const { threads, filters, projects, settings } = get();
+  const prefs = usePrefs.getState();
+  const hidden = new Set(projects.filter((project) => project.hidden).map((project) => normalizePath(project.path)));
+  const disabled = (agentId: string) =>
+    prefs.hideDisabledAgentHistory && settings?.agents[agentId]?.enabled === false && !filters.agentIds.includes(agentId);
+  return Object.values(threads)
+    .filter(
+      (thread) =>
+        !thread.parent &&
+        (prefs.sidebarScope === "all" || thread.source === "vetro") &&
+        (filters.showArchived || !thread.archived) &&
+        (filters.agentIds.length === 0 || filters.agentIds.includes(thread.agentId)) &&
+        (filters.sources.length === 0 || filters.sources.includes(thread.source)) &&
+        (!thread.internal || filters.showInternal || filters.sources.includes("exec")) &&
+        (filters.showHidden || !hidden.has(normalizePath(thread.cwd))) &&
+        !disabled(thread.agentId),
+    )
+    .sort((a, b) => (ACTIVE_ORDER[a.status] ?? 9) - (ACTIVE_ORDER[b.status] ?? 9) || b.updatedAt - a.updatedAt);
+}
+
 const opening = new Map<string, Promise<void>>();
 const refs = new Map<string, number>();
 /** Each threads.open gets a generation; a late answer to an older request is dropped. */
@@ -398,6 +427,22 @@ export const actions = {
     else if (url !== `${location.pathname}${location.search}`) history.pushState(null, "", url);
     set({ route, mobileSidebarOpen: false, ...(leavesChildDrawer(get().route, route) ? { rightDrawer: null } : {}) });
     if (route.view === "thread") clearUnread(route.threadId);
+  },
+
+  /** Alt+ArrowUp/Down: previous/next sidebar-listed thread (Active first, then recent). */
+  cycleThread(delta: 1 | -1) {
+    const order = sidebarOrder();
+    if (order.length === 0) return;
+    const route = get().route;
+    const current = route.view === "thread" ? order.findIndex((thread) => thread.id === route.threadId) : -1;
+    const next = order[(current + delta + order.length) % order.length]!;
+    if (route.view !== "thread" || next.id !== route.threadId) actions.navigate({ view: "thread", threadId: next.id });
+  },
+
+  /** Alt+1..9: jump straight to the nth Active (awaiting_input/error/running) thread. */
+  jumpToActive(index: number) {
+    const thread = sidebarOrder().filter((entry) => ACTIVE.has(entry.status))[index];
+    if (thread) actions.navigate({ view: "thread", threadId: thread.id });
   },
 
   openRawDrawer() {

@@ -1,11 +1,11 @@
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
-import { CornerDownLeftIcon, MoonIcon, SearchIcon, SettingsIcon, SquarePenIcon, SunIcon } from "lucide-react";
+import { CornerDownLeftIcon, MoonIcon, PanelLeftIcon, SearchIcon, SettingsIcon, SquarePenIcon, SunIcon } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { client } from "~/api/client";
 import type { SearchHit, ThreadSummary } from "~/api/types";
 import { useT } from "~/i18n";
 import { relativeTime } from "~/lib/format";
-import { cn } from "~/lib/utils";
+import { cn, isMac } from "~/lib/utils";
 import { setTheme } from "~/state/prefs";
 import { actions, useHiddenFilter, useStore } from "~/state/store";
 import { AgentIcon } from "./AgentIcon";
@@ -101,9 +101,20 @@ export function CommandPalette() {
         key: "new",
         icon: <SquarePenIcon className="size-4 text-muted-foreground" />,
         title: t("sidebar.newThread"),
+        meta: isMac ? "⌘N" : "Ctrl N",
         run: () => {
           close();
           actions.navigate({ view: "new", projectPath: null, agentId: null });
+        },
+      },
+      {
+        key: "sidebar",
+        icon: <PanelLeftIcon className="size-4 text-muted-foreground" />,
+        title: t("sidebar.toggle"),
+        meta: isMac ? "⌘B" : "Ctrl B",
+        run: () => {
+          actions.toggleSidebar();
+          close();
         },
       },
       {

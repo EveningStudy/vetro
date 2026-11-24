@@ -864,6 +864,12 @@ export function SidebarContent() {
 
     const add = (entry: ProjectEntry, defaultExpanded: boolean, suffix?: string) => {
       const { project, list } = entry;
+      const total = filters.showInternal ? project.threadCount : project.rootThreadCount;
+      const remote = filtering || scoped || projectCursors[project.path] === null ? 0 : Math.max(0, total - (groups.loaded.get(entry.key) ?? 0));
+      const visible = calm(list);
+      // Vetro scope: an unpinned folder whose threads all moved to the Active section would
+      // render as a dangling empty row; pinned folders stay so the user can reach them.
+      if (scoped && !project.pinned && visible.length === 0 && remote === 0) return;
       const collapsed = !(explicit(project.path) ?? defaultExpanded);
       const attention = !collapsed
         ? null
@@ -876,9 +882,6 @@ export function SidebarContent() {
               : null;
       out.push({ kind: "project", key: `p:${project.path}`, project, suffix, count: list.length, collapsed, attention });
       if (collapsed) return;
-      const total = filters.showInternal ? project.threadCount : project.rootThreadCount;
-      const remote = filtering || scoped || projectCursors[project.path] === null ? 0 : Math.max(0, total - (groups.loaded.get(entry.key) ?? 0));
-      const visible = calm(list);
       if (visible.length === 0) {
         if (remote > 0) out.push({ kind: "more", key: `m:${project.path}`, path: project.path, hidden: 0, remote, expanded: true });
         else if (list.length === 0) out.push({ kind: "empty", key: `e:${project.path}`, text: project.exists ? t("sidebar.noThreads") : t("sidebar.missing") });
@@ -943,7 +946,7 @@ export function SidebarContent() {
           <VetroMark className="size-4.5" />
           <span className="ms-1 flex-1 truncate font-semibold text-sm tracking-tight">{t("app.name")}</span>
           <FilterMenu />
-          <Tip label={t("sidebar.collapse")}>
+          <Tip label={`${t("sidebar.collapse")} · ${isMac ? "⌘B" : "Ctrl B"}`}>
             <Button size="icon-xs" variant="ghost-muted" aria-label={t("sidebar.collapse")} className="max-md:hidden" onClick={actions.toggleSidebar}>
               <PanelLeftCloseIcon />
             </Button>

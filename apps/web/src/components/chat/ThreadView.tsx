@@ -107,6 +107,7 @@ export function ThreadView({ threadId }: { threadId: string }) {
 }
 
 const rawLogShortcut = isMac ? "⌘⇧L" : "Ctrl+Shift+L";
+const changesShortcut = isMac ? "⌘⇧D" : "Ctrl Shift D";
 
 function editable(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) return null;
@@ -254,7 +255,7 @@ function ChangesPill({ threadId, cwd }: { threadId: string; cwd: string | null }
   const additions = fromGit ? git.reduce((sum, file) => sum + (file.additions ?? 0), 0) : edited.reduce((sum, file) => sum + file.additions, 0);
   const deletions = fromGit ? git.reduce((sum, file) => sum + (file.deletions ?? 0), 0) : edited.reduce((sum, file) => sum + file.deletions, 0);
   return (
-    <Tip label={t("changes.pill", { n: count })}>
+    <Tip label={`${t("changes.pill", { n: count })} · ${changesShortcut}`}>
       <Button
         size="xs"
         variant="ghost-muted"

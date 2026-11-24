@@ -2,7 +2,7 @@ import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { CircleAlertIcon, CircleCheckIcon, InfoIcon, PanelLeftIcon, PanelLeftOpenIcon, WifiOffIcon, XIcon } from "lucide-react";
 import { useEffect } from "react";
 import { useT } from "~/i18n";
-import { cn } from "~/lib/utils";
+import { cn, isMac } from "~/lib/utils";
 import { usePrefs } from "~/state/prefs";
 import { actions, useStore } from "~/state/store";
 import { dismiss, useToasts } from "~/state/toast";
@@ -36,7 +36,7 @@ export function MobileSidebarButton({ className }: { className?: string }) {
         <PanelLeftIcon />
       </Button>
       {collapsed ? (
-        <Tip label={t("sidebar.expand")} side="bottom">
+        <Tip label={`${t("sidebar.expand")} · ${isMac ? "⌘B" : "Ctrl B"}`} side="bottom">
           <Button size="icon-sm" variant="ghost" className={cn("-ms-1.5 max-md:hidden", className)} aria-label={t("sidebar.expand")} onClick={actions.toggleSidebar}>
             <PanelLeftOpenIcon />
           </Button>
@@ -105,16 +105,47 @@ export function Shell() {
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
-        event.preventDefault();
-        useStore.setState((state) => ({ paletteOpen: !state.paletteOpen }));
+      if (event.isComposing || event.keyCode === 229) return;
+      const state = useStore.getState();
+      if ((event.metaKey || event.ctrlKey) && !event.altKey) {
+        const key = event.key.toLowerCase();
+        if (key === "k") {
+          event.preventDefault();
+          useStore.setState((current) => ({ paletteOpen: !current.paletteOpen }));
+          return;
+        }
+        if (!event.shiftKey && key === "b") {
+          event.preventDefault();
+          actions.toggleSidebar();
+          return;
+        }
+        if (!event.shiftKey && key === "n") {
+          event.preventDefault();
+          const summary = state.route.view === "thread" ? (state.threads[state.route.threadId] ?? state.open[state.route.threadId]?.summary) : undefined;
+          const cwd = summary?.cwd?.trim() ? summary.cwd : null;
+          actions.navigate({ view: "new", projectPath: cwd, agentId: null });
+          return;
+        }
+        if (event.shiftKey && state.route.view === "thread" && (key === "d" || key === "l")) {
+          event.preventDefault();
+          if (key === "d") actions.toggleChangesDrawer();
+          else actions.toggleRawDrawer();
+          return;
+        }
         return;
       }
-      const state = useStore.getState();
-      if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "l" && state.route.view === "thread") {
-        event.preventDefault();
-        actions.toggleRawDrawer();
-        return;
+      if (event.altKey && !event.metaKey && !event.ctrlKey && !event.shiftKey && !overlayOpen() && !(event.target instanceof HTMLSelectElement)) {
+        if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+          event.preventDefault();
+          actions.cycleThread(event.key === "ArrowDown" ? 1 : -1);
+          return;
+        }
+        const digit = /^Digit([1-9])$/.exec(event.code)?.[1];
+        if (digit) {
+          event.preventDefault();
+          actions.jumpToActive(Number(digit) - 1);
+          return;
+        }
       }
       if (event.key === "Escape" && !event.defaultPrevented && state.rightDrawer && !state.paletteOpen && !state.mobileSidebarOpen && !overlayOpen()) {
         actions.closeDrawer();
