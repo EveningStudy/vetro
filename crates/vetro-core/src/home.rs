@@ -142,6 +142,46 @@ impl Home {
         equal(&self.state.lock().unwrap().local_token, token)
     }
 
+    pub fn scratch_root(&self) -> Result<PathBuf> {
+        let path = self.root.join("scratch");
+        private_dir(&path).map_err(internal)?;
+        let actual = fs::canonicalize(&path).map_err(internal)?;
+        let expected = fs::canonicalize(&self.root)
+            .map_err(internal)?
+            .join("scratch");
+        if actual != expected {
+            return Err(internal(
+                "Vetro scratch directory redirects outside its location",
+            ));
+        }
+        Ok(crate::files::normalize(&actual))
+    }
+
+    pub fn create_scratch_dir(&self, title: &str) -> Result<PathBuf> {
+        let root = self.scratch_root()?;
+        let date = utc_date(now());
+        let slug = scratch_slug(title);
+        for _ in 0..8 {
+            let suffix = secret(3)?;
+            let name = if slug.is_empty() {
+                format!("{date}-{suffix}")
+            } else {
+                format!("{date}-{slug}-{suffix}")
+            };
+            let dir = root.join(name);
+            match fs::create_dir(&dir) {
+                Ok(()) => {
+                    #[cfg(unix)]
+                    tighten(&dir).map_err(internal)?;
+                    return Ok(crate::files::normalize(&dir));
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(internal(error)),
+            }
+        }
+        Err(internal("Could not allocate a unique scratch directory"))
+    }
+
     pub(crate) fn new_local_session(&self) -> Result<String> {
         let token = secret(32)?;
         self.change_state(|state| {
@@ -340,6 +380,70 @@ fn merge(target: &mut serde_json::Value, patch: serde_json::Value) {
     } else {
         *target = patch;
     }
+}
+
+fn utc_date(millis: i64) -> String {
+    // Civil date from Unix days (Howard Hinnant's algorithm).
+    let z = millis.div_euclid(86_400_000) + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = y + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+fn scratch_slug(title: &str) -> String {
+    let mut out = String::new();
+    let mut dash = false;
+    for ch in title.chars() {
+        if ch.is_ascii_alphanumeric() {
+            if dash && !out.is_empty() && out.len() < 24 {
+                out.push('-');
+            }
+            dash = false;
+            if out.len() >= 24 {
+                break;
+            }
+            out.push(ch.to_ascii_lowercase());
+        } else if !out.is_empty() {
+            dash = true;
+        }
+    }
+    out.trim_end_matches('-').to_owned()
+}
+
+#[cfg(test)]
+#[test]
+fn scratch_dir_creates_isolated_folders_inside_vetro_home() {
+    assert_eq!(utc_date(0), "1970-01-01");
+    assert_eq!(utc_date(1_795_520_000_000), "2026-11-24");
+    assert_eq!(
+        scratch_slug("Fix Google Drive sync!"),
+        "fix-google-drive-sync"
+    );
+    assert_eq!(scratch_slug("我的云端硬盘空间不够"), "");
+
+    let parent = tempfile::tempdir().unwrap();
+    let home = Home::open(parent.path().join(".vetro"), parent.path().into()).unwrap();
+    let first = home.create_scratch_dir("Check disk usage").unwrap();
+    let second = home.create_scratch_dir("中文快速对话").unwrap();
+    let root = home.scratch_root().unwrap();
+    assert!(first.is_dir());
+    assert!(second.is_dir());
+    assert_ne!(first, second);
+    assert_eq!(first.parent(), Some(root.as_path()));
+    assert_eq!(second.parent(), Some(root.as_path()));
+    assert!(first
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .contains("-check-disk-usage-"));
 }
 
 #[cfg(all(test, unix))]

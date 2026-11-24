@@ -160,7 +160,8 @@ export const zh: Record<MessageKey, string> = {
   "composer.removeAttachment": "移除",
   "composer.agent": "代理",
   "composer.project": "项目",
-  "composer.chooseProject": "选择项目",
+  "composer.quickChat": "快速对话（不绑定项目）",
+  "composer.quickChatHint": "在独立临时目录中运行，不关联代码项目",
   "composer.addFolder": "添加文件夹…",
   "composer.unavailable": "不可用",
   "composer.needsSignIn": "需要登录",
@@ -168,7 +169,6 @@ export const zh: Record<MessageKey, string> = {
   "composer.signInHint": "{agent} 需要登录。登录在代理自己的流程中完成，Vetro 不会接触你的凭据。",
   "signin.waiting": "正在等待 {agent} 完成登录…",
   "signin.check": "立即检查",
-  "composer.needProject": "请先选择项目文件夹",
   "composer.context": "上下文 {used} / {window}",
   "composer.moreOptions": "更多选项",
 

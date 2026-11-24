@@ -179,8 +179,7 @@ impl Core {
         self.check_agent_enabled(&params.agent_id)?;
         let registry = self.registry();
         let agent = registry.get(&params.agent_id)?;
-        let cwd = crate::files::directory(Path::new(&params.cwd))?;
-        let title = params
+        let title: String = params
             .content
             .iter()
             .find_map(|block| match block {
@@ -196,6 +195,11 @@ impl Core {
                 _ => None,
             })
             .unwrap_or_else(|| "New thread".into());
+        let cwd = if params.cwd.trim().is_empty() {
+            self.home.create_scratch_dir(&title)?
+        } else {
+            crate::files::directory(Path::new(&params.cwd))?
+        };
         let (sink, events) = mpsc::unbounded_channel();
         let session = self
             .user_agent_call_on(&registry, &params.agent_id, || {

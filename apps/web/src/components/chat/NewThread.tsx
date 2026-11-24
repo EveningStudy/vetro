@@ -12,6 +12,7 @@ import { AgentIcon } from "../AgentIcon";
 import { SignInMethods } from "../SignIn";
 import { FolderBrowser } from "../FolderBrowser";
 import { MobileSidebarButton, useSidebarCollapsed } from "../Shell";
+import { isQuickChatPath, isScratchOrTempPath } from "../sidebar/Sidebar";
 import { Menu, MenuGroupLabel, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from "../ui/overlay";
 import { Spinner } from "../ui/primitives";
 import { useHeaderChromeClass, useIntegratedTitleBar, useWindowDragProps } from "../WindowChrome";
@@ -29,8 +30,9 @@ export function NewThread({ projectPath, agentId: routeAgent }: { projectPath: s
   const agents = useStore((s) => s.agents);
   const projects = useStore((s) => s.projects);
   const home = useStore((s) => s.app?.homeDir);
+  const dataDir = useStore((s) => s.app?.dataDir);
   const [agentId, setAgentId] = useState<string | null>(routeAgent ?? getPrefs().lastAgent ?? null);
-  const [cwd, setCwd] = useState<string | null>(projectPath ?? getPrefs().lastProject ?? null);
+  const [cwd, setCwd] = useState<string | null>(projectPath);
   const [baseOptions, setBaseOptions] = useState<ConfigOption[]>([]);
   const [commands, setCommands] = useState<SlashCommand[]>([]);
   const [overrides, setOverrides] = useState<Record<string, string>>({});
@@ -40,16 +42,22 @@ export function NewThread({ projectPath, agentId: routeAgent }: { projectPath: s
   const [browsing, setBrowsing] = useState(false);
 
   useEffect(() => {
-    if (projectPath) setCwd(projectPath);
+    setCwd(projectPath);
   }, [projectPath]);
   useEffect(() => {
     if (routeAgent) setAgentId(routeAgent);
   }, [routeAgent]);
 
   const agent = agents.find((a) => a.id === agentId && usable(a)) ?? agents.find((a) => usable(a) && a.auth.state !== "required") ?? agents.find(usable);
-  const visibleProjects = projects.filter((p) => !p.hidden);
-  const project = visibleProjects.find((p) => p.path === cwd) ?? (cwd ? null : visibleProjects[0]);
-  const effectiveCwd = cwd ?? project?.path ?? null;
+  const lastProject = getPrefs().lastProject ?? null;
+  const visibleProjects = useMemo(() => {
+    const clean = projects.filter((p) => !p.hidden && !isScratchOrTempPath(p.path) && !isQuickChatPath(p.path, dataDir));
+    if (!lastProject) return clean;
+    const index = clean.findIndex((p) => p.path === lastProject);
+    if (index <= 0) return clean;
+    return [clean[index]!, ...clean.slice(0, index), ...clean.slice(index + 1)];
+  }, [projects, dataDir, lastProject]);
+  const effectiveCwd = cwd;
 
   useEffect(() => {
     if (!agent || agent.auth.state === "required") {
@@ -165,18 +173,19 @@ export function NewThread({ projectPath, agentId: routeAgent }: { projectPath: s
           commands={commands}
           onOptionChange={changeOption}
           onSubmit={async (content) => {
-            if (!agent || !effectiveCwd) return;
+            if (!agent) return;
             const changed: Record<string, string> = {};
             for (const [id, value] of Object.entries(overrides)) {
               const option = options.find((o) => o.id === id);
               if (option?.currentValue === value && value !== defaults[id]) changed[id] = value;
             }
-            savePrefs({ lastAgent: agent.id, lastProject: effectiveCwd });
-            await actions.start(agent.id, effectiveCwd, content, changed);
+            const realProject = effectiveCwd && !isScratchOrTempPath(effectiveCwd) && !isQuickChatPath(effectiveCwd, dataDir);
+            savePrefs({ lastAgent: agent.id, ...(realProject ? { lastProject: effectiveCwd } : {}) });
+            await actions.start(agent.id, effectiveCwd ?? "", content, changed);
           }}
           imageInput={agent?.capabilities.imageInput ?? false}
           readOnly={!agent}
-          sendBlocked={needsSignIn ? t("composer.needsSignIn") : !effectiveCwd ? t("composer.needProject") : unknownFolder ? t("remote.knownProject") : null}
+          sendBlocked={needsSignIn ? t("composer.needsSignIn") : unknownFolder ? t("remote.knownProject") : null}
           placeholder={t("composer.placeholderNew")}
           autoFocus
           leading={

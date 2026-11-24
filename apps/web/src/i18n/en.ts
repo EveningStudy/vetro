@@ -158,7 +158,8 @@ export const en = {
   "composer.removeAttachment": "Remove",
   "composer.agent": "Agent",
   "composer.project": "Project",
-  "composer.chooseProject": "Choose a project",
+  "composer.quickChat": "Quick chat (no project)",
+  "composer.quickChatHint": "Runs in an isolated scratch folder",
   "composer.addFolder": "Add folder…",
   "composer.unavailable": "Unavailable",
   "composer.needsSignIn": "Sign in required",
@@ -166,7 +167,6 @@ export const en = {
   "composer.signInHint": "{agent} needs you to sign in. The sign-in runs inside the agent; Vetro never sees your credentials.",
   "signin.waiting": "Waiting for {agent} to finish signing in…",
   "signin.check": "Check now",
-  "composer.needProject": "Choose a project folder first",
   "composer.context": "Context {used} / {window}",
   "composer.moreOptions": "More options",
 

@@ -130,8 +130,15 @@ async fn call(
         "agents.options" => {
             let mut params: AgentOptionsParams = parse(params)?;
             if client.remote() {
-                let cwd = params.cwd.as_deref().unwrap_or_default();
-                params.cwd = Some(checked_cwd(state, cwd)?);
+                params.cwd = match params
+                    .cwd
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                {
+                    Some(cwd) => Some(checked_cwd(state, cwd)?),
+                    None => None,
+                };
             }
             output(core.agent_options(params).await?)
         }
@@ -167,7 +174,7 @@ async fn call(
         }
         "threads.start" => {
             let mut params: ThreadStartParams = parse(params)?;
-            if client.remote() {
+            if client.remote() && !params.cwd.trim().is_empty() {
                 params.cwd = checked_cwd(state, &params.cwd)?;
             }
             let (summary, thread) = core.start(params).await?;

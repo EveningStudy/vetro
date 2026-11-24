@@ -11,7 +11,7 @@ import { EmptyState } from "./EmptyState";
 import { SettingsView } from "./settings/SettingsView";
 import { NewThread } from "./chat/NewThread";
 import { ThreadView } from "./chat/ThreadView";
-import { SidebarContent } from "./sidebar/Sidebar";
+import { SidebarContent, isQuickChatPath, isScratchOrTempPath } from "./sidebar/Sidebar";
 import { Button } from "./ui/button";
 import { Tip } from "./ui/overlay";
 import { WindowControls } from "./WindowChrome";
@@ -123,7 +123,8 @@ export function Shell() {
         if (!event.shiftKey && key === "n") {
           event.preventDefault();
           const summary = state.route.view === "thread" ? (state.threads[state.route.threadId] ?? state.open[state.route.threadId]?.summary) : undefined;
-          const cwd = summary?.cwd?.trim() ? summary.cwd : null;
+          const rawCwd = summary?.cwd?.trim() ? summary.cwd : null;
+          const cwd = rawCwd && !isQuickChatPath(rawCwd, state.app?.dataDir) && !isScratchOrTempPath(rawCwd) ? rawCwd : null;
           actions.navigate({ view: "new", projectPath: cwd, agentId: null });
           return;
         }

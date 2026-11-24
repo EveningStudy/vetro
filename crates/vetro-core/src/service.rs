@@ -386,12 +386,15 @@ impl Core {
         self.check_agent_enabled(&params.agent_id)?;
         let registry = self.registry();
         let agent = registry.get(&params.agent_id)?;
-        let cwd = params
+        let cwd = match params
             .cwd
             .as_deref()
-            .map(Path::new)
-            .map(files::directory)
-            .transpose()?;
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            Some(path) => Some(files::directory(Path::new(path))?),
+            None => Some(self.home.scratch_root()?),
+        };
         let info = self.agent_info(agent.id()).await?;
         let selected = if info.kind == AgentKind::Acp {
             BTreeMap::new()

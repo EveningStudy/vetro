@@ -338,13 +338,15 @@ export class MockTransport implements Transport {
   }
 
   private startThread(params: Params<"threads.start">): Result<"threads.start"> {
-    if (remoteClient && !this.projects.some((p) => p.path === params.cwd))
+    const trimmed = params.cwd.trim();
+    if (remoteClient && trimmed && !this.projects.some((p) => p.path === trimmed))
       throw new RpcFailure("unauthorized", "Remote devices can only start threads in known project folders");
     const agent = this.agents.find((a) => a.id === params.agentId);
     if (!agent?.installed) throw new RpcFailure("agent_unavailable", agent?.error ?? "Agent not available");
     if (agent.auth.state === "required") throw new RpcFailure("auth_required", `${agent.name} needs you to sign in first`);
     const nativeId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
     const id = `${params.agentId}:${nativeId}`;
+    const cwd = trimmed || `${HOME}\\.vetro\\scratch\\${new Date().toISOString().slice(0, 10)}-${nativeId.slice(-6)}`;
     const base = agentOptions[params.agentId] ?? { options: [], commands: [] };
     const options = structuredClone(base.options).map((option) => {
       const value = params.options[option.id];
@@ -361,7 +363,7 @@ export class MockTransport implements Transport {
         nativeId,
         title,
         preview: null,
-        cwd: params.cwd,
+        cwd,
         createdAt: Date.now(),
         updatedAt: Date.now(),
         source: "vetro",

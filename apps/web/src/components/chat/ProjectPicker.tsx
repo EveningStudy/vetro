@@ -1,4 +1,4 @@
-import { CheckIcon, ChevronDownIcon, FolderIcon, FolderPlusIcon, FolderXIcon, SearchIcon } from "lucide-react";
+import { CheckIcon, ChevronDownIcon, FolderIcon, FolderPlusIcon, FolderXIcon, MessageSquareIcon, SearchIcon } from "lucide-react";
 import { useRef, useState } from "react";
 import type { Project } from "~/api/types";
 import { useT } from "~/i18n";
@@ -8,7 +8,7 @@ import { useStore } from "~/state/store";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/overlay";
 import { composerControlClass } from "./OptionPicker";
 
-/** Project folder for a new thread: searchable, with "Add folder…" always in reach. */
+/** Project folder for a new thread: "Quick chat (no project)" or a searchable workspace folder. */
 export function ProjectPicker({
   projects,
   value,
@@ -19,7 +19,7 @@ export function ProjectPicker({
   projects: Project[];
   value: string | null;
   home: string | null | undefined;
-  onChange: (path: string) => void;
+  onChange: (path: string | null) => void;
   onAddFolder: () => void;
 }) {
   const t = useT();
@@ -30,6 +30,7 @@ export function ProjectPicker({
   const current = projects.find((project) => project.path === value);
   const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
   const filtered = projects.filter((project) => terms.every((term) => `${project.name} ${project.path}`.toLowerCase().includes(term)));
+  const quickMatch = terms.length === 0 || terms.every((term) => `${t("composer.quickChat")} ${t("composer.quickChatHint")} quick scratch`.toLowerCase().includes(term));
   return (
     <Popover
       open={open}
@@ -39,8 +40,8 @@ export function ProjectPicker({
       }}
     >
       <PopoverTrigger className={cn(composerControlClass, "max-w-full font-normal text-muted-foreground")} aria-label={t("composer.project")}>
-        <FolderIcon />
-        <span className="min-w-0 truncate">{current?.name ?? (value ? tildePath(value, home) : t("composer.chooseProject"))}</span>
+        {value ? <FolderIcon /> : <MessageSquareIcon />}
+        <span className="min-w-0 truncate">{value ? (current?.name ?? tildePath(value, home)) : t("composer.quickChat")}</span>
         {value ? <span className="hidden min-w-0 truncate font-mono text-[11px] text-muted-foreground/70 sm:inline">{tildePath(value, home)}</span> : null}
         <ChevronDownIcon className="size-3 opacity-70" />
       </PopoverTrigger>
@@ -53,10 +54,15 @@ export function ProjectPicker({
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               onKeyDown={(event) => {
-                if (event.key === "Enter" && filtered[0]) {
+                if (event.key === "Enter") {
                   event.preventDefault();
-                  onChange(filtered[0].path);
-                  setOpen(false);
+                  if (filtered[0]) {
+                    onChange(filtered[0].path);
+                    setOpen(false);
+                  } else if (quickMatch) {
+                    onChange(null);
+                    setOpen(false);
+                  }
                 }
               }}
               placeholder={`${t("composer.project")}…`}
@@ -65,6 +71,26 @@ export function ProjectPicker({
           </div>
         ) : null}
         <div className="max-h-[min(18rem,calc(var(--available-height)-6rem))] overflow-y-auto p-1">
+          {quickMatch ? (
+            <>
+              <button
+                type="button"
+                onClick={() => {
+                  onChange(null);
+                  setOpen(false);
+                }}
+                className="flex w-full min-w-0 items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent"
+              >
+                <MessageSquareIcon className="size-4 shrink-0 text-muted-foreground" />
+                <span className="flex min-w-0 flex-1 flex-col">
+                  <span className="truncate">{t("composer.quickChat")}</span>
+                  <span className="truncate text-[11px] text-muted-foreground">{t("composer.quickChatHint")}</span>
+                </span>
+                {value === null ? <CheckIcon className="size-3.5 shrink-0" /> : null}
+              </button>
+              {filtered.length > 0 ? <div className="my-1 border-t" /> : null}
+            </>
+          ) : null}
           {filtered.map((project) => (
             <button
               key={project.path}

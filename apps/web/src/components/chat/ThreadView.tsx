@@ -30,6 +30,7 @@ import { AgentIcon } from "../AgentIcon";
 import { useEditedFiles } from "../drawer/ChangesPanel";
 import { RightDrawer } from "../RightDrawer";
 import { MobileSidebarButton } from "../Shell";
+import { isQuickChatPath } from "../sidebar/Sidebar";
 import { Button } from "../ui/button";
 import { Menu, MenuItem, MenuItemHint, MenuPopup, MenuSeparator, MenuTrigger, Tip } from "../ui/overlay";
 import { Badge, Spinner } from "../ui/primitives";
@@ -312,6 +313,7 @@ function ThreadHeader({ thread, threadId }: { thread: OpenThread | undefined; th
   const summary = useStore((s) => s.threads[threadId] ?? s.open[threadId]?.summary)!;
   const agent = useStore((s) => s.agents.find((a) => a.id === summary.agentId));
   const home = useStore((s) => s.app?.homeDir);
+  const dataDir = useStore((s) => s.app?.dataDir);
   const parent = useStore((s) => (summary.parent ? s.threads[summary.parent.threadId] : undefined));
   const projectName = useStore((s) => {
     const cwd = summary.cwd?.replace(/[\\/]+$/, "").toLowerCase();
@@ -322,15 +324,16 @@ function ThreadHeader({ thread, threadId }: { thread: OpenThread | undefined; th
   const drag = useWindowDragProps();
   const chromeClass = useHeaderChromeClass("main");
   const cwd = summary.cwd?.trim() ? summary.cwd : null;
-  const branch = useStore((s) => (cwd ? s.gitStatus[cwd]?.branch : null));
+  const quickChat = isQuickChatPath(cwd, dataDir);
+  const branch = useStore((s) => (cwd && !quickChat ? s.gitStatus[cwd]?.branch : null));
   const idle = summary.status === "idle" || summary.status === "error";
   const modelOption = thread?.options.find((option) => option.category === "model");
   const model = (modelOption && prepare(modelOption).find((choice) => choice.value === modelOption.currentValue)?.label) ?? summary.model;
   const source = summary.source !== "vetro" ? t("thread.from", { source: sourceLabel(summary, agent?.name, t) }) : null;
 
   useEffect(() => {
-    if (cwd && idle) void actions.refreshGitStatus(cwd);
-  }, [cwd, idle]);
+    if (cwd && !quickChat && idle) void actions.refreshGitStatus(cwd);
+  }, [cwd, quickChat, idle]);
 
   const where = (
     <span className="flex flex-col gap-0.5">
@@ -381,7 +384,7 @@ function ThreadHeader({ thread, threadId }: { thread: OpenThread | undefined; th
           {cwd || source ? (
             <Tip label={where}>
               <span className="inline-flex min-w-0 items-center gap-1.5 max-sm:hidden">
-                {cwd ? <span className="min-w-0 truncate">{projectName ?? basename(cwd)}</span> : null}
+                {cwd ? <span className="min-w-0 truncate">{quickChat ? t("sidebar.quickChats") : (projectName ?? basename(cwd))}</span> : null}
                 {!cwd && source ? <span className="truncate text-muted-foreground/80">{source}</span> : null}
               </span>
             </Tip>

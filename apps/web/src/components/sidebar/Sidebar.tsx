@@ -152,13 +152,21 @@ const QUICK_CHAT_PATHS = [
   /(?:^|[\\/])Documents[\\/]Codex[\\/]\d{4}-\d{2}-\d{2}(?:[\\/]|$)/i,
   /(?:^|[\\/])\.codex[\\/]worktrees[\\/]/i,
   /(?:^|[\\/])Claude-Data[\\/].*[\\/]scratch-workspaces[\\/]/i,
+  /(?:^|[\\/])\.vetro[\\/]scratch(?:[\\/]|$)/i,
 ];
 
-/** Folders an agent's desktop app creates on its own for a one-off chat. Their threads are listed
- * flat under Quick chats instead of as one-thread projects. */
-export function isQuickChatPath(path: string | null) {
+/** Folders an agent's desktop app or Vetro creates for a one-off quick chat. Their threads are
+ * listed flat under Quick chats instead of as one-thread projects. */
+export function isQuickChatPath(path: string | null, dataDir?: string | null) {
   if (!path || !path.trim()) return true;
-  return QUICK_CHAT_PATHS.some((pattern) => pattern.test(path));
+  if (QUICK_CHAT_PATHS.some((pattern) => pattern.test(path))) return true;
+  if (dataDir) {
+    const clean = (value: string) => value.replace(/^\\\\\?\\/, "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+    const scratch = `${clean(dataDir)}/scratch`;
+    const target = clean(path);
+    if (target === scratch || target.startsWith(`${scratch}/`)) return true;
+  }
+  return false;
 }
 
 function basename(path: string | null) {
@@ -178,8 +186,10 @@ function copy(text: string, t: ReturnType<typeof useT>) {
 function ThreadMenuItems({ thread }: { thread: ThreadSummary }) {
   const t = useT();
   const local = useIsLocalDesktop();
+  const dataDir = useStore((s) => s.app?.dataDir);
   const rename = useContext(RenameContext);
   const cwd = thread.cwd?.trim() ? thread.cwd : null;
+  const quick = isQuickChatPath(cwd, dataDir);
   return (
     <>
       <MenuItem onClick={() => rename(thread)}>
@@ -197,13 +207,15 @@ function ThreadMenuItems({ thread }: { thread: ThreadSummary }) {
           <MenuItemHint>{t("thread.archiveHint")}</MenuItemHint>
         </span>
       </MenuItem>
-      {cwd ? (
+      {cwd && (!quick || local) ? (
         <>
           <MenuSeparator />
-          <MenuItem onClick={() => actions.navigate({ view: "new", projectPath: cwd, agentId: thread.agentId })}>
-            <SquarePenIcon />
-            <span className="min-w-0 truncate">{t("sidebar.newThreadIn", { name: basename(cwd) })}</span>
-          </MenuItem>
+          {!quick ? (
+            <MenuItem onClick={() => actions.navigate({ view: "new", projectPath: cwd, agentId: thread.agentId })}>
+              <SquarePenIcon />
+              <span className="min-w-0 truncate">{t("sidebar.newThreadIn", { name: basename(cwd) })}</span>
+            </MenuItem>
+          ) : null}
           {local ? (
             <MenuItem onClick={() => void actions.openExternal(cwd, "folder")}>
               <FolderOpenIcon />
@@ -732,6 +744,7 @@ export function SidebarContent() {
   const threads = useStore((s) => s.threads);
   const filters = useStore((s) => s.filters);
   const settings = useStore((s) => s.settings);
+  const dataDir = useStore((s) => s.app?.dataDir);
   const route = useStore((s) => s.route);
   const connection = useStore((s) => s.connection);
   const activeId = route.view === "thread" ? route.threadId : null;
@@ -769,7 +782,7 @@ export function SidebarContent() {
     for (const list of byProject.values()) list.sort(byPinThenRecent);
     const hiddenPaths = new Set(projects.filter((project) => project.hidden).map((project) => normalize(project.path)));
     const pinnedPaths = new Set(projects.filter((project) => project.pinned).map((project) => normalize(project.path)));
-    const quickKey = (key: string) => !pinnedPaths.has(key) && isQuickChatPath(key);
+    const quickKey = (key: string) => !pinnedPaths.has(key) && isQuickChatPath(key, dataDir);
     const visiblePath = (key: string) => filters.showHidden || !hiddenPaths.has(key);
 
     const attention = [...byProject.entries()]
@@ -828,7 +841,7 @@ export function SidebarContent() {
     workspaces.sort((a, b) => Number(b.project.pinned) - Number(a.project.pinned) || b.latest - a.latest);
     older.sort((a, b) => b.latest - a.latest);
     return { workspaces, older, other, quick, attention, suffixes, loaded };
-  }, [threads, projects, filters, settings, hideDisabled, activityDays, minute, activeId, openSummary, scope]);
+  }, [threads, projects, filters, settings, dataDir, hideDisabled, activityDays, minute, activeId, openSummary, scope]);
 
   const filtering = filters.agentIds.length > 0 || filters.sources.length > 0;
   const scoped = scope === "vetro";
