@@ -21,6 +21,7 @@ use crate::{
     registry::Registry,
     sessions::Sessions,
     storage::{Filter, Index},
+    voice::VoiceManager,
     workspace,
 };
 
@@ -44,6 +45,7 @@ pub struct Core {
     pub(crate) history_requested: Notify,
     pub(crate) project_refresh_requested: AtomicBool,
     shutting_down: AtomicBool,
+    voice: VoiceManager,
 }
 
 impl Core {
@@ -67,6 +69,7 @@ impl Core {
             history_requested: Notify::new(),
             project_refresh_requested: AtomicBool::new(false),
             shutting_down: AtomicBool::new(false),
+            voice: VoiceManager::default(),
         })
     }
 
@@ -572,6 +575,7 @@ impl Core {
         let (updated, replacement) =
             self.home
                 .update_settings(params.patch, |previous, current| {
+                    crate::voice::validate_settings(&current.voice)?;
                     agents_changed
                         .then(|| self.registry().reconfigure(previous, current))
                         .transpose()
@@ -874,6 +878,36 @@ impl Core {
             Ok(projects) => self.publish(ServerEvent::ProjectsUpdated { projects }),
             Err(error) => self.home.log(&format!("Could not list projects: {error}")),
         }
+    }
+
+    pub(crate) fn voice_status(&self) -> Result<VoiceStatus> {
+        let root = self.home.voice_root()?;
+        let settings = self.home.settings();
+        Ok(self.voice.status(&root, &settings.voice))
+    }
+
+    pub(crate) async fn voice_install(self: &Arc<Self>) -> Result<VoiceStatus> {
+        let root = self.home.voice_root()?;
+        let settings = self.home.settings();
+        let core = Arc::clone(self);
+        self.voice
+            .install(root, &settings.voice, move |event| core.publish(event))
+            .await
+    }
+
+    pub(crate) async fn voice_uninstall(&self) -> Result<VoiceStatus> {
+        let root = self.home.voice_root()?;
+        let settings = self.home.settings();
+        self.voice.uninstall(&root, &settings.voice).await
+    }
+
+    pub(crate) async fn voice_transcribe(
+        &self,
+        params: VoiceTranscribeParams,
+    ) -> Result<VoiceTranscribeResult> {
+        let root = self.home.voice_root()?;
+        let settings = self.home.settings();
+        self.voice.transcribe(&root, &settings.voice, params).await
     }
 }
 

@@ -1,14 +1,17 @@
 import {
   BotIcon,
   ChevronDownIcon,
+  DownloadIcon,
   InfoIcon,
   KeyRoundIcon,
+  MicIcon,
   MonitorIcon,
   MoonIcon,
   PaletteIcon,
   RefreshCwIcon,
   SmartphoneIcon,
   SunIcon,
+  Trash2Icon,
   WifiIcon,
 } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
@@ -54,6 +57,7 @@ import { Segmented } from "../ui/segmented";
 
 const SECTIONS: { id: SettingsSection; icon: typeof BotIcon }[] = [
   { id: "agents", icon: BotIcon },
+  { id: "voice", icon: MicIcon },
   { id: "remote", icon: WifiIcon },
   { id: "appearance", icon: PaletteIcon },
   { id: "about", icon: InfoIcon },
@@ -90,6 +94,7 @@ export function SettingsView({ section }: { section: SettingsSection }) {
         <div className="min-h-0 flex-1 overflow-y-auto">
           <div className="mx-auto w-full max-w-2xl px-(--workspace-gutter) pt-2 pb-16 md:pt-0">
             {section === "agents" ? <AgentsSection /> : null}
+            {section === "voice" ? <VoiceSection /> : null}
             {section === "remote" ? <RemoteSection /> : null}
             {section === "appearance" ? <AppearanceSection /> : null}
             {section === "about" ? <AboutSection /> : null}
@@ -345,6 +350,164 @@ function AgentCard({
         </div>
       ) : null}
     </Group>
+  );
+}
+
+function formatMb(bytes: number) {
+  return `${Math.max(1, Math.round(bytes / (1024 * 1024)))} MB`;
+}
+
+function VoiceSection() {
+  const t = useT();
+  const voice = useStore((s) => s.voice);
+  const progress = useStore((s) => s.voiceProgress);
+  const { settings, update } = useSettings();
+  const remoteClient = useStore((s) => s.app?.remoteClient ?? false);
+  const [endpointUrl, setEndpointUrl] = useState("");
+  const [endpointModel, setEndpointModel] = useState("");
+  const [glossary, setGlossary] = useState("");
+
+  useEffect(() => {
+    void actions.refreshVoice();
+  }, []);
+
+  useEffect(() => {
+    const v = settings?.voice;
+    if (!v) return;
+    setEndpointUrl(v.endpointUrl ?? "");
+    setEndpointModel(v.endpointModel ?? "");
+    setGlossary(
+      Object.entries(v.replacements ?? {})
+        .map(([from, to]) => `${from} = ${to}`)
+        .join("\n"),
+    );
+  }, [settings]);
+
+  const installing = !!voice?.installing || (!!progress && !progress.done);
+  const percent = progress && progress.totalBytes > 0 ? Math.min(100, Math.round((progress.downloadedBytes / progress.totalBytes) * 100)) : 0;
+
+  const saveVoice = async () => {
+    const replacements: Record<string, string> = {};
+    for (const line of glossary.split("\n")) {
+      const idx = line.indexOf("=");
+      if (idx > 0) {
+        const from = line.slice(0, idx).trim();
+        const to = line.slice(idx + 1).trim();
+        if (from) replacements[from] = to;
+      }
+    }
+    const next = await update({
+      voice: {
+        endpointUrl: endpointUrl.trim() || null,
+        endpointModel: endpointModel.trim() || null,
+        replacements,
+      },
+    });
+    if (next) void actions.refreshVoice();
+  };
+
+  return (
+    <section className="flex flex-col gap-6">
+      <div>
+        <SectionTitle title={t("settings.voice")} />
+        {remoteClient ? <p className="mb-3 text-xs text-muted-foreground">{t("settings.desktopOnly")}</p> : null}
+        <Group>
+          <Row
+            label={
+              <span className="flex items-center gap-2">
+                <span>{voice?.modelName ?? "SenseVoice-Small (int8)"}</span>
+                {voice?.installed ? (
+                  <Badge variant="success">{t("voice.installed")}</Badge>
+                ) : voice?.mode === "endpoint" ? (
+                  <Badge variant="info">{t("voice.endpointActive")}</Badge>
+                ) : (
+                  <Badge variant="secondary">{t("voice.notInstalled")}</Badge>
+                )}
+              </span>
+            }
+            hint={
+              voice?.installed
+                ? t("voice.diskUsage", { size: formatMb(voice.installedBytes) })
+                : voice?.downloadBytes
+                  ? t("voice.downloadSize", { size: formatMb(voice.downloadBytes) })
+                  : undefined
+            }
+          >
+            {voice?.installed ? (
+              <Button size="sm" variant="destructive-outline" disabled={remoteClient || installing} onClick={() => void actions.uninstallVoice()}>
+                <Trash2Icon />
+                {t("voice.uninstall")}
+              </Button>
+            ) : (
+              <Button size="sm" disabled={remoteClient || installing || voice?.supported === false} onClick={() => void actions.installVoice()}>
+                {installing ? <Spinner className="size-3.5" /> : <DownloadIcon />}
+                {installing ? `${percent}%` : t("voice.download")}
+              </Button>
+            )}
+          </Row>
+          {installing ? (
+            <div className="flex flex-col gap-1.5 px-4 py-3">
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                <div className="h-full bg-primary transition-[width]" style={{ width: `${percent}%` }} />
+              </div>
+              <div className="flex items-center justify-between text-xs tabular-nums text-muted-foreground">
+                <span>{t(progress?.stage.startsWith("extracting") ? "voice.extracting" : "voice.downloading")}</span>
+                <span>
+                  {progress?.totalBytes ? `${formatMb(progress.downloadedBytes)} / ${formatMb(progress.totalBytes)}` : `${percent}%`}
+                </span>
+              </div>
+            </div>
+          ) : null}
+          {voice?.error ? <div className="px-4 py-2.5 text-xs text-destructive-foreground">{voice.error}</div> : null}
+        </Group>
+      </div>
+
+      <div>
+        <h3 className="mb-2 text-sm font-medium text-muted-foreground">{t("voice.endpointSection")}</h3>
+        <Group>
+          <div className="flex flex-col gap-3 px-4 py-3">
+            <div className="flex flex-col gap-1.5">
+              <Label>{t("voice.endpointUrl")}</Label>
+              <Input
+                value={endpointUrl}
+                disabled={remoteClient}
+                placeholder="http://127.0.0.1:8080/v1/audio/transcriptions"
+                onChange={(event) => setEndpointUrl(event.target.value)}
+                className="font-mono text-xs sm:text-xs"
+              />
+              <span className="text-xs text-muted-foreground">{t("voice.endpointUrlHint")}</span>
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label>{t("voice.endpointModel")}</Label>
+              <Input
+                value={endpointModel}
+                disabled={remoteClient}
+                placeholder="whisper-1"
+                onChange={(event) => setEndpointModel(event.target.value)}
+                className="font-mono text-xs sm:text-xs"
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label>{t("voice.glossary")}</Label>
+              <Textarea
+                rows={4}
+                value={glossary}
+                disabled={remoteClient}
+                placeholder={"claude code = Claude Code\n微特罗 = Vetro"}
+                onChange={(event) => setGlossary(event.target.value)}
+                className="font-mono text-xs sm:text-xs"
+              />
+              <span className="text-xs text-muted-foreground">{t("voice.glossaryHint")}</span>
+            </div>
+            <div className="flex justify-end">
+              <Button size="sm" disabled={remoteClient} onClick={() => void saveVoice()}>
+                {t("common.save")}
+              </Button>
+            </div>
+          </div>
+        </Group>
+      </div>
+    </section>
   );
 }
 

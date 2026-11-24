@@ -36,6 +36,10 @@ export type { TokenUsage } from "./bindings/TokenUsage";
 export type { ToolCall } from "./bindings/ToolCall";
 export type { ToolContent } from "./bindings/ToolContent";
 export type { ToolKind } from "./bindings/ToolKind";
+export type { VoiceSettings } from "./bindings/VoiceSettings";
+export type { VoiceStatus } from "./bindings/VoiceStatus";
+export type { VoiceTranscribeParams } from "./bindings/VoiceTranscribeParams";
+export type { VoiceTranscribeResult } from "./bindings/VoiceTranscribeResult";
 export type { JsonValue } from "./bindings/serde_json/JsonValue";
 
 import type { Item } from "./bindings/Item";

@@ -49,6 +49,9 @@ import type { ThreadStartParams } from "./bindings/ThreadStartParams";
 import type { ThreadUpdateParams } from "./bindings/ThreadUpdateParams";
 import type { ThreadsListParams } from "./bindings/ThreadsListParams";
 import type { ThreadsListResult } from "./bindings/ThreadsListResult";
+import type { VoiceStatus } from "./bindings/VoiceStatus";
+import type { VoiceTranscribeParams } from "./bindings/VoiceTranscribeParams";
+import type { VoiceTranscribeResult } from "./bindings/VoiceTranscribeResult";
 import type { WorkspacePathParams } from "./bindings/WorkspacePathParams";
 
 export const PROTOCOL_VERSION = 1;
@@ -93,6 +96,10 @@ export interface Methods {
   "remote.set": [RemoteSetParams, RemoteStatus];
   "remote.createPairing": [Empty, Pairing];
   "remote.revokeDevice": [RemoteRevokeParams, RemoteStatus];
+  "voice.status": [Empty, VoiceStatus];
+  "voice.install": [Empty, VoiceStatus];
+  "voice.uninstall": [Empty, VoiceStatus];
+  "voice.transcribe": [VoiceTranscribeParams, VoiceTranscribeResult];
 }
 
 export type Method = keyof Methods;

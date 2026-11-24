@@ -97,6 +97,17 @@ pub enum ServerEvent {
     /// Local desktop shell request to focus a specific thread (e.g. notification click).
     #[serde(rename = "app.navigate")]
     AppNavigate { thread_id: String },
+    /// Download and install progress for the on-demand local voice engine.
+    #[serde(rename = "voice.progress")]
+    VoiceProgress {
+        stage: String,
+        #[ts(type = "number")]
+        downloaded_bytes: u64,
+        #[ts(type = "number")]
+        total_bytes: u64,
+        done: bool,
+        error: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
@@ -616,6 +627,56 @@ pub struct CustomAcpAgent {
     pub env: BTreeMap<String, String>,
 }
 
+/// Voice dictation configuration. No API keys or credentials are ever stored.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", default)]
+#[ts(export)]
+pub struct VoiceSettings {
+    /// Optional local OpenAI-compatible `/v1/audio/transcriptions` URL.
+    pub endpoint_url: Option<String>,
+    /// Optional model name sent to `endpoint_url`.
+    pub endpoint_model: Option<String>,
+    /// Deterministic post-ASR term replacements (spoken -> written).
+    pub replacements: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct VoiceStatus {
+    pub supported: bool,
+    pub installed: bool,
+    pub installing: bool,
+    pub ready: bool,
+    /// `local`, `endpoint`, or `uninstalled`.
+    pub mode: String,
+    pub model_name: String,
+    #[ts(type = "number")]
+    pub download_bytes: u64,
+    #[ts(type = "number")]
+    pub installed_bytes: u64,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, optional_fields)]
+pub struct VoiceTranscribeParams {
+    /// Base64-encoded 16 kHz mono 16-bit PCM WAV audio.
+    pub audio_base64: String,
+    /// Optional language hint (`auto`, `zh`, `en`, `ja`, `ko`, `yue`).
+    pub language: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct VoiceTranscribeResult {
+    pub text: String,
+    #[ts(type = "number")]
+    pub duration_ms: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", default)]
 #[ts(export)]
@@ -633,6 +694,7 @@ pub struct Settings {
     pub external_editor: Option<String>,
     /// Show native desktop notifications when background threads need input or finish.
     pub notifications_enabled: bool,
+    pub voice: VoiceSettings,
 }
 
 impl Default for Settings {
@@ -645,6 +707,7 @@ impl Default for Settings {
             port: 0,
             external_editor: None,
             notifications_enabled: true,
+            voice: VoiceSettings::default(),
         }
     }
 }

@@ -21,6 +21,7 @@ import type {
   ThreadStatus,
   ThreadSummary,
   ThreadUsage,
+  VoiceStatus,
 } from "~/api/types";
 import { translate } from "~/i18n";
 import { connectPrefs, getPrefs, onPrefsLoaded, type PrefsData, resolvedLanguage, savePrefs, setSidebarCollapsed, usePrefs } from "./prefs";
@@ -45,7 +46,7 @@ export type Route =
   | { view: "new"; projectPath: string | null; agentId: string | null }
   | { view: "settings"; section: SettingsSection };
 
-export type SettingsSection = "agents" | "remote" | "appearance" | "about";
+export type SettingsSection = "agents" | "voice" | "remote" | "appearance" | "about";
 
 export type RightDrawer =
   | { kind: "raw" }
@@ -88,6 +89,8 @@ interface State {
   unreadCompleted: Record<string, boolean>;
   /** Read-only Git summary per working directory, fetched when a thread opens or a turn ends. */
   gitStatus: Record<string, GitStatusResult>;
+  voice: VoiceStatus | null;
+  voiceProgress: { stage: string; downloadedBytes: number; totalBytes: number; done: boolean; error: string | null } | null;
 }
 
 export function routeFromLocation(): Route {
@@ -99,7 +102,7 @@ export function routeFromLocation(): Route {
   const settings = /^\/settings(?:\/(\w+))?$/.exec(path);
   if (settings) {
     const section = (settings[1] ?? "agents") as SettingsSection;
-    return { view: "settings", section: ["agents", "remote", "appearance", "about"].includes(section) ? section : "agents" };
+    return { view: "settings", section: ["agents", "voice", "remote", "appearance", "about"].includes(section) ? section : "agents" };
   }
   return { view: "empty" };
 }
@@ -148,6 +151,8 @@ export const useStore = create<State>(() => ({
   loadingMore: false,
   unreadCompleted: {},
   gitStatus: {},
+  voice: null,
+  voiceProgress: null,
 }));
 
 const set = useStore.setState;
@@ -294,6 +299,10 @@ function handleEvent(event: ServerEvent) {
     case "app.navigate":
       actions.navigate({ view: "thread", threadId: event.data.threadId });
       break;
+    case "voice.progress":
+      set({ voiceProgress: event.data });
+      if (event.data.done) void actions.refreshVoice();
+      break;
     case "index.progress":
       break;
   }
@@ -316,12 +325,13 @@ async function loadThreads() {
 
 async function loadLists() {
   const api = client();
-  const [agents, projects, settings] = await Promise.all([
+  const [agents, projects, settings, voice] = await Promise.all([
     api.request("agents.list", {}),
     api.request("projects.list", {}),
     api.request("settings.get", {}).catch(() => null),
+    api.request("voice.status", {}).catch(() => null),
   ]);
-  set({ agents: agents.agents, projects: projects.projects, ...(settings ? { settings } : {}) });
+  set({ agents: agents.agents, projects: projects.projects, ...(settings ? { settings } : {}), ...(voice ? { voice } : {}) });
   await loadThreads();
 }
 
@@ -784,6 +794,39 @@ export const actions = {
 
   setDraft(key: string, text: string) {
     set({ drafts: { ...get().drafts, [key]: text } });
+  },
+
+  async refreshVoice() {
+    try {
+      const voice = await client().request("voice.status", {});
+      set({ voice });
+      return voice;
+    } catch {
+      return null;
+    }
+  },
+
+  async installVoice() {
+    set({ voiceProgress: { stage: "downloading_runtime", downloadedBytes: 0, totalBytes: 1, done: false, error: null } });
+    try {
+      const voice = await client().request("voice.install", {});
+      set({ voice, voiceProgress: null });
+      return true;
+    } catch (error) {
+      set({ voiceProgress: null });
+      toast.error(errorMessage(error));
+      void actions.refreshVoice();
+      return false;
+    }
+  },
+
+  async uninstallVoice() {
+    try {
+      const voice = await client().request("voice.uninstall", {});
+      set({ voice, voiceProgress: null });
+    } catch (error) {
+      toast.error(errorMessage(error));
+    }
   },
 };
 

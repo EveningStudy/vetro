@@ -687,6 +687,46 @@ export class MockTransport implements Transport {
       this.emit({ event: "remote.updated", data: { status: this.remote } });
       return this.remote;
     },
+    "voice.status": () => ({
+      supported: true,
+      installed: false,
+      installing: false,
+      ready: !!this.settings.voice.endpointUrl,
+      mode: this.settings.voice.endpointUrl ? "endpoint" : "uninstalled",
+      modelName: "SenseVoice-Small (int8)",
+      downloadBytes: 196_634_583,
+      installedBytes: 0,
+      error: null,
+    }),
+    "voice.install": () => {
+      this.desktopOnly();
+      return {
+        supported: true,
+        installed: true,
+        installing: false,
+        ready: true,
+        mode: "local",
+        modelName: "SenseVoice-Small (int8)",
+        downloadBytes: 196_634_583,
+        installedBytes: 240_000_000,
+        error: null,
+      };
+    },
+    "voice.uninstall": () => {
+      this.desktopOnly();
+      return {
+        supported: true,
+        installed: false,
+        installing: false,
+        ready: false,
+        mode: "uninstalled",
+        modelName: "SenseVoice-Small (int8)",
+        downloadBytes: 196_634_583,
+        installedBytes: 0,
+        error: null,
+      };
+    },
+    "voice.transcribe": () => ({ text: "Mock voice transcript", durationMs: 120 }),
   };
 }
 

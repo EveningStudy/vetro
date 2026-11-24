@@ -12,6 +12,7 @@ pub mod server;
 pub mod service;
 mod sessions;
 pub mod storage;
+mod voice;
 pub mod workspace;
 
 pub use service::{Core, WindowTheme};

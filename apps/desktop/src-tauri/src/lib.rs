@@ -77,6 +77,8 @@ pub fn run() -> Result<()> {
 fn core_window(app: &AppHandle, mut handle: CoreHandle) -> Result<WebviewWindow> {
     let url = Url::parse(&handle.url)?;
     let origin = url.origin();
+    #[cfg(target_os = "windows")]
+    let allowed_mic_origin = origin.ascii_serialization();
     let initial_theme = handle
         .theme_rx
         .as_mut()
@@ -132,7 +134,10 @@ fn core_window(app: &AppHandle, mut handle: CoreHandle) -> Result<WebviewWindow>
         })
         .build()?;
     #[cfg(target_os = "windows")]
-    watch_window_maximized(&window);
+    {
+        watch_window_maximized(&window);
+        allow_loopback_microphone(&window, allowed_mic_origin);
+    }
     if let Some(mut theme) = handle.theme_rx {
         let window = window.clone();
         tauri::async_runtime::spawn(async move {
@@ -252,6 +257,44 @@ fn watch_window_close(window: &WebviewWindow, close_to_tray: bool) {
                 let _ = w.hide();
             }
         }
+    });
+}
+
+#[cfg(target_os = "windows")]
+fn allow_loopback_microphone(window: &WebviewWindow, allowed_origin: String) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        COREWEBVIEW2_PERMISSION_KIND_MICROPHONE, COREWEBVIEW2_PERMISSION_KIND_UNKNOWN_PERMISSION,
+        COREWEBVIEW2_PERMISSION_STATE_ALLOW,
+    };
+    use webview2_com::{take_pwstr, PermissionRequestedEventHandler};
+    use windows_core::PWSTR;
+
+    let _ = window.with_webview(move |webview| unsafe {
+        let Ok(core) = webview.controller().CoreWebView2() else {
+            return;
+        };
+        let mut token = 0i64;
+        let handler = PermissionRequestedEventHandler::create(Box::new(move |_, args| {
+            let Some(args) = args else {
+                return Ok(());
+            };
+            let mut kind = COREWEBVIEW2_PERMISSION_KIND_UNKNOWN_PERMISSION;
+            if args.PermissionKind(&mut kind).is_ok()
+                && kind == COREWEBVIEW2_PERMISSION_KIND_MICROPHONE
+            {
+                let mut raw_uri = PWSTR::null();
+                if args.Uri(&mut raw_uri).is_ok() {
+                    let uri = take_pwstr(raw_uri);
+                    if Url::parse(&uri)
+                        .is_ok_and(|parsed| parsed.origin().ascii_serialization() == allowed_origin)
+                    {
+                        let _ = args.SetState(COREWEBVIEW2_PERMISSION_STATE_ALLOW);
+                    }
+                }
+            }
+            Ok(())
+        }));
+        let _ = core.add_PermissionRequested(&handler, &mut token);
     });
 }
 

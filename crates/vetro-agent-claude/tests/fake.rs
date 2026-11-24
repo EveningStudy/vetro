@@ -328,7 +328,13 @@ async fn test() {
     let log = forked.wire_log().snapshot();
     let spawn: Value = serde_json::from_str(&log[0].text).unwrap();
     let mut expected = PREFIX.to_vec();
-    expected.extend(["--resume", ID, "--fork-session", "--session-id", forked.native_id()]);
+    expected.extend([
+        "--resume",
+        ID,
+        "--fork-session",
+        "--session-id",
+        forked.native_id(),
+    ]);
     assert_eq!(spawn["args"], json!(expected));
     assert_eq!(spawn["cwd"], json!(original));
     agent.shutdown().await;
@@ -361,9 +367,7 @@ fn fake(args: &[String]) {
         extra.is_empty()
             || extra == ["--effort", "low"]
             || extra == ["--no-session-persistence"]
-            || (extra.len() == 3
-                && extra[0] == "--fork-session"
-                && extra[1] == "--session-id")
+            || (extra.len() == 3 && extra[0] == "--fork-session" && extra[1] == "--session-id")
     );
     let mut first = true;
     let mut folded = None;

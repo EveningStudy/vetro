@@ -36,9 +36,13 @@ vetro-proto = { path = "../vetro-proto" }
 vetro-store-antigravity = { path = "../vetro-store-antigravity", optional = true }
 zstd = { version = "0.13", default-features = false, optional = true }
 open = "5"
+base64 = "0.22"
+futures-util = "0.3"
+tar = "0.4"
+bzip2-rs = "0.1"
+reqwest = { version = "0.13", default-features = false, features = ["stream", "multipart", "json", "native-tls"] }
 
 [dev-dependencies]
-futures-util = "0.3"
 tokio-tungstenite = "0.29"
 
 [[test]]

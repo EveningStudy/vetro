@@ -157,6 +157,23 @@ impl Home {
         Ok(crate::files::normalize(&actual))
     }
 
+    pub fn voice_root(&self) -> Result<PathBuf> {
+        let path = self.root.join("voice");
+        if path.exists() {
+            let actual = fs::canonicalize(&path).map_err(internal)?;
+            let expected = fs::canonicalize(&self.root)
+                .map_err(internal)?
+                .join("voice");
+            if actual != expected {
+                return Err(internal(
+                    "Vetro voice directory redirects outside its location",
+                ));
+            }
+            return Ok(crate::files::normalize(&actual));
+        }
+        Ok(crate::files::normalize(&path))
+    }
+
     pub fn create_scratch_dir(&self, title: &str) -> Result<PathBuf> {
         let root = self.scratch_root()?;
         let date = utc_date(now());

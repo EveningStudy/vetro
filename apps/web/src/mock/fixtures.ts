@@ -1161,6 +1161,7 @@ export const settings: Settings = {
   port: 47600,
   externalEditor: null,
   notificationsEnabled: true,
+  voice: { endpointUrl: null, endpointModel: null, replacements: {} },
 };
 
 export const remote: RemoteStatus = {

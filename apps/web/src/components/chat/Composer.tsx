@@ -10,6 +10,7 @@ import { errorMessage, toast } from "~/state/toast";
 import { Popover, PopoverPopup, PopoverTrigger, Tip } from "../ui/overlay";
 import { Spinner } from "../ui/primitives";
 import { OptionPicker, composerControlClass } from "./OptionPicker";
+import { VoiceButton } from "./VoiceButton";
 
 interface Attachment {
   id: number;
@@ -102,6 +103,25 @@ export function Composer(props: ComposerProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const setDraft = (text: string) => actions.setDraft(props.draftKey, text);
+
+  const insertTranscript = (spoken: string) => {
+    const area = textareaRef.current;
+    const current = useStore.getState().drafts[props.draftKey] ?? "";
+    const start = area ? area.selectionStart : current.length;
+    const end = area ? area.selectionEnd : current.length;
+    const before = current.slice(0, start);
+    const after = current.slice(end);
+    const needLeadSpace = before.length > 0 && /[A-Za-z0-9]$/.test(before) && /^[A-Za-z0-9]/.test(spoken);
+    const needTrailSpace = after.length > 0 && /[A-Za-z0-9]$/.test(spoken) && /^[A-Za-z0-9]/.test(after);
+    const inserted = `${needLeadSpace ? " " : ""}${spoken}${needTrailSpace ? " " : ""}`;
+    const next = before + inserted + after;
+    setDraft(next);
+    const caret = start + inserted.length;
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(caret, caret);
+    });
+  };
 
   useLayoutEffect(() => {
     const area = textareaRef.current;
@@ -416,6 +436,7 @@ export function Composer(props: ComposerProps) {
             }}
           />
           {contextUsed && contextWindow ? <ContextMeter used={contextUsed} window={contextWindow} usage={props.usage ?? null} /> : null}
+          {!props.readOnly ? <VoiceButton disabled={sending} onTranscript={insertTranscript} /> : null}
           {showStop ? (
             <Tip label={t("composer.stop")}>
               <button

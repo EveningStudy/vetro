@@ -361,6 +361,16 @@ async fn call(
             let params: RemoteRevokeParams = parse(params)?;
             output(auth::revoke(state, client, &params.device_id)?)
         }
+        "voice.status" => output(core.voice_status()?),
+        "voice.install" => {
+            client.desktop()?;
+            output(core.voice_install().await?)
+        }
+        "voice.uninstall" => {
+            client.desktop()?;
+            output(core.voice_uninstall().await?)
+        }
+        "voice.transcribe" => output(core.voice_transcribe(parse(params)?).await?),
         _ => Err(AgentError::new(
             ErrorCode::NotFound,
             format!("Unknown RPC method: {method}"),
