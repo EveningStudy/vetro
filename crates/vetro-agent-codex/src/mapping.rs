@@ -437,6 +437,16 @@ pub(crate) fn global_notice(method: &str) -> bool {
     )
 }
 
+fn startup_config_notice(method: &str, text: &str) -> bool {
+    if matches!(method, "configWarning" | "deprecationNotice") {
+        return true;
+    }
+    method == "warning"
+        && (text.contains("unrecognized configuration setting")
+            || text.contains("Under-development features enabled:")
+            || text.contains("suppress_unstable_features_warning"))
+}
+
 pub(crate) fn notification_notice(method: &str, params: &Value) -> Option<ItemKind> {
     let (level, text) = match method {
         "error" => (
@@ -466,12 +476,17 @@ pub(crate) fn notification_notice(method: &str, params: &Value) -> Option<ItemKi
                 format!("Codex switched models from {from} to {to}"),
             )
         }
-        _ if global_notice(method) => (
-            NoticeLevel::Warning,
-            string(params, "message")
+        _ if global_notice(method) => {
+            let text = string(params, "message")
                 .or_else(|| string(params, "summary"))
-                .unwrap_or_else(|| "Codex warning".into()),
-        ),
+                .unwrap_or_else(|| "Codex warning".into());
+            let level = if startup_config_notice(method, &text) {
+                NoticeLevel::Info
+            } else {
+                NoticeLevel::Warning
+            };
+            (level, text)
+        }
         _ => return None,
     };
     Some(notice(level, text, params))
@@ -534,4 +549,53 @@ pub(crate) fn rate_limits(buckets: &BTreeMap<String, Value>) -> Vec<RateLimit> {
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn downgrades_startup_config_notices_to_info_only() {
+        let level = |method: &str, text: &str| match notification_notice(
+            method,
+            &json!({ "message": text }),
+        ) {
+            Some(ItemKind::Notice { level, .. }) => level,
+            other => panic!("unexpected notice for {method}: {other:?}"),
+        };
+
+        assert_eq!(
+            level(
+                "warning",
+                "Codex is ignoring 1 unrecognized configuration setting."
+            ),
+            NoticeLevel::Info
+        );
+        assert_eq!(
+            level(
+                "warning",
+                "Under-development features enabled: async_compaction."
+            ),
+            NoticeLevel::Info
+        );
+        assert_eq!(
+            level("configWarning", "Deprecated setting"),
+            NoticeLevel::Info
+        );
+        assert_eq!(level("deprecationNotice", "Old flag"), NoticeLevel::Info);
+        assert_eq!(
+            level(
+                "warning",
+                "Codex compacted the conversation to stay within the context window."
+            ),
+            NoticeLevel::Warning
+        );
+        assert_eq!(
+            level("guardianWarning", "Blocked shell action"),
+            NoticeLevel::Warning
+        );
+    }
 }

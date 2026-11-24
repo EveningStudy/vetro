@@ -30,6 +30,14 @@ function isLogRow(item: Item) {
   );
 }
 
+function isStartupConfigNotice(text: string) {
+  return (
+    text.includes("unrecognized configuration setting") ||
+    text.includes("Under-development features enabled:") ||
+    text.includes("suppress_unstable_features_warning")
+  );
+}
+
 /** Intermediate work that folds into a group; everything else stays on the timeline. */
 function isFoldable(item: Item) {
   switch (item.type) {
@@ -38,7 +46,7 @@ function isFoldable(item: Item) {
     case "tool_call":
       return item.status !== "failed" && item.childThreadIds.length === 0;
     case "notice":
-      return item.level === "info";
+      return item.level === "info" || (item.level === "warning" && isStartupConfigNotice(item.text));
     case "request":
       return item.resolution !== null;
     default:
