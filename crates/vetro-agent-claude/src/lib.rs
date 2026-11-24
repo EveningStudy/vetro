@@ -21,7 +21,7 @@ mod events;
 mod history;
 mod session;
 
-use session::ClaudeSession;
+use session::{ClaudeSession, LaunchMode};
 
 pub struct ClaudeAgent {
     spec: Option<SpawnSpec>,
@@ -81,12 +81,12 @@ impl ClaudeAgent {
         &self,
         id: String,
         cwd: Option<PathBuf>,
-        resume: bool,
+        mode: LaunchMode,
         choices: BTreeMap<String, String>,
         sink: EventSink,
     ) -> Result<Arc<ClaudeSession>> {
         let session =
-            ClaudeSession::launch(self.spawn_spec()?.clone(), id, cwd, resume, choices, sink)?;
+            ClaudeSession::launch(self.spawn_spec()?.clone(), id, cwd, mode, choices, sink)?;
         {
             let mut sessions = self.sessions.lock().unwrap();
             sessions.retain(|session| session.strong_count() > 0);
@@ -117,7 +117,7 @@ impl ClaudeAgent {
             spec,
             uuid()?,
             cwd.map(Path::to_path_buf),
-            false,
+            LaunchMode::New,
             BTreeMap::new(),
             sink,
         )?;
@@ -180,7 +180,10 @@ impl Agent for ClaudeAgent {
                 mid_turn_input: true,
                 resume: true,
                 list_sessions: true,
-                fork: vetro_proto::ForkCapabilities::default(),
+                fork: vetro_proto::ForkCapabilities {
+                    whole: true,
+                    at_turn: false,
+                },
             },
             error: error.map(|error| error.message.clone()),
         }
@@ -217,7 +220,7 @@ impl Agent for ClaudeAgent {
 
     async fn start(&self, req: StartRequest, sink: EventSink) -> Result<Arc<dyn Session>> {
         let session = self
-            .launch(uuid()?, Some(req.cwd), false, req.options, sink)
+            .launch(uuid()?, Some(req.cwd), LaunchMode::New, req.options, sink)
             .await?;
         if let Err(error) = session.send(req.content).await {
             session.detach().await;
@@ -260,7 +263,50 @@ impl Agent for ClaudeAgent {
                 )
             })?;
         Ok(self
-            .launch(native_id.to_owned(), Some(cwd), true, options, sink)
+            .launch(
+                native_id.to_owned(),
+                Some(cwd),
+                LaunchMode::Resume,
+                options,
+                sink,
+            )
+            .await?)
+    }
+
+    async fn fork(
+        &self,
+        native_id: &str,
+        cwd: Option<&Path>,
+        turn_id: Option<&str>,
+        sink: EventSink,
+    ) -> Result<Arc<dyn Session>> {
+        if turn_id.is_some() {
+            return Err(bad_request(
+                "Claude Code only supports forking the whole thread",
+            ));
+        }
+        history::validate_id(native_id)?;
+        let root = self.projects.clone();
+        let id = native_id.to_owned();
+        let stored = disk(move || history::original_cwd(&root, &id)).await?;
+        let cwd = stored
+            .or_else(|| cwd.map(Path::to_path_buf))
+            .ok_or_else(|| {
+                AgentError::new(
+                    ErrorCode::NotResumable,
+                    "Claude session has no known working directory",
+                )
+            })?;
+        Ok(self
+            .launch(
+                uuid()?,
+                Some(cwd),
+                LaunchMode::Fork {
+                    source_id: native_id.to_owned(),
+                },
+                BTreeMap::new(),
+                sink,
+            )
             .await?)
     }
 

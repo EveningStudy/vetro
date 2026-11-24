@@ -233,6 +233,18 @@ pub trait Agent: Send + Sync + 'static {
     ) -> Result<Arc<dyn Session>> {
         self.attach(native_id, cwd, sink).await
     }
+    async fn fork(
+        &self,
+        _native_id: &str,
+        _cwd: Option<&Path>,
+        _turn_id: Option<&str>,
+        _sink: EventSink,
+    ) -> Result<Arc<dyn Session>> {
+        Err(AgentError::new(
+            ErrorCode::NotResumable,
+            "This agent does not support native session forking",
+        ))
+    }
     async fn shutdown(&self);
 }
 

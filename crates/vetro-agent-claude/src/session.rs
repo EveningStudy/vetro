@@ -52,12 +52,18 @@ struct Permission {
     draft: ItemDraft,
 }
 
+pub(crate) enum LaunchMode {
+    New,
+    Resume,
+    Fork { source_id: String },
+}
+
 impl ClaudeSession {
     pub fn launch(
         mut spec: SpawnSpec,
         id: String,
         cwd: Option<PathBuf>,
-        resume: bool,
+        mode: LaunchMode,
         choices: BTreeMap<String, String>,
         sink: EventSink,
     ) -> Result<Arc<Self>> {
@@ -78,12 +84,27 @@ impl ClaudeSession {
                 "--include-hook-events",
                 "--replay-user-messages",
                 "--forward-subagent-text",
-                if resume { "--resume" } else { "--session-id" },
-                &id,
             ]
             .into_iter()
             .map(Into::into),
         );
+        match mode {
+            LaunchMode::New => {
+                spec.args.push("--session-id".into());
+                spec.args.push((&id).into());
+            }
+            LaunchMode::Resume => {
+                spec.args.push("--resume".into());
+                spec.args.push((&id).into());
+            }
+            LaunchMode::Fork { source_id } => {
+                spec.args.push("--resume".into());
+                spec.args.push(source_id.into());
+                spec.args.push("--fork-session".into());
+                spec.args.push("--session-id".into());
+                spec.args.push((&id).into());
+            }
+        }
         for (key, value) in &choices {
             let flag = match key.as_str() {
                 "model" => "--model",

@@ -127,7 +127,10 @@ impl Agent for CodexAgent {
                 mid_turn_input: true,
                 resume: true,
                 list_sessions: true,
-                fork: vetro_proto::ForkCapabilities::default(),
+                fork: vetro_proto::ForkCapabilities {
+                    whole: true,
+                    at_turn: true,
+                },
             },
             error: None,
         };
@@ -292,6 +295,33 @@ impl Agent for CodexAgent {
                 Err(error)
             }
         }
+    }
+
+    async fn fork(
+        &self,
+        native_id: &str,
+        cwd: Option<&Path>,
+        turn_id: Option<&str>,
+        sink: EventSink,
+    ) -> Result<Arc<dyn Session>> {
+        let app = self.app().await?;
+        let catalog = catalog::Catalog::load(&app, cwd).await?;
+        let mut params = json!({
+            "threadId": native_id,
+            "excludeTurns": true,
+        });
+        if let Some(turn_id) = turn_id {
+            params["lastTurnId"] = json!(turn_id);
+        }
+        if let Some(cwd) = cwd {
+            params["cwd"] = json!(cwd.to_string_lossy());
+        }
+        let response = app.call("thread/fork", params).await?;
+        let id = mapping::string(&response["thread"], "id")
+            .ok_or_else(|| unavailable("Codex returned a forked thread without an id"))?;
+        let live = Live::register(app, id, sink, catalog)?;
+        live.hydrate(&response, 0, &BTreeMap::new());
+        Ok(live)
     }
 
     async fn shutdown(&self) {

@@ -247,6 +247,11 @@ function TimelineRows({ items, threadId, dockRequests }: { items: Item[]; thread
     const status = s.open[threadId]?.summary.status;
     return status === "running" || status === "awaiting_input";
   });
+  const canForkAtTurn = useStore((s) => {
+    const summary = s.threads[threadId] ?? s.open[threadId]?.summary;
+    if (!summary?.resumable || summary.status === "running" || summary.status === "awaiting_input") return false;
+    return !!s.agents.find((agent) => agent.id === summary.agentId)?.capabilities.fork.atTurn;
+  });
   const segments = useMemo(
     () =>
       segment(
@@ -291,6 +296,11 @@ function TimelineRows({ items, threadId, dockRequests }: { items: Item[]; thread
               threadId={threadId}
               answerText={current.item.type === "turn_end" ? turnAnswers.get(current.item.id) : undefined}
               isLastTurn={current.item.type === "turn_end" && current.item.id === lastTurnEndId}
+              onFork={
+                current.item.type === "turn_end" && canForkAtTurn && current.item.turnId
+                  ? () => void actions.forkThread(threadId, current.item.turnId!)
+                  : undefined
+              }
             />
           </div>
         ) : (

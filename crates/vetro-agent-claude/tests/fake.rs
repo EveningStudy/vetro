@@ -315,6 +315,22 @@ async fn test() {
     expected.extend(["--resume", ID, "--effort", "low"]);
     assert_eq!(spawn["args"], json!(expected));
     assert_eq!(spawn["cwd"], json!(original));
+    assert!(info.capabilities.fork.whole);
+    assert!(!info.capabilities.fork.at_turn);
+    let (sink, _events) = unbounded_channel();
+    assert!(agent
+        .fork(ID, Some(temp.path()), Some("turn-1"), sink)
+        .await
+        .is_err());
+    let (sink, _events) = unbounded_channel();
+    let forked = agent.fork(ID, Some(temp.path()), None, sink).await.unwrap();
+    assert_ne!(forked.native_id(), ID);
+    let log = forked.wire_log().snapshot();
+    let spawn: Value = serde_json::from_str(&log[0].text).unwrap();
+    let mut expected = PREFIX.to_vec();
+    expected.extend(["--resume", ID, "--fork-session", "--session-id", forked.native_id()]);
+    assert_eq!(spawn["args"], json!(expected));
+    assert_eq!(spawn["cwd"], json!(original));
     agent.shutdown().await;
     println!(
         "fake Claude passed: no injection, streaming, permissions, interrupt, history, resume"
@@ -342,7 +358,12 @@ fn fake(args: &[String]) {
     ));
     let extra = &args[PREFIX.len() + 2..];
     assert!(
-        extra.is_empty() || extra == ["--effort", "low"] || extra == ["--no-session-persistence"]
+        extra.is_empty()
+            || extra == ["--effort", "low"]
+            || extra == ["--no-session-persistence"]
+            || (extra.len() == 3
+                && extra[0] == "--fork-session"
+                && extra[1] == "--session-id")
     );
     let mut first = true;
     let mut folded = None;

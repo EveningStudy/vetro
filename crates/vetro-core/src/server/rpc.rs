@@ -181,6 +181,13 @@ async fn call(
             connection.subscribe(summary.id.clone(), thread, 0);
             output(ThreadResult { thread: summary })
         }
+        "threads.fork" => {
+            let params: ThreadForkParams = parse(params)?;
+            let (summary, thread) = core.fork_thread(params).await?;
+            let seq = thread.snapshot(Some(1)).seq;
+            connection.subscribe(summary.id.clone(), thread, seq);
+            output(ThreadResult { thread: summary })
+        }
         "threads.send" => {
             let params: ThreadSendParams = parse(params)?;
             core.thread(&params.thread_id)

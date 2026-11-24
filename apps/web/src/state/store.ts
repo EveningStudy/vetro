@@ -619,6 +619,16 @@ export const actions = {
     await client().request("threads.send", { threadId, content, clientMessageId });
   },
 
+  async forkThread(threadId: string, turnId?: string) {
+    try {
+      const result = await client().request("threads.fork", { threadId, ...(turnId ? { turnId } : {}) });
+      set({ threads: { ...get().threads, [result.thread.id]: result.thread } });
+      actions.navigate({ view: "thread", threadId: result.thread.id });
+    } catch (error) {
+      toast.error(errorMessage(error));
+    }
+  },
+
   async cancelQueued(threadId: string, queueId: string) {
     await client()
       .request("threads.cancelQueued", { threadId, queueId })

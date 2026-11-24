@@ -59,6 +59,7 @@ pub(crate) struct Capabilities {
     list: bool,
     close: bool,
     delete: bool,
+    fork: bool,
 }
 
 impl AcpAgent {
@@ -160,6 +161,7 @@ impl AcpAgent {
                 list: supports("list"),
                 close: supports("close"),
                 delete: supports("delete"),
+                fork: supports("fork"),
             },
             methods: array(&initial["authMethods"])
                 .filter_map(|method| {
@@ -383,7 +385,10 @@ impl Agent for AcpAgent {
                     mid_turn_input: caps.steering,
                     resume: caps.load || caps.resume,
                     list_sessions: caps.list,
-                    fork: vetro_proto::ForkCapabilities::default(),
+                    fork: vetro_proto::ForkCapabilities {
+                        whole: caps.fork,
+                        at_turn: false,
+                    },
                 };
                 info.auth.methods.clone_from(&runtime.methods);
                 if self.id == "devin" {
@@ -631,6 +636,50 @@ impl Agent for AcpAgent {
             return Err(agent_error(error));
         }
         self.remember(native_id, &cwd);
+        Ok(session)
+    }
+
+    async fn fork(
+        &self,
+        native_id: &str,
+        cwd: Option<&Path>,
+        turn_id: Option<&str>,
+        sink: EventSink,
+    ) -> Result<Arc<dyn Session>> {
+        if turn_id.is_some() {
+            return Err(AgentError::new(
+                ErrorCode::BadRequest,
+                "This ACP agent only supports forking the whole session",
+            ));
+        }
+        let runtime = self.runtime(cwd).await?;
+        if !runtime.capabilities.fork {
+            return Err(AgentError::new(
+                ErrorCode::NotResumable,
+                "ACP agent does not support native session forking",
+            ));
+        }
+        let cwd = self.stored_cwd(&runtime, native_id, cwd).await?;
+        let _lifecycle = runtime.connection.lifecycle.lock().await;
+        let _capture = runtime.connection.capture_new();
+        let result = runtime
+            .call("session/fork", session_params(native_id, &cwd))
+            .await?;
+        let id = string(&result, "sessionId").ok_or_else(|| {
+            AgentError::new(ErrorCode::Internal, "ACP session/fork omitted sessionId")
+        })?;
+        let session = AcpSession::new(
+            Arc::clone(&runtime.connection),
+            id.clone(),
+            cwd.clone(),
+            &runtime.capabilities,
+            Some(sink),
+            false,
+        );
+        session.initialize(&result);
+        runtime.connection.register(&id, &session)?;
+        session.capture_initial_options();
+        self.remember(&id, &cwd);
         Ok(session)
     }
 

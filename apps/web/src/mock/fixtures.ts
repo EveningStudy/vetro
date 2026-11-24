@@ -61,7 +61,7 @@ export const agents: AgentInfo[] = [
       ],
       account: null,
     },
-    capabilities: { imageInput: true, midTurnInput: false, resume: true, listSessions: true, fork: { whole: true, atTurn: false } },
+    capabilities: { imageInput: true, midTurnInput: false, resume: true, listSessions: true, fork: { whole: false, atTurn: false } },
     error: null,
   },
   {
@@ -72,7 +72,7 @@ export const agents: AgentInfo[] = [
     path: "D:\\Software\\Devin\\resources\\app\\extensions\\windsurf\\devin\\bin\\devin.exe",
     version: "2026.11.4",
     auth: { state: "ok", methods: [{ id: "devin-browser", name: "Sign in with browser", description: null }], account: "Devin Max" },
-    capabilities: { imageInput: true, midTurnInput: false, resume: true, listSessions: true, fork: { whole: true, atTurn: false } },
+    capabilities: { imageInput: true, midTurnInput: false, resume: true, listSessions: true, fork: { whole: false, atTurn: false } },
     error: null,
   },
   {

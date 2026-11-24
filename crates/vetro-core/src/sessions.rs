@@ -261,6 +261,115 @@ impl Core {
         thread.listen(0, events);
         Ok((self.overlay(summary), thread))
     }
+
+    pub(crate) async fn fork_thread(
+        self: &Arc<Self>,
+        params: ThreadForkParams,
+    ) -> Result<(ThreadSummary, Arc<Thread>)> {
+        let source = self.thread(&params.thread_id).await?;
+        let (source_summary, source_items, source_options, source_commands) = {
+            let state = source.state.lock().unwrap();
+            if state.active() || !state.pending.is_empty() {
+                return Err(AgentError::new(
+                    ErrorCode::Busy,
+                    "Wait for the current turn to finish before forking",
+                ));
+            }
+            (
+                state.summary.clone(),
+                state.items.clone(),
+                state.options.clone(),
+                state.commands.clone(),
+            )
+        };
+        if !source_summary.resumable {
+            return Err(AgentError::new(
+                ErrorCode::NotResumable,
+                "Thread is read-only",
+            ));
+        }
+        self.check_agent_enabled(&source_summary.agent_id)?;
+        let registry = self.registry();
+        let agent = registry.get(&source_summary.agent_id)?;
+        let (sink, events) = mpsc::unbounded_channel();
+        let session = self
+            .user_agent_call_on(&registry, &source_summary.agent_id, || {
+                agent.fork(
+                    &source_summary.native_id,
+                    source_summary.cwd.as_deref().map(Path::new),
+                    params.turn_id.as_deref(),
+                    sink.clone(),
+                )
+            })
+            .await?;
+        drop(sink);
+        if session.native_id().is_empty() || session.native_id() == source_summary.native_id {
+            session.detach().await;
+            return Err(internal("Agent returned an invalid forked session id"));
+        }
+        let mut summary = new_summary(
+            &source_summary.agent_id,
+            session.native_id(),
+            source_summary.title.clone(),
+            source_summary.cwd.clone(),
+        );
+        summary.model.clone_from(&source_summary.model);
+        summary.live = true;
+        summary.status = ThreadStatus::Idle;
+        let native_items = self
+            .read_history_items(&agent, &summary)
+            .await
+            .map(|transcript| transcript.items)
+            .unwrap_or_default();
+        let mut state = Timeline::new(summary.clone());
+        let cached = self.cached_thread_options(&summary);
+        let initial_options = if !source_options.is_empty() {
+            source_options
+        } else {
+            cached.options
+        };
+        state.set_options(&initial_options);
+        state.commands = if !source_commands.is_empty() {
+            source_commands
+        } else {
+            cached.commands
+        };
+        if !native_items.is_empty() {
+            for draft in native_items {
+                state.item(draft);
+            }
+        } else {
+            let cut = params.turn_id.as_deref();
+            for item in source_items {
+                let stop = cut.is_some_and(|target| {
+                    matches!(item.kind, ItemKind::TurnEnd { .. })
+                        && item.turn_id.as_deref() == Some(target)
+                });
+                state.item(ItemDraft {
+                    id: item.id,
+                    ts: item.ts,
+                    turn_id: item.turn_id,
+                    kind: item.kind,
+                });
+                if stop {
+                    break;
+                }
+            }
+        }
+        state.session = Some(session.clone());
+        state.update_status();
+        let summary = state.summary.clone();
+        let candidate = Arc::new(Thread::new(self, state));
+        let thread = self.sessions.insert(candidate.clone());
+        if !Arc::ptr_eq(&thread, &candidate) {
+            session.detach().await;
+            return Err(internal("Agent reused a known native session id"));
+        }
+        self.thread_changed(summary.clone());
+        self.publish_projects();
+        thread.listen(0, events);
+        Ok((self.overlay(summary), thread))
+    }
 }
 
 impl Thread {

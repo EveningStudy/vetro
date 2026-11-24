@@ -273,6 +273,12 @@ fn app_server() {
                 assert_eq!(params["initialTurnsPage"]["limit"], 1);
                 json!({"thread": {"id": "saved", "name": "Renamed", "status": {"type": "idle"}}})
             }
+            "thread/fork" => {
+                assert_eq!(params["threadId"], "saved");
+                assert_eq!(params["lastTurnId"], "history-turn");
+                assert_eq!(params["excludeTurns"], true);
+                json!({"thread": {"id": "saved-fork", "name": "Forked", "status": {"type": "idle"}}, "model": "fixture"})
+            }
             "thread/settings/update" if params.get("collaborationMode").is_some() => {
                 assert_eq!(
                     params,
@@ -545,6 +551,14 @@ async fn test_adapter() {
     assert!(
         matches!(&history.items[2].kind, ItemKind::ToolCall(tool) if tool.child_thread_ids == ["codex:child"])
     );
+    let (sink, mut forked_events) = mpsc::unbounded_channel();
+    let forked = agent
+        .fork("saved", None, Some("history-turn"), sink)
+        .await
+        .unwrap();
+    assert_eq!(forked.native_id(), "saved-fork");
+    while recv(&mut forked_events).await != SessionEvent::Title("Forked".into()) {}
+    forked.detach().await;
     let (sink, mut resumed_events) = mpsc::unbounded_channel();
     let resumed = agent.attach("saved", None, sink).await.unwrap();
     assert_eq!(resumed.native_id(), "saved");

@@ -9,6 +9,7 @@ import {
   FileDiffIcon,
   FolderOpenIcon,
   GitBranchIcon,
+  GitForkIcon,
   LockIcon,
   MoreHorizontalIcon,
   PencilIcon,
@@ -428,6 +429,12 @@ function ThreadHeader({ thread, threadId }: { thread: OpenThread | undefined; th
               {summary.archived ? <ArchiveRestoreIcon /> : <ArchiveIcon />}
               {summary.archived ? t("thread.unarchive") : t("thread.archive")}
             </MenuItem>
+            {agent?.capabilities.fork.whole && summary.resumable ? (
+              <MenuItem disabled={!idle} onClick={() => void actions.forkThread(threadId)}>
+                <GitForkIcon />
+                {t("thread.fork")}
+              </MenuItem>
+            ) : null}
             <MenuItem onClick={actions.openRawDrawer}>
               <ScrollTextIcon />
               {t("thread.rawLog")}
