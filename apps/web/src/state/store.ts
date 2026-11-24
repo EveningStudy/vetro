@@ -806,11 +806,14 @@ export const actions = {
     }
   },
 
-  async installVoice() {
+  /** Downloads a local voice model (the active one when `modelId` is omitted). A model
+   * downloaded on purpose becomes the active one. */
+  async installVoice(modelId?: string): Promise<boolean> {
     set({ voiceProgress: { stage: "downloading_runtime", downloadedBytes: 0, totalBytes: 1, done: false, error: null } });
     try {
-      const voice = await client().request("voice.install", {});
+      const voice = await client().request("voice.install", modelId ? { modelId } : {});
       set({ voice, voiceProgress: null });
+      if (modelId && voice.activeModelId !== modelId) await actions.useVoiceModel(modelId);
       return true;
     } catch (error) {
       set({ voiceProgress: null });
@@ -820,12 +823,23 @@ export const actions = {
     }
   },
 
-  async uninstallVoice() {
+  async uninstallVoice(modelId?: string) {
     try {
-      const voice = await client().request("voice.uninstall", {});
+      const voice = await client().request("voice.uninstall", modelId ? { modelId } : {});
       set({ voice, voiceProgress: null });
     } catch (error) {
       toast.error(errorMessage(error));
+    }
+  },
+
+  async useVoiceModel(modelId: string): Promise<VoiceStatus | null> {
+    try {
+      const settings = await client().request("settings.update", { patch: { voice: { modelId } } as never });
+      set({ settings });
+      return await actions.refreshVoice();
+    } catch (error) {
+      toast.error(errorMessage(error));
+      return null;
     }
   },
 };

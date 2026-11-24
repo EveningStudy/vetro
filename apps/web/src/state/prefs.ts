@@ -15,6 +15,7 @@ import {
 export type ThemePref = "light" | "dark" | "system";
 export type LanguagePref = "en" | "zh" | "system";
 export type SidebarScope = "all" | "vetro";
+export type SidebarOrder = "projects" | "quickChats";
 export type FontStyle = "sans" | "serif" | "mono";
 export type FontScale = "compact" | "default" | "large";
 export type ChatWidth = "standard" | "wide" | "full";
@@ -40,6 +41,10 @@ export interface PrefsData {
   sidebarCollapsed?: boolean;
   /** `vetro` limits the sidebar to threads started in Vetro; search still covers everything. */
   sidebarScope?: SidebarScope;
+  /** Which of Projects and Quick chats comes first in the sidebar. */
+  sidebarOrder?: SidebarOrder;
+  /** Explicit open (true) or closed (false) state of sidebar groups (older, missing, automated runs). */
+  sidebarGroupsOpen?: Record<string, boolean>;
   drawerWidth?: number;
   hideDisabledAgentHistory?: boolean;
   lastAgent?: string;
@@ -148,6 +153,8 @@ interface UiPrefs {
   hideDisabledAgentHistory: boolean;
   sidebarCollapsed: boolean;
   sidebarScope: SidebarScope;
+  sidebarOrder: SidebarOrder;
+  sidebarGroupsOpen: Record<string, boolean>;
   drawerWidth: number;
   themeId: string;
   customThemes: CustomTheme[];
@@ -176,6 +183,8 @@ function derived(prefs: PrefsData): UiPrefs {
     hideDisabledAgentHistory: prefs.hideDisabledAgentHistory ?? true,
     sidebarCollapsed: prefs.sidebarCollapsed ?? false,
     sidebarScope: prefs.sidebarScope === "vetro" ? "vetro" : "all",
+    sidebarOrder: prefs.sidebarOrder === "quickChats" ? "quickChats" : "projects",
+    sidebarGroupsOpen: prefs.sidebarGroupsOpen && typeof prefs.sidebarGroupsOpen === "object" ? prefs.sidebarGroupsOpen : {},
     drawerWidth: clampDrawerWidth(typeof prefs.drawerWidth === "number" ? prefs.drawerWidth : 480),
     themeId: paletteOverride(prefs) ?? (typeof prefs.themeId === "string" && prefs.themeId ? prefs.themeId : DEFAULT_THEME_ID),
     customThemes: customThemes(prefs.customThemes),
@@ -347,6 +356,17 @@ export function setSidebarCollapsed(sidebarCollapsed: boolean) {
 export function setSidebarScope(sidebarScope: SidebarScope) {
   savePrefs({ sidebarScope });
   usePrefs.setState({ sidebarScope });
+}
+
+export function setSidebarOrder(sidebarOrder: SidebarOrder) {
+  savePrefs({ sidebarOrder });
+  usePrefs.setState({ sidebarOrder });
+}
+
+export function setSidebarGroupOpen(key: string, open: boolean) {
+  const sidebarGroupsOpen = { ...usePrefs.getState().sidebarGroupsOpen, [key]: open };
+  savePrefs({ sidebarGroupsOpen });
+  usePrefs.setState({ sidebarGroupsOpen });
 }
 
 export function setDrawerWidth(width: number) {

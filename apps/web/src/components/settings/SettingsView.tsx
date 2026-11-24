@@ -26,6 +26,7 @@ import {
   type FontScale,
   type FontStyle,
   type LanguagePref,
+  type SidebarOrder,
   type SidebarScope,
   type ThemePref,
   setBypassMemoryScope,
@@ -36,6 +37,7 @@ import {
   setLanguage,
   setPaperGrain,
   setSidebarActivityDays,
+  setSidebarOrder,
   setSidebarScope,
   setTheme,
   usePrefs,
@@ -43,8 +45,9 @@ import {
 import { type SettingsSection, actions, useStore } from "~/state/store";
 import { errorMessage, toast } from "~/state/toast";
 import { AgentIcon } from "../AgentIcon";
-import { CustomAgents } from "./CustomAgents";
+import { BUILTIN_AGENT_IDS, CustomAgents } from "./CustomAgents";
 import { SignInMethods } from "../SignIn";
+import { voiceModelDescription, voiceModelLabel } from "../chat/VoiceButton";
 import { QrCodeSvg } from "../QrCode";
 import { MobileSidebarButton } from "../Shell";
 import { useHeaderChromeClass, useWindowDragProps } from "../WindowChrome";
@@ -169,6 +172,8 @@ function AgentsSection() {
   const [refreshing, setRefreshing] = useState(false);
   const remoteClient = useStore((s) => s.app?.remoteClient ?? false);
   const bypassMemoryScope = usePrefs((s) => s.bypassMemoryScope);
+  const isCustom = (id: string) => !BUILTIN_AGENT_IDS.includes(id) && (settings?.customAcpAgents.some((c) => c.id === id) ?? false);
+  const listed = agents.filter((agent, index) => agents.findIndex((other) => other.id === agent.id) === index);
   return (
     <section>
       <SectionTitle
@@ -194,8 +199,8 @@ function AgentsSection() {
       />
       {remoteClient ? <p className="mb-3 text-xs text-muted-foreground">{t("settings.remoteReadOnly")}</p> : null}
       <div className="flex flex-col gap-3">
-        {agents.map((agent) => (
-          <AgentCard key={agent.id} agent={agent} settings={settings?.agents[agent.id]} custom={settings?.customAcpAgents.some((c) => c.id === agent.id) ?? false} onSave={update} readOnly={remoteClient} />
+        {listed.map((agent) => (
+          <AgentCard key={agent.id} agent={agent} settings={settings?.agents[agent.id]} custom={isCustom(agent.id)} onSave={update} readOnly={remoteClient} />
         ))}
       </div>
       <Group className="mt-4">
@@ -213,7 +218,7 @@ function AgentsSection() {
       <CustomAgents
         settings={settings}
         readOnly={remoteClient}
-        reservedIds={agents.filter((agent) => !settings?.customAcpAgents.some((c) => c.id === agent.id)).map((agent) => agent.id)}
+        reservedIds={[...new Set([...BUILTIN_AGENT_IDS, ...listed.filter((agent) => !isCustom(agent.id)).map((agent) => agent.id)])]}
         onSave={async (patch) => {
           const next = await update(patch);
           if (next) {
@@ -366,6 +371,7 @@ function VoiceSection() {
   const [endpointUrl, setEndpointUrl] = useState("");
   const [endpointModel, setEndpointModel] = useState("");
   const [glossary, setGlossary] = useState("");
+  const [pendingModel, setPendingModel] = useState<string | null>(null);
 
   useEffect(() => {
     void actions.refreshVoice();
@@ -406,45 +412,76 @@ function VoiceSection() {
     if (next) void actions.refreshVoice();
   };
 
+  const models = voice?.models ?? [];
+  const busy = remoteClient || installing;
+
   return (
     <section className="flex flex-col gap-6">
       <div>
-        <SectionTitle title={t("settings.voice")} />
+        <SectionTitle title={t("settings.voice")} action={voice?.mode === "endpoint" ? <Badge variant="info">{t("voice.endpointActive")}</Badge> : undefined} />
         {remoteClient ? <p className="mb-3 text-xs text-muted-foreground">{t("settings.desktopOnly")}</p> : null}
+        <h3 className="mb-2 text-sm font-medium text-muted-foreground">{t("voice.models")}</h3>
         <Group>
-          <Row
-            label={
-              <span className="flex items-center gap-2">
-                <span>{voice?.modelName ?? "SenseVoice-Small (int8)"}</span>
-                {voice?.installed ? (
-                  <Badge variant="success">{t("voice.installed")}</Badge>
-                ) : voice?.mode === "endpoint" ? (
-                  <Badge variant="info">{t("voice.endpointActive")}</Badge>
+          {models.length === 0 ? (
+            <Row label={<span className="text-muted-foreground">{voice ? voice.modelName : t("common.loading")}</span>} />
+          ) : null}
+          {models.map((model) => {
+            const pending = installing && (pendingModel ?? voice?.activeModelId) === model.id;
+            return (
+              <Row
+                key={model.id}
+                label={
+                  <span className="flex flex-wrap items-center gap-2">
+                    <span>{voiceModelLabel(t, model)}</span>
+                    {model.installed && model.active ? (
+                      <Badge variant="success">{t("voice.active")}</Badge>
+                    ) : model.installed ? (
+                      <Badge variant="secondary">{t("voice.installed")}</Badge>
+                    ) : (
+                      <Badge variant="outline">{t("voice.notInstalled")}</Badge>
+                    )}
+                  </span>
+                }
+                hint={
+                  model.installed
+                    ? `${voiceModelDescription(t, model)} · ${t("voice.diskUsage", { size: formatMb(model.installedBytes) })}`
+                    : voiceModelDescription(t, model)
+                }
+              >
+                {pending ? (
+                  <Button size="sm" disabled>
+                    <Spinner className="size-3.5" />
+                    {percent}%
+                  </Button>
+                ) : model.installed ? (
+                  <>
+                    {model.active ? null : (
+                      <Button size="sm" variant="outline" disabled={busy} onClick={() => void actions.useVoiceModel(model.id)}>
+                        {t("voice.use")}
+                      </Button>
+                    )}
+                    <Button size="sm" variant="destructive-outline" disabled={busy} onClick={() => void actions.uninstallVoice(model.id)}>
+                      <Trash2Icon />
+                      {t("voice.uninstall")}
+                    </Button>
+                  </>
                 ) : (
-                  <Badge variant="secondary">{t("voice.notInstalled")}</Badge>
+                  <Button
+                    size="sm"
+                    variant={model.active ? "default" : "outline"}
+                    disabled={busy || voice?.supported === false}
+                    onClick={() => {
+                      setPendingModel(model.id);
+                      void actions.installVoice(model.id).finally(() => setPendingModel(null));
+                    }}
+                  >
+                    <DownloadIcon />
+                    {t("voice.download")}
+                  </Button>
                 )}
-              </span>
-            }
-            hint={
-              voice?.installed
-                ? t("voice.diskUsage", { size: formatMb(voice.installedBytes) })
-                : voice?.downloadBytes
-                  ? t("voice.downloadSize", { size: formatMb(voice.downloadBytes) })
-                  : undefined
-            }
-          >
-            {voice?.installed ? (
-              <Button size="sm" variant="destructive-outline" disabled={remoteClient || installing} onClick={() => void actions.uninstallVoice()}>
-                <Trash2Icon />
-                {t("voice.uninstall")}
-              </Button>
-            ) : (
-              <Button size="sm" disabled={remoteClient || installing || voice?.supported === false} onClick={() => void actions.installVoice()}>
-                {installing ? <Spinner className="size-3.5" /> : <DownloadIcon />}
-                {installing ? `${percent}%` : t("voice.download")}
-              </Button>
-            )}
-          </Row>
+              </Row>
+            );
+          })}
           {installing ? (
             <div className="flex flex-col gap-1.5 px-4 py-3">
               <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
@@ -461,7 +498,6 @@ function VoiceSection() {
           {voice?.error ? <div className="px-4 py-2.5 text-xs text-destructive-foreground">{voice.error}</div> : null}
         </Group>
       </div>
-
       <div>
         <h3 className="mb-2 text-sm font-medium text-muted-foreground">{t("voice.endpointSection")}</h3>
         <Group>
@@ -753,6 +789,7 @@ function AppearanceSection() {
   const theme = usePrefs((s) => s.theme);
   const language = usePrefs((s) => s.language);
   const scope = usePrefs((s) => s.sidebarScope);
+  const sidebarOrder = usePrefs((s) => s.sidebarOrder);
   const hideDisabled = usePrefs((s) => s.hideDisabledAgentHistory);
   const showInternal = useStore((s) => s.filters.showInternal);
   const fontStyle = usePrefs((s) => s.fontStyle);
@@ -838,6 +875,16 @@ function AppearanceSection() {
             ]}
           />
         </Row>
+        <Row label={t("settings.sidebarOrder")}>
+          <Segmented<SidebarOrder>
+            value={sidebarOrder}
+            onChange={setSidebarOrder}
+            options={[
+              { value: "projects", label: t("settings.sidebarOrder.projects") },
+              { value: "quickChats", label: t("settings.sidebarOrder.quickChats") },
+            ]}
+          />
+        </Row>
         <Row label={t("settings.activityWindow")} hint={t("settings.activityWindowHint")}>
           <ActivityWindow />
         </Row>
@@ -896,11 +943,6 @@ function AboutSection() {
             />
           </Row>
         </Group>
-      </div>
-      <div>
-        <SectionTitle title={t("settings.rulesTitle")} />
-        <p className="text-sm leading-relaxed text-muted-foreground">{t("settings.rules")}</p>
-        <p className="mt-3 text-sm leading-relaxed text-muted-foreground">{t("settings.rawLog")}</p>
       </div>
     </section>
   );

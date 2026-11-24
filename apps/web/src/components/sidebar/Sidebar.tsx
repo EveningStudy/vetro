@@ -11,6 +11,7 @@ import {
   FolderIcon,
   FolderMinusIcon,
   FolderOpenIcon,
+  FolderPlusIcon,
   FolderXIcon,
   ListFilterIcon,
   LoaderCircleIcon,
@@ -34,10 +35,11 @@ import { useT } from "~/i18n";
 import { relativeTime } from "~/lib/format";
 import { cn, copyText, isMac } from "~/lib/utils";
 import { RpcFailure } from "~/api/protocol";
-import { type SidebarScope, setSidebarScope, usePrefs } from "~/state/prefs";
+import { type SidebarScope, setSidebarGroupOpen, setSidebarScope, usePrefs } from "~/state/prefs";
 import { actions, isCatalogStubVisible, useIsLocalDesktop, useStore } from "~/state/store";
 import { errorMessage, toast } from "~/state/toast";
 import { AgentIcon } from "../AgentIcon";
+import { FolderBrowser } from "../FolderBrowser";
 import { useNow } from "../hooks";
 import { RenameDialog } from "../RenameDialog";
 import { Button } from "../ui/button";
@@ -119,18 +121,21 @@ function StatusLabel({ thread, iconOnly }: { thread: ThreadSummary; iconOnly?: b
   );
 }
 
-const ROW_HEIGHT = { project: 40, thread: 37, more: 29, empty: 29, loadall: 37, section: 40, heading: 32 } as const;
+const ROW_HEIGHT = { project: 40, thread: 37, more: 29, empty: 29, loadall: 37, section: 40, heading: 32, subgroup: 30 } as const;
 
 type Heading = "active" | "quick" | "projects";
 
 type SidebarRow =
   | { kind: "project"; key: string; project: Pick<Project, "path" | "name" | "exists" | "pinned" | "hidden">; suffix?: string; count: number; collapsed: boolean; attention: string | null }
-  | { kind: "thread"; key: string; thread: ThreadSummary; context?: string }
+  | { kind: "thread"; key: string; thread: ThreadSummary; context?: string; childrenOpen?: boolean; parentId?: string }
   | { kind: "more"; key: string; path: string; hidden: number; remote: number; expanded: boolean; flat?: boolean }
-  | { kind: "section"; key: string; count: number; open: boolean }
+  | { kind: "section"; key: string; group: SectionGroup; count: number; open: boolean }
+  | { kind: "subgroup"; key: string; group: string; count: number; open: boolean }
   | { kind: "heading"; key: string; heading: Heading; count: number }
   | { kind: "loadall"; key: string }
-  | { kind: "empty"; key: string; text: string };
+  | { kind: "empty"; key: string; text: string; nested?: boolean };
+
+type SectionGroup = "older" | "missing";
 
 const ACTIVE_STATUSES = new Set<ThreadStatus>(["running", "awaiting_input", "error"]);
 const URGENCY: Partial<Record<ThreadStatus, number>> = { awaiting_input: 0, error: 1, running: 2 };
@@ -258,30 +263,50 @@ const ThreadRow = memo(function ThreadRow({
   active,
   now,
   context,
+  childrenOpen,
+  onToggleChildren,
+  parentId,
 }: {
   thread: ThreadSummary;
   active: boolean;
   now: number;
   context?: string;
+  childrenOpen?: boolean;
+  onToggleChildren?: (threadId: string) => void;
+  /** Set for a linked child listed under its parent: opening it shows the parent with the child in the drawer. */
+  parentId?: string;
 }) {
   const t = useT();
   const busy = thread.status !== "idle";
   const unread = useStore((s) => !!s.unreadCompleted[thread.id]);
+  const toggle = (event: React.SyntheticEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    onToggleChildren?.(thread.id);
+  };
   return (
     <ContextMenu content={() => <ThreadMenuItems thread={thread} />}>
       <button
         type="button"
         aria-current={active ? "page" : undefined}
-        onClick={() => actions.navigate({ view: "thread", threadId: thread.id })}
+        onClick={() => {
+          if (!parentId) {
+            actions.navigate({ view: "thread", threadId: thread.id });
+            return;
+          }
+          actions.navigate({ view: "thread", threadId: parentId });
+          actions.openChildDrawer(thread.id, parentId);
+        }}
         title={context ? `${thread.title} · ${thread.cwd ?? context}` : undefined}
         className={cn(
           rowBase,
-          "h-9 ps-3 pe-2.5",
+          parentId ? "h-9 ps-4 pe-2.5" : "h-9 ps-3 pe-2.5",
           active
             ? "bg-sidebar-row-active text-sidebar-foreground light:ring-1 light:ring-inset light:ring-sidebar-border/70"
             : "text-sidebar-foreground hover:bg-sidebar-row-hover data-popup-open:bg-sidebar-row-hover",
         )}
       >
+        {parentId ? <CornerDownRightIcon className="size-3 shrink-0 text-sidebar-muted-foreground/60" /> : null}
         <span
           className={cn(
             "flex shrink-0 items-center transition-[opacity,filter]",
@@ -301,7 +326,21 @@ const ThreadRow = memo(function ThreadRow({
         </span>
         {context ? <span className="max-w-[35%] shrink truncate text-xs text-sidebar-muted-foreground">{context}</span> : null}
         {thread.pinned ? <PinIcon className="size-3 shrink-0 text-sidebar-muted-foreground/80" aria-label={t("thread.pinned")} /> : null}
-        {thread.childCount > 0 ? (
+        {thread.childCount > 0 && onToggleChildren ? (
+          <span
+            role="button"
+            tabIndex={0}
+            aria-expanded={!!childrenOpen}
+            aria-label={childrenOpen ? t("sidebar.hideChildren") : t("sidebar.showChildren")}
+            title={`${t("sidebar.children", { n: thread.childCount })} · ${childrenOpen ? t("sidebar.hideChildren") : t("sidebar.showChildren")}`}
+            onClick={toggle}
+            onKeyDown={(event) => (event.key === "Enter" || event.key === " ") && toggle(event)}
+            className="inline-flex h-5 shrink-0 items-center gap-0.5 rounded px-1 text-[11px] tabular-nums text-sidebar-muted-foreground/80 outline-none hover:bg-sidebar-row-active hover:text-sidebar-foreground focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            <ChevronDownIcon className={cn("size-3 transition-transform", !childrenOpen && "-rotate-90")} />
+            {thread.childCount}
+          </span>
+        ) : thread.childCount > 0 ? (
           <span
             className="inline-flex shrink-0 items-center gap-0.5 text-[11px] tabular-nums text-sidebar-muted-foreground/80"
             title={t("sidebar.children", { n: thread.childCount })}
@@ -383,7 +422,8 @@ const ProjectHeader = memo(function ProjectHeader({ row }: { row: Extract<Sideba
       .removeProject(project.path)
       .then((removed) => (removed ? toast.success(t("sidebar.removed", { name: project.name })) : setRefusal(t("sidebar.removeKept"))))
       .catch((error: unknown) => {
-        if (error instanceof RpcFailure && error.code === "bad_request") setRefusal(error.message);
+        if (error instanceof RpcFailure && error.code === "bad_request")
+          setRefusal(/sessions still point at this folder/i.test(error.message) ? t("sidebar.removeKept") : error.message);
         else if (error instanceof RpcFailure && /unknown rpc method/i.test(error.message)) setRefusal(t("sidebar.removeUnsupported"));
         else toast.error(errorMessage(error));
       });
@@ -472,7 +512,55 @@ function HeadingRow({ row }: { row: Extract<SidebarRow, { kind: "heading" }> }) 
     <div className="flex h-full items-end gap-2 px-(--sidebar-row-content-inset) pb-1 text-xs font-medium text-sidebar-muted-foreground">
       <span className="min-w-0 flex-1 truncate">{label}</span>
       {row.heading !== "projects" && row.count > 0 ? <span className="tabular-nums text-sidebar-muted-foreground/70">{row.count}</span> : null}
+      {row.heading === "projects" ? (
+        <span className="-me-1.5 -mb-0.5 flex items-center gap-0.5">
+          <FilterMenu />
+          <AddProjectButton />
+        </span>
+      ) : null}
     </div>
+  );
+}
+
+function AddProjectButton() {
+  const t = useT();
+  const local = useIsLocalDesktop();
+  const [open, setOpen] = useState(false);
+  if (!local) return null;
+  return (
+    <>
+      <Tip label={t("sidebar.addProject")}>
+        <Button size="icon-xs" variant="ghost-muted" aria-label={t("sidebar.addProject")} onClick={() => setOpen(true)}>
+          <FolderPlusIcon />
+        </Button>
+      </Tip>
+      <FolderBrowser
+        open={open}
+        onOpenChange={setOpen}
+        onChoose={(path) => {
+          setOpen(false);
+          actions
+            .addProject(path)
+            .then((project) => actions.toggleProject(project.path, true))
+            .catch((error: unknown) => toast.error(errorMessage(error)));
+        }}
+      />
+    </>
+  );
+}
+
+function SubgroupRow({ row, onToggle }: { row: Extract<SidebarRow, { kind: "subgroup" }>; onToggle: (group: string, open: boolean) => void }) {
+  const t = useT();
+  return (
+    <button
+      type="button"
+      aria-expanded={row.open}
+      onClick={() => onToggle(row.group, !row.open)}
+      className="flex h-7 w-full cursor-pointer items-center gap-1.5 rounded-md ps-3 text-left text-xs text-sidebar-muted-foreground outline-none hover:bg-sidebar-row-hover hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+    >
+      <ChevronDownIcon className={cn("size-3 shrink-0 transition-transform", !row.open && "-rotate-90")} />
+      <span className="min-w-0 flex-1 truncate">{t("sidebar.automated", { n: row.count })}</span>
+    </button>
   );
 }
 
@@ -484,12 +572,16 @@ function VirtualRows({
   now,
   onToggleMore,
   onToggleSection,
+  onToggleGroup,
+  onToggleChildren,
 }: {
   rows: SidebarRow[];
   activeId: string | null;
   now: number;
   onToggleMore: (path: string) => void;
-  onToggleSection: () => void;
+  onToggleSection: (group: SectionGroup, open: boolean) => void;
+  onToggleGroup: (group: string, open: boolean) => void;
+  onToggleChildren: (threadId: string) => void;
 }) {
   const scrollerRef = useRef<HTMLDivElement>(null);
   const [view, setView] = useState({ top: 0, height: 800 });
@@ -525,17 +617,27 @@ function VirtualRows({
               {row.kind === "project" ? (
                 <ProjectHeader row={row} />
               ) : row.kind === "thread" ? (
-                <ThreadRow thread={row.thread} active={row.thread.id === activeId} now={now} context={row.context} />
+                <ThreadRow
+                  thread={row.thread}
+                  active={row.thread.id === activeId}
+                  now={now}
+                  context={row.context}
+                  childrenOpen={row.childrenOpen}
+                  onToggleChildren={row.parentId ? undefined : onToggleChildren}
+                  parentId={row.parentId}
+                />
               ) : row.kind === "more" ? (
                 <MoreRow row={row} onToggle={onToggleMore} />
               ) : row.kind === "section" ? (
                 <SectionRow row={row} onToggle={onToggleSection} />
+              ) : row.kind === "subgroup" ? (
+                <SubgroupRow row={row} onToggle={onToggleGroup} />
               ) : row.kind === "heading" ? (
                 <HeadingRow row={row} />
               ) : row.kind === "loadall" ? (
                 <LoadAllRow />
               ) : (
-                <div className="flex h-full items-center ps-9 text-xs text-sidebar-muted-foreground">{row.text}</div>
+                <div className={cn("flex h-full items-center text-xs text-sidebar-muted-foreground", row.nested ? "ps-10" : "ps-9")}>{row.text}</div>
               )}
             </div>
           ))}
@@ -586,18 +688,18 @@ function MoreRow({ row, onToggle }: { row: Extract<SidebarRow, { kind: "more" }>
   );
 }
 
-function SectionRow({ row, onToggle }: { row: Extract<SidebarRow, { kind: "section" }>; onToggle: () => void }) {
+function SectionRow({ row, onToggle }: { row: Extract<SidebarRow, { kind: "section" }>; onToggle: (group: SectionGroup, open: boolean) => void }) {
   const t = useT();
   return (
     <div className="pt-2">
       <button
         type="button"
         aria-expanded={row.open}
-        onClick={onToggle}
+        onClick={() => onToggle(row.group, !row.open)}
         className="flex h-8 w-full cursor-pointer items-center gap-2 rounded-(--control-radius) px-(--sidebar-row-content-inset) text-left text-xs font-medium text-sidebar-muted-foreground outline-none hover:bg-sidebar-row-hover hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
       >
         <ChevronDownIcon className={cn("size-3 shrink-0 transition-transform", !row.open && "-rotate-90")} />
-        <span className="min-w-0 flex-1 truncate">{t("sidebar.otherFolders", { n: row.count })}</span>
+        <span className="min-w-0 flex-1 truncate">{row.group === "older" ? t("sidebar.olderProjects", { n: row.count }) : t("sidebar.missingFolders", { n: row.count })}</span>
       </button>
     </div>
   );
@@ -747,6 +849,10 @@ export function SidebarContent() {
   const minute = Math.floor(now / 60_000);
   const [renaming, setRenaming] = useState<ThreadSummary | null>(null);
 
+  const filtering = filters.agentIds.length > 0 || filters.sources.length > 0;
+  const scoped = scope === "vetro";
+  const sidebarOrder = usePrefs((s) => s.sidebarOrder);
+
   const groups = useMemo(() => {
     const all = Object.values(threads)
       .filter((thread) => !thread.parent)
@@ -814,6 +920,7 @@ export function SidebarContent() {
     const cutoff = activityDays === 0 ? null : minute * 60_000 - activityDays * DAY;
     const workspaces: ProjectEntry[] = [];
     const older: ProjectEntry[] = [];
+    const missing: ProjectEntry[] = [];
     for (const project of shown) {
       const key = normalize(project.path);
       const list = byProject.get(key) ?? [];
@@ -821,64 +928,103 @@ export function SidebarContent() {
       const latest = newest ?? (project.threadCount === 0 ? project.lastActivityAt : project.lastRootActivityAt);
       const busy = list.some((thread) => ACTIVE_STATUSES.has(thread.status));
       const containsActive = key === activeKey || list.some((thread) => thread.id === activeId);
-      const recent =
-        project.exists &&
-        !isScratchOrTempPath(project.path) &&
-        (list.length > 0 || project.threadCount === 0) &&
-        (cutoff === null || latest === null || latest >= cutoff);
-      const entry = { project, key, list, latest: latest ?? 0, containsActive };
-      if (project.pinned || busy || containsActive || recent) workspaces.push(entry);
+      // Folders the user added (no sessions of their own yet) or pinned stay listed even when empty.
+      const manual = project.pinned || (project.threadCount === 0 && !scoped);
+      const entry = { project, key, list, latest: latest ?? 0, containsActive, manual, sticky: project.pinned || busy || containsActive };
+      if (entry.sticky) workspaces.push(entry);
+      else if (!project.exists || isScratchOrTempPath(project.path)) {
+        if (list.length > 0) missing.push(entry);
+      } else if ((list.length > 0 || manual) && (cutoff === null || latest === null || latest >= cutoff)) workspaces.push(entry);
       else older.push(entry);
     }
     workspaces.sort((a, b) => Number(b.project.pinned) - Number(a.project.pinned) || b.latest - a.latest);
     older.sort((a, b) => b.latest - a.latest);
-    return { workspaces, older, other, quick, attention, suffixes, loaded };
-  }, [threads, projects, filters, settings, dataDir, hideDisabled, activityDays, minute, activeId, openSummary, scope]);
+    missing.sort((a, b) => b.latest - a.latest);
+    return { workspaces, older, missing, other, quick, attention, suffixes, loaded };
+  }, [threads, projects, filters, settings, dataDir, hideDisabled, activityDays, minute, activeId, openSummary, scope, scoped]);
 
-  const filtering = filters.agentIds.length > 0 || filters.sources.length > 0;
-  const scoped = scope === "vetro";
   const projectExpanded = useStore((s) => s.projectExpanded);
   const projectCursors = useStore((s) => s.projectCursors);
   const threadsCursor = useStore((s) => s.threadsCursor);
+  const groupsOpen = usePrefs((s) => s.sidebarGroupsOpen);
   const [expandedMore, setExpandedMore] = useState<Record<string, boolean>>({});
-  const [otherOpen, setOtherOpen] = useState(false);
+  const [childrenOpen, setChildrenOpen] = useState<Record<string, boolean>>({});
+  const [childrenLoading, setChildrenLoading] = useState<Record<string, boolean>>({});
   const toggleMore = useCallback((path: string) => setExpandedMore((current) => ({ ...current, [path]: !current[path] })), []);
-  const toggleOther = useCallback(() => setOtherOpen((open) => !open), []);
+  const toggleSection = useCallback((group: SectionGroup, open: boolean) => setSidebarGroupOpen(group, open), []);
+  const toggleGroup = useCallback((group: string, open: boolean) => setSidebarGroupOpen(group, open), []);
+  const toggleChildren = useCallback((threadId: string) => {
+    const open = !childrenOpen[threadId];
+    setChildrenOpen((current) => ({ ...current, [threadId]: open }));
+    if (!open) return;
+    setChildrenLoading((current) => ({ ...current, [threadId]: true }));
+    void actions
+      .fetchChildren(threadId)
+      .catch((error: unknown) => toast.error(errorMessage(error)))
+      .finally(() => setChildrenLoading((current) => ({ ...current, [threadId]: false })));
+  }, [childrenOpen]);
+
+  const childrenOf = useMemo(() => {
+    const map = new Map<string, ThreadSummary[]>();
+    const wanted = new Set(Object.keys(childrenOpen).filter((id) => childrenOpen[id]));
+    if (wanted.size === 0) return map;
+    for (const thread of Object.values(threads)) {
+      const parent = thread.parent?.threadId;
+      if (!parent || !wanted.has(parent)) continue;
+      const list = map.get(parent);
+      if (list) list.push(thread);
+      else map.set(parent, [thread]);
+    }
+    for (const list of map.values()) list.sort((a, b) => b.updatedAt - a.updatedAt);
+    return map;
+  }, [threads, childrenOpen]);
 
   const rows = useMemo(() => {
     const out: SidebarRow[] = [];
     const explicit = (path: string): boolean | undefined => projectExpanded[path] ?? projectExpanded[normalize(path)];
     const activeThread = activeId ? (threads[activeId] ?? openSummary) : undefined;
-    const inActive = new Set(groups.attention.map((thread) => thread.id));
-    const calm = (list: ThreadSummary[]) => list.filter((thread) => !inActive.has(thread.id));
+
+    const pushThread = (thread: ThreadSummary, prefix: string, context?: string) => {
+      const open = thread.childCount > 0 && !!childrenOpen[thread.id];
+      out.push({ kind: "thread", key: `${prefix}:${thread.id}`, thread, context, childrenOpen: open });
+      if (!open) return;
+      const children = childrenOf.get(thread.id) ?? [];
+      if (children.length === 0) {
+        out.push({ kind: "empty", key: `ce:${prefix}:${thread.id}`, text: childrenLoading[thread.id] ? t("common.loading") : t("drawer.noChildren"), nested: true });
+      }
+      for (const child of children) out.push({ kind: "thread", key: `c:${prefix}:${thread.id}:${child.id}`, thread: child, parentId: thread.id });
+    };
 
     if (groups.attention.length > 0) {
       out.push({ kind: "heading", key: "h:active", heading: "active", count: groups.attention.length });
-      for (const thread of groups.attention) out.push({ kind: "thread", key: `a:${thread.id}`, thread, context: basename(thread.cwd) || undefined });
+      for (const thread of groups.attention) pushThread(thread, "a", basename(thread.cwd) || undefined);
     }
 
-    const quick = calm(groups.quick);
-    if (quick.length > 0) {
+    const quickSection = () => {
+      const quick = groups.quick;
+      if (quick.length === 0) return;
       out.push({ kind: "heading", key: "h:quick", heading: "quick", count: quick.length });
       const expanded = !!expandedMore[QUICK_KEY];
       const activeIndex = quick.findIndex((thread) => thread.id === activeId);
       const limit = expanded ? quick.length : Math.max(PAGE, activeIndex + 1);
-      for (const thread of quick.slice(0, limit)) out.push({ kind: "thread", key: `q:${thread.id}`, thread });
+      for (const thread of quick.slice(0, limit)) pushThread(thread, "q");
       const hidden = quick.length - Math.min(limit, quick.length);
       if (hidden > 0 || expanded) out.push({ kind: "more", key: "m:quick", path: QUICK_KEY, hidden, remote: 0, expanded, flat: true });
-    }
+    };
 
-    out.push({ kind: "heading", key: "h:projects", heading: "projects", count: 0 });
-    const projectsStart = out.length;
+    const remoteFor = (entry: ProjectEntry) => {
+      if (filtering || scoped || entry.key === "" || projectCursors[entry.project.path] === null) return 0;
+      const total = filters.showInternal ? entry.project.threadCount : entry.project.rootThreadCount;
+      return Math.max(0, total - (groups.loaded.get(entry.key) ?? 0));
+    };
+    // A folder discovered from history whose threads are all filtered out (archived, internal,
+    // another agent) would render as an empty row; only added, pinned or active folders stay.
+    const listed = (entry: ProjectEntry) =>
+      filtering ? entry.list.length > 0 || entry.containsActive : entry.list.length > 0 || entry.manual || entry.sticky || remoteFor(entry) > 0;
 
     const add = (entry: ProjectEntry, defaultExpanded: boolean, suffix?: string) => {
       const { project, list } = entry;
-      const total = filters.showInternal ? project.threadCount : project.rootThreadCount;
-      const remote = filtering || scoped || projectCursors[project.path] === null ? 0 : Math.max(0, total - (groups.loaded.get(entry.key) ?? 0));
-      const visible = calm(list);
-      // Vetro scope: an unpinned folder whose threads all moved to the Active section would
-      // render as a dangling empty row; pinned folders stay so the user can reach them.
-      if (scoped && !project.pinned && visible.length === 0 && remote === 0) return;
+      const remote = remoteFor(entry);
       const collapsed = !(explicit(project.path) ?? defaultExpanded);
       const attention = !collapsed
         ? null
@@ -891,62 +1037,104 @@ export function SidebarContent() {
               : null;
       out.push({ kind: "project", key: `p:${project.path}`, project, suffix, count: list.length, collapsed, attention });
       if (collapsed) return;
-      if (visible.length === 0) {
+      const automated = filters.showInternal ? list.filter((thread) => thread.internal) : [];
+      const normal = automated.length > 0 ? list.filter((thread) => !thread.internal) : list;
+      if (list.length === 0) {
         if (remote > 0) out.push({ kind: "more", key: `m:${project.path}`, path: project.path, hidden: 0, remote, expanded: true });
-        else if (list.length === 0) out.push({ kind: "empty", key: `e:${project.path}`, text: project.exists ? t("sidebar.noThreads") : t("sidebar.missing") });
+        else out.push({ kind: "empty", key: `e:${project.path}`, text: project.exists ? t("sidebar.noThreads") : t("sidebar.missing") });
         return;
       }
       const expanded = !!expandedMore[project.path];
-      const activeIndex = visible.findIndex((thread) => thread.id === activeId || thread.id === activeThread?.parent?.threadId);
-      const limit = expanded ? visible.length : Math.max(PAGE, activeIndex + 1);
-      for (const thread of visible.slice(0, limit)) out.push({ kind: "thread", key: `t:${thread.id}`, thread });
-      const hidden = visible.length - Math.min(limit, visible.length);
+      const activeIndex = normal.findIndex((thread) => thread.id === activeId || thread.id === activeThread?.parent?.threadId);
+      const limit = expanded ? normal.length : Math.max(PAGE, activeIndex + 1);
+      for (const thread of normal.slice(0, limit)) pushThread(thread, "t");
+      const hidden = normal.length - Math.min(limit, normal.length);
       if (hidden > 0 || remote > 0 || expanded) out.push({ kind: "more", key: `m:${project.path}`, path: project.path, hidden, remote, expanded });
+      if (automated.length > 0) {
+        const group = `auto:${project.path}`;
+        const open = groupsOpen[group] ?? automated.some((thread) => thread.id === activeId);
+        out.push({ kind: "subgroup", key: `g:${project.path}`, group, count: automated.length, open });
+        if (open) for (const thread of automated) pushThread(thread, "t");
+      }
     };
 
-    const ruleExpanded = (entry: ProjectEntry) =>
-      entry.project.pinned ||
-      entry.containsActive ||
-      entry.list.some((thread) => thread.status === "running" || thread.status === "awaiting_input");
-    const workspaces = groups.workspaces.filter((entry) => !filtering || entry.list.length > 0);
-    const fallback = workspaces.some(ruleExpanded) ? null : (workspaces[0]?.project.path ?? null);
-    for (const entry of workspaces) add(entry, ruleExpanded(entry) || entry.project.path === fallback, groups.suffixes.get(entry.project.path));
+    const section = (group: SectionGroup, entries: ProjectEntry[], extra: ProjectEntry | null) => {
+      const count = entries.length + (extra ? 1 : 0);
+      if (count === 0) return;
+      const open = groupsOpen[group] ?? false;
+      out.push({ kind: "section", key: `section:${group}`, group, count, open });
+      if (!open) return;
+      for (const entry of entries) add(entry, false, groups.suffixes.get(entry.project.path));
+      if (extra) add(extra, false);
+    };
 
-    const older = groups.older.filter((entry) => !filtering || entry.list.length > 0);
-    const otherEntry: ProjectEntry | null =
-      groups.other.length > 0
-        ? {
-            project: {
-              path: "",
-              name: t("sidebar.other"),
-              exists: true,
-              pinned: false,
-              hidden: false,
-              threadCount: 0,
-              rootThreadCount: 0,
-              lastActivityAt: null,
-              lastRootActivityAt: null,
-            },
-            key: "",
-            list: groups.other,
-            latest: groups.other[0]!.updatedAt,
-            containsActive: false,
-          }
-        : null;
-    const count = older.length + (otherEntry ? 1 : 0);
-    if (count > 0) {
-      out.push({ kind: "section", key: "section:older", count, open: otherOpen });
-      if (otherOpen) {
-        for (const entry of older) add(entry, false, groups.suffixes.get(entry.project.path));
-        if (otherEntry) add(otherEntry, false);
+    const projectsSection = () => {
+      out.push({ kind: "heading", key: "h:projects", heading: "projects", count: 0 });
+      const start = out.length;
+      const ruleExpanded = (entry: ProjectEntry) =>
+        entry.project.pinned ||
+        entry.containsActive ||
+        entry.list.some((thread) => thread.status === "running" || thread.status === "awaiting_input");
+      const workspaces = groups.workspaces.filter(listed);
+      const fallback = workspaces.some(ruleExpanded) ? null : (workspaces[0]?.project.path ?? null);
+      for (const entry of workspaces) add(entry, ruleExpanded(entry) || entry.project.path === fallback, groups.suffixes.get(entry.project.path));
+      section("older", groups.older.filter(listed), null);
+      const otherEntry: ProjectEntry | null =
+        groups.other.length > 0
+          ? {
+              project: {
+                path: "",
+                name: t("sidebar.other"),
+                exists: true,
+                pinned: false,
+                hidden: false,
+                threadCount: 0,
+                rootThreadCount: 0,
+                lastActivityAt: null,
+                lastRootActivityAt: null,
+              },
+              key: "",
+              list: groups.other,
+              latest: groups.other[0]!.updatedAt,
+              containsActive: false,
+              manual: false,
+              sticky: false,
+            }
+          : null;
+      section("missing", groups.missing.filter(listed), otherEntry);
+      if (out.length === start) {
+        out.push({ kind: "empty", key: "e:projects", text: filtering || scoped ? t("sidebar.noMatches") : t("sidebar.noProjects") });
       }
-    }
-    if (out.length === projectsStart) {
-      out.push({ kind: "empty", key: "e:projects", text: filtering || scoped ? t("sidebar.noMatches") : t("sidebar.noProjects") });
+    };
+
+    if (sidebarOrder === "quickChats") {
+      quickSection();
+      projectsSection();
+    } else {
+      projectsSection();
+      quickSection();
     }
     if (threadsCursor) out.push({ kind: "loadall", key: "loadall" });
     return out;
-  }, [groups, projectExpanded, expandedMore, otherOpen, activeId, threads, openSummary, filtering, scoped, filters.showInternal, t, projectCursors, threadsCursor]);
+  }, [
+    groups,
+    projectExpanded,
+    expandedMore,
+    groupsOpen,
+    childrenOpen,
+    childrenLoading,
+    childrenOf,
+    activeId,
+    threads,
+    openSummary,
+    filtering,
+    scoped,
+    filters.showInternal,
+    t,
+    projectCursors,
+    threadsCursor,
+    sidebarOrder,
+  ]);
 
   return (
     <RenameContext value={setRenaming}>
@@ -954,7 +1142,6 @@ export function SidebarContent() {
         <div {...drag} className={cn("flex h-(--workspace-topbar-height) shrink-0 items-center gap-1 ps-4 pe-2", chromeClass)}>
           <VetroMark className="size-4.5" />
           <span className="ms-1 flex-1 truncate font-semibold text-sm tracking-tight">{t("app.name")}</span>
-          <FilterMenu />
           <Tip label={`${t("sidebar.collapse")} · ${isMac ? "⌘B" : "Ctrl B"}`}>
             <Button size="icon-xs" variant="ghost-muted" aria-label={t("sidebar.collapse")} className="max-md:hidden" onClick={actions.toggleSidebar}>
               <PanelLeftCloseIcon />
@@ -987,7 +1174,15 @@ export function SidebarContent() {
             </div>
           ) : null}
         </div>
-        <VirtualRows rows={rows} activeId={activeId} now={now} onToggleMore={toggleMore} onToggleSection={toggleOther} />
+        <VirtualRows
+          rows={rows}
+          activeId={activeId}
+          now={now}
+          onToggleMore={toggleMore}
+          onToggleSection={toggleSection}
+          onToggleGroup={toggleGroup}
+          onToggleChildren={toggleChildren}
+        />
         <footer className="flex shrink-0 items-center justify-between gap-2 border-t border-sidebar-border/70 px-2.5 pt-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))]">
           <button
             type="button"
@@ -1022,4 +1217,8 @@ interface ProjectEntry {
   list: ThreadSummary[];
   latest: number;
   containsActive: boolean;
+  /** Added by the user or pinned: listed even with no visible threads. */
+  manual: boolean;
+  /** Pinned, busy or holding the open thread: always in the main list. */
+  sticky: boolean;
 }

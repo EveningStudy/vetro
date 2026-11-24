@@ -1,7 +1,8 @@
 import { DownloadIcon, MicIcon, SettingsIcon, SquareIcon, XIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { client } from "~/api/client";
-import { useT } from "~/i18n";
+import type { VoiceModelInfo } from "~/api/types";
+import { type Translate, useT } from "~/i18n";
 import { type RecordingSession, startRecording } from "~/lib/audioRecorder";
 import { cn, isMac } from "~/lib/utils";
 import { actions, useIsLocalDesktop, useStore } from "~/state/store";
@@ -13,6 +14,22 @@ import { composerControlClass } from "./OptionPicker";
 
 function formatMb(bytes: number) {
   return `${Math.max(1, Math.round(bytes / (1024 * 1024)))} MB`;
+}
+
+const KNOWN_MODELS = ["sense-voice", "qwen3-asr", "funasr-nano"] as const;
+type KnownModel = (typeof KNOWN_MODELS)[number];
+
+function known(id: string): id is KnownModel {
+  return (KNOWN_MODELS as readonly string[]).includes(id);
+}
+
+export function voiceModelLabel(t: Translate, model: Pick<VoiceModelInfo, "id" | "name">) {
+  return known(model.id) ? t(`voice.model.${model.id}`) : model.name;
+}
+
+export function voiceModelDescription(t: Translate, model: Pick<VoiceModelInfo, "id" | "description" | "downloadBytes">) {
+  if (known(model.id)) return t(`voice.model.${model.id}.desc`);
+  return [model.description, formatMb(model.downloadBytes)].filter(Boolean).join(" · ");
 }
 
 function formatClock(seconds: number) {
@@ -112,6 +129,7 @@ export function VoiceButton({
 
   const installing = !!voice?.installing || (!!progress && !progress.done);
   const ready = !!voice?.ready;
+  const activeModel = voice?.models?.find((model) => model.id === voice.activeModelId);
   const percent = progress && progress.totalBytes > 0 ? Math.min(100, Math.round((progress.downloadedBytes / progress.totalBytes) * 100)) : 0;
 
   if (phase === "recording") {
@@ -192,7 +210,7 @@ export function VoiceButton({
               <span className="text-xs tabular-nums text-muted-foreground">{formatMb(voice.downloadBytes)}</span>
             ) : null}
           </div>
-          <div className="text-xs text-muted-foreground">{voice?.modelName ?? "SenseVoice-Small (int8)"}</div>
+          <div className="text-xs text-muted-foreground">{activeModel ? voiceModelLabel(t, activeModel) : (voice?.modelName ?? "")}</div>
           {installing ? (
             <div className="flex flex-col gap-1.5">
               <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
@@ -210,7 +228,7 @@ export function VoiceButton({
                   size="sm"
                   className="flex-1"
                   onClick={() => {
-                    void actions.installVoice().then((ok) => {
+                    void actions.installVoice(voice?.activeModelId).then((ok) => {
                       if (ok) setSetupOpen(false);
                     });
                   }}

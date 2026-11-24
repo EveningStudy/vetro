@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useT } from "~/i18n";
 import { actions } from "~/state/store";
 import { Button } from "./ui/button";
-import { Dialog, DialogDescription, DialogPopup, DialogTitle } from "./ui/overlay";
+import { Dialog, DialogPopup, DialogTitle } from "./ui/overlay";
 import { Input } from "./ui/primitives";
 
 export function RenameDialog({
@@ -32,9 +32,8 @@ export function RenameDialog({
             onOpenChange(false);
           }}
         >
-          <div className="flex flex-col gap-1 pe-8">
+          <div className="pe-8">
             <DialogTitle>{t("thread.renameTitle")}</DialogTitle>
-            <DialogDescription>{t("thread.renameHint")}</DialogDescription>
           </div>
           <Input autoFocus value={value} onChange={(event) => setValue(event.target.value)} />
           <div className="flex justify-end gap-2">

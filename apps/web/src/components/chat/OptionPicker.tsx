@@ -32,6 +32,36 @@ export const composerControlClass =
 
 type Choice = ConfigOption["choices"][number] & { label: string; section: string };
 
+const DANGER_TERMS = [
+  "bypass",
+  "yolo",
+  "danger",
+  "full-access",
+  "full_access",
+  "full access",
+  "unrestricted",
+  "autonomous",
+  "dontask",
+  "dont-ask",
+  "skip-permissions",
+  "skip_permissions",
+  "trust-all",
+  "allow-all",
+];
+
+/** Mirrors the core's danger rules so a mode that relaxes safeguards is flagged even when an
+ * agent (or an older core) did not mark it. */
+export function isDangerChoice(option: Pick<ConfigOption, "id" | "name" | "category">, choice: ConfigOption["choices"][number]) {
+  if (choice.danger) return true;
+  const key = `${option.id} ${option.name}`.toLowerCase();
+  const governs = option.category === "mode" || /mode|perm|approval|sandbox|autopilot|trust|safety|policy/.test(key);
+  if (!governs) return false;
+  const texts = [choice.value, choice.name].map((text) => text.trim().toLowerCase());
+  if (key.includes("approval") && texts[0] === "never") return true;
+  if (key.includes("autopilot") && texts.some((text) => ["on", "true", "enabled", "always"].includes(text))) return true;
+  return texts.some((text) => DANGER_TERMS.some((term) => text.includes(term)));
+}
+
 /** Some agents report a choice only by its id ("acceptEdits", "xhigh"). Show that id as words; the value is untouched. */
 function readable(choice: ConfigOption["choices"][number]): string {
   if (choice.name !== choice.value || !/^[A-Za-z][A-Za-z0-9_-]*$/.test(choice.name)) return choice.name;
@@ -43,9 +73,10 @@ function readable(choice: ConfigOption["choices"][number]): string {
 export function prepare(option: ConfigOption): Choice[] {
   const suffixed = option.choices.length > 1 && option.choices.every((choice) => / · [^·]+$/.test(choice.name));
   return option.choices.map((choice) => {
-    if (choice.group || !suffixed) return { ...choice, label: readable(choice), section: choice.group ?? "" };
+    const danger = isDangerChoice(option, choice);
+    if (choice.group || !suffixed) return { ...choice, danger, label: readable(choice), section: choice.group ?? "" };
     const index = choice.name.lastIndexOf(" · ");
-    return { ...choice, label: choice.name.slice(0, index), section: choice.name.slice(index + 3) };
+    return { ...choice, danger, label: choice.name.slice(0, index), section: choice.name.slice(index + 3) };
   });
 }
 
@@ -77,7 +108,8 @@ export function OptionPicker({
   const label = current?.label || option.name;
   const triggerClass = cn(
     composerControlClass,
-    danger && "border-warning/40 bg-warning-surface/70 text-warning-foreground hover:bg-warning-surface hover:text-warning-foreground [&_svg:not([class*='text-'])]:text-warning-foreground",
+    danger &&
+      "border-destructive/40 bg-error-surface/70 text-destructive-foreground hover:bg-error-surface hover:text-destructive-foreground [&_svg:not([class*='text-'])]:text-destructive-foreground",
   );
   const trigger = (
     <>
@@ -105,8 +137,8 @@ export function OptionPicker({
               {list.map((choice) => (
                 <MenuRadioItem key={choice.value} value={choice.value} className="items-start py-1.5">
                   <span className="flex min-w-0 flex-col">
-                    <span className={cn("inline-flex items-center gap-1.5 truncate", choice.danger && "text-warning-foreground")}>
-                      {choice.danger ? <ShieldAlertIcon className="size-3.5 shrink-0 text-warning-foreground" /> : null}
+                    <span className={cn("inline-flex items-center gap-1.5 truncate", choice.danger && "text-destructive-foreground")}>
+                      {choice.danger ? <ShieldAlertIcon className="size-3.5 shrink-0 text-destructive-foreground" /> : null}
                       <span className="truncate">{choice.label}</span>
                     </span>
                     {choice.description ? <span className="text-xs text-muted-foreground">{choice.description}</span> : null}
@@ -225,7 +257,8 @@ function SearchablePicker({
                     onClick={() => pick(choice)}
                     className={cn("flex min-h-7 w-full items-center gap-2 rounded-sm px-2 py-1 text-left text-sm", current === active && "bg-accent")}
                   >
-                    <span className="min-w-0 flex-1 truncate">{choice.label}</span>
+                    {choice.danger ? <ShieldAlertIcon className="size-3.5 shrink-0 text-destructive-foreground" /> : null}
+                    <span className={cn("min-w-0 flex-1 truncate", choice.danger && "text-destructive-foreground")}>{choice.label}</span>
                     {selected ? <CheckIcon className="size-3.5 shrink-0" /> : null}
                   </button>
                 );

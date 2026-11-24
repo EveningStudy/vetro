@@ -39,11 +39,25 @@ function DevinMark({ className, ...props }: IconProps) {
   );
 }
 
+function KiroMark(props: IconProps) {
+  return (
+    <svg {...props} viewBox="0 0 24 24">
+      <path
+        d="M5 11a7 7 0 0 1 14 0v8.6c0 .9-1.1 1.3-1.7.7L16 19l-1.6 1.6a1 1 0 0 1-1.4 0L12 19.6l-1 1a1 1 0 0 1-1.4 0L8 19l-1.3 1.3c-.6.6-1.7.2-1.7-.7Z"
+        className="fill-[#9046ff] dark:fill-[#a370ff]"
+      />
+      <ellipse cx="10" cy="11.2" rx="1.1" ry="1.6" fill="#fff" />
+      <ellipse cx="14.2" cy="11.2" rx="1.1" ry="1.6" fill="#fff" />
+    </svg>
+  );
+}
+
 const marks: Record<string, (props: IconProps) => React.ReactElement> = {
   codex: OpenAIMark,
   claude: ClaudeMark,
   antigravity: AntigravityMark,
   devin: DevinMark,
+  kiro: KiroMark,
 };
 
 export function AgentIcon({ agentId, className }: { agentId: string; className?: string }) {

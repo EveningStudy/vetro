@@ -36,6 +36,8 @@ export type { TokenUsage } from "./bindings/TokenUsage";
 export type { ToolCall } from "./bindings/ToolCall";
 export type { ToolContent } from "./bindings/ToolContent";
 export type { ToolKind } from "./bindings/ToolKind";
+export type { VoiceModelInfo } from "./bindings/VoiceModelInfo";
+export type { VoiceModelParams } from "./bindings/VoiceModelParams";
 export type { VoiceSettings } from "./bindings/VoiceSettings";
 export type { VoiceStatus } from "./bindings/VoiceStatus";
 export type { VoiceTranscribeParams } from "./bindings/VoiceTranscribeParams";

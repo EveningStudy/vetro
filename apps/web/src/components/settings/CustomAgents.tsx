@@ -3,7 +3,10 @@ import { useState } from "react";
 import type { CustomAcpAgent, Settings } from "~/api/types";
 import { useT } from "~/i18n";
 import { Button } from "../ui/button";
-import { Input, Label, Textarea } from "../ui/primitives";
+import { Badge, Input, Label, Textarea } from "../ui/primitives";
+
+/** Agents the core ships adapters for. A custom entry with one of these ids is ignored by the core. */
+export const BUILTIN_AGENT_IDS = ["claude", "codex", "antigravity", "devin", "kiro"];
 
 const EMPTY: CustomAcpAgent = { id: "", name: "", command: "", args: [], env: {} };
 
@@ -83,19 +86,24 @@ export function CustomAgents({
           editing?.original === agent.id ? null : (
             <div key={agent.id} className="flex items-center gap-3 px-4 py-3">
               <div className="min-w-0 flex-1">
-                <div className="text-sm font-medium">{agent.name}</div>
+                <div className="flex items-center gap-2 text-sm font-medium">
+                  {agent.name}
+                  {BUILTIN_AGENT_IDS.includes(agent.id) ? <Badge variant="warning">{t("custom.shadowed")}</Badge> : null}
+                </div>
                 <div className="truncate font-mono text-[11px] text-muted-foreground">{[agent.command, ...agent.args].join(" ")}</div>
               </div>
               {readOnly ? null : (
                 <>
-                  <Button
-                    size="icon-sm"
-                    variant="ghost"
-                    aria-label={t("thread.rename")}
-                    onClick={() => setEditing({ original: agent.id, draft: { ...agent }, args: agent.args.join("\n"), env: envText(agent.env) })}
-                  >
-                    <PencilIcon />
-                  </Button>
+                  {BUILTIN_AGENT_IDS.includes(agent.id) ? null : (
+                    <Button
+                      size="icon-sm"
+                      variant="ghost"
+                      aria-label={t("thread.rename")}
+                      onClick={() => setEditing({ original: agent.id, draft: { ...agent }, args: agent.args.join("\n"), env: envText(agent.env) })}
+                    >
+                      <PencilIcon />
+                    </Button>
+                  )}
                   <Button
                     size="icon-sm"
                     variant="ghost"

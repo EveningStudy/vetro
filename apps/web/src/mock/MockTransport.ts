@@ -8,6 +8,8 @@ import type {
   ServerEvent,
   ThreadEvent,
   ThreadSummary,
+  VoiceModelInfo,
+  VoiceStatus,
 } from "~/api/types";
 import {
   type AuthApi,
@@ -57,6 +59,12 @@ const MOCK_NEW_FILE = `export function ChangesPanel() {
 `;
 
 type Run = { cancelled: boolean; resolveRequest?: (optionId: string) => void };
+
+const MOCK_VOICE_MODELS: Omit<VoiceModelInfo, "installed" | "installedBytes" | "active">[] = [
+  { id: "sense-voice", name: "SenseVoice-Small + Punctuation", description: "", downloadBytes: 227_720_639, nativePunctuation: false },
+  { id: "qwen3-asr", name: "Qwen3-ASR 0.6B (int8)", description: "", downloadBytes: 878_702_423, nativePunctuation: true },
+  { id: "funasr-nano", name: "Fun-ASR-Nano (int8)", description: "", downloadBytes: 841_730_611, nativePunctuation: true },
+];
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -122,6 +130,7 @@ export class MockTransport implements Transport {
   private nextOrdinal = new Map<string, number>();
   private runs = new Map<string, Run>();
   private counter = 0;
+  private voiceInstalled = new Set<string>();
   private prepared = new Set<string>();
   private prefs: unknown = null;
 
@@ -331,6 +340,31 @@ export class MockTransport implements Transport {
       run,
     );
     finish(run.cancelled ? "cancelled" : "end_turn");
+  }
+
+  private voiceStatus(): VoiceStatus {
+    const activeModelId = this.settings.voice.modelId ?? "sense-voice";
+    const models = MOCK_VOICE_MODELS.map((model) => ({
+      ...model,
+      installed: this.voiceInstalled.has(model.id),
+      installedBytes: this.voiceInstalled.has(model.id) ? model.downloadBytes : 0,
+      active: model.id === activeModelId,
+    }));
+    const active = models.find((model) => model.active) ?? models[0]!;
+    const endpoint = !!this.settings.voice.endpointUrl;
+    return {
+      supported: true,
+      installed: active.installed,
+      installing: false,
+      ready: endpoint || active.installed,
+      mode: endpoint ? "endpoint" : active.installed ? "local" : "uninstalled",
+      modelName: active.name,
+      downloadBytes: active.downloadBytes,
+      installedBytes: models.reduce((sum, model) => sum + model.installedBytes, 0),
+      error: null,
+      activeModelId,
+      models,
+    };
   }
 
   private desktopOnly() {
@@ -687,44 +721,17 @@ export class MockTransport implements Transport {
       this.emit({ event: "remote.updated", data: { status: this.remote } });
       return this.remote;
     },
-    "voice.status": () => ({
-      supported: true,
-      installed: false,
-      installing: false,
-      ready: !!this.settings.voice.endpointUrl,
-      mode: this.settings.voice.endpointUrl ? "endpoint" : "uninstalled",
-      modelName: "SenseVoice-Small (int8)",
-      downloadBytes: 196_634_583,
-      installedBytes: 0,
-      error: null,
-    }),
-    "voice.install": () => {
+    "voice.status": () => this.voiceStatus(),
+    "voice.install": (params) => {
       this.desktopOnly();
-      return {
-        supported: true,
-        installed: true,
-        installing: false,
-        ready: true,
-        mode: "local",
-        modelName: "SenseVoice-Small (int8)",
-        downloadBytes: 196_634_583,
-        installedBytes: 240_000_000,
-        error: null,
-      };
+      this.voiceInstalled.add(params.modelId ?? this.settings.voice.modelId ?? "sense-voice");
+      return this.voiceStatus();
     },
-    "voice.uninstall": () => {
+    "voice.uninstall": (params) => {
       this.desktopOnly();
-      return {
-        supported: true,
-        installed: false,
-        installing: false,
-        ready: false,
-        mode: "uninstalled",
-        modelName: "SenseVoice-Small (int8)",
-        downloadBytes: 196_634_583,
-        installedBytes: 0,
-        error: null,
-      };
+      if (params.modelId) this.voiceInstalled.delete(params.modelId);
+      else this.voiceInstalled.clear();
+      return this.voiceStatus();
     },
     "voice.transcribe": () => ({ text: "Mock voice transcript", durationMs: 120 }),
   };

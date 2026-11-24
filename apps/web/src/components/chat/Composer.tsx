@@ -9,7 +9,7 @@ import { actions, useStore } from "~/state/store";
 import { errorMessage, toast } from "~/state/toast";
 import { Popover, PopoverPopup, PopoverTrigger, Tip } from "../ui/overlay";
 import { Spinner } from "../ui/primitives";
-import { OptionPicker, composerControlClass } from "./OptionPicker";
+import { OptionPicker, composerControlClass, isDangerChoice } from "./OptionPicker";
 import { VoiceButton } from "./VoiceButton";
 
 interface Attachment {
@@ -56,7 +56,7 @@ function partitionOptions(options: ConfigOption[]) {
     options.find((option) => option.category === "model"),
     options.find((option) => option.category === "thought_level"),
     modes.find((option) => /permission/i.test(option.id)) ?? modes[0],
-    ...options.filter((option) => option.choices.some((choice) => choice.value === option.currentValue && choice.danger)),
+    ...options.filter((option) => option.choices.some((choice) => choice.value === option.currentValue && isDangerChoice(option, choice))),
   ];
   const chosen = new Set(picks.filter((option) => option !== undefined).map((option) => option.id));
   return {
