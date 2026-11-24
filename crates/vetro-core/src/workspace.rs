@@ -509,9 +509,43 @@ pub(crate) fn open_external(params: OpenExternalParams, editor: Option<&str>) ->
             if !editors.is_empty() && editor.is_some_and(|name| name != "auto") {
                 return Err(bad_request("Configured external editor was not found"));
             }
+            if path.is_some() && is_executable_file(target) {
+                return Err(bad_request(
+                    "Refusing to launch an executable with the system opener; choose an editor in Settings",
+                ));
+            }
             open::that_detached(target).map_err(internal)
         }
     }
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    let Some(ext) = path.extension().and_then(|ext| ext.to_str()) else {
+        return false;
+    };
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        "exe"
+            | "bat"
+            | "cmd"
+            | "com"
+            | "msi"
+            | "ps1"
+            | "vbs"
+            | "vbe"
+            | "js"
+            | "jse"
+            | "wsf"
+            | "wsh"
+            | "lnk"
+            | "scr"
+            | "pif"
+            | "app"
+            | "command"
+            | "sh"
+            | "desktop"
+            | "run"
+    )
 }
 
 fn editor_program(name: &str) -> Option<PathBuf> {
@@ -605,7 +639,7 @@ fn open_terminal(cwd: &Path) -> io::Result<()> {
         let args = directory_flag.map(|flag| [OsString::from(flag), cwd.as_os_str().into()]);
         match launch(
             Path::new(program),
-            args.as_ref().map_or(&[], |args| &args[..]),
+            args.as_ref().map_or(&[][..], |args| &args[..]),
             cwd,
         ) {
             Ok(()) => return Ok(()),

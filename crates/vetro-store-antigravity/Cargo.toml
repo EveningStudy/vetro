@@ -10,5 +10,5 @@ rust-version.workspace = true
 [dependencies]
 rusqlite = { version = "0.43", default-features = false, features = ["bundled"] }
 serde_json.workspace = true
-vetro-agent-api = { version = "0.1.0", path = "../vetro-agent-api" }
-vetro-proto = { version = "0.1.0", path = "../vetro-proto" }
+vetro-agent-api = { path = "../vetro-agent-api" }
+vetro-proto = { path = "../vetro-proto" }

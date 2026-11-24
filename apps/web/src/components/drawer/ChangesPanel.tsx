@@ -179,6 +179,7 @@ export function ChangesPanel({ threadId }: { threadId: string }) {
   const refresh = () => {
     if (!cwd) return;
     setRefreshing(true);
+    setOpen({});
     setDiffs({});
     void actions.refreshGitStatus(cwd).finally(() => setRefreshing(false));
   };
