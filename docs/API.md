@@ -41,12 +41,16 @@ Unknown fields must be ignored by both sides. Timestamps are milliseconds since 
 | `threads.interrupt` | `ThreadIdParams` | `Empty` | |
 | `threads.setOption` | `ThreadSetOptionParams` | `OptionsResult` | Model, mode, thinking level, ... |
 | `threads.respond` | `ThreadRespondParams` | `Empty` | Answers a permission request or question. |
-| `threads.update` | `ThreadUpdateParams` | `ThreadResult` | Vetro-local title and archive flag. |
+| `threads.update` | `ThreadUpdateParams` | `ThreadResult` | Vetro-local title, archive and pin flags. Never modifies the agent's own store. |
 | `threads.detach` | `ThreadIdParams` | `Empty` | Releases the agent process for this thread. |
 | `threads.raw` | `ThreadRawParams` | `ThreadRawResult` | Per-thread wire log. The limit preserves launch and handshake entries. |
 | `search.threads` | `SearchParams` | `SearchResult` | Literal, case-insensitive full-text phrase search over titles and user and agent messages. Supports Chinese substrings. Returns one ranked hit per unarchived thread, with a matching snippet. Snippet text is HTML-escaped and matches use `<mark>` tags. |
 | `fs.list` | `FsListParams` | `FsListResult` | Read-only folder picker. Remote clients are limited to known project roots. |
 | `fs.find` | `FsFindParams` | `FsFindResult` | Read-only file mentions. Remote clients are limited to known project roots. |
+| `workspace.gitStatus` | `WorkspacePathParams` | `GitStatusResult` | Read-only Git branch and changed-file summary (`--no-optional-locks`). Remote clients are limited to known project roots. |
+| `workspace.gitDiff` | `GitDiffParams` | `GitDiffResult` | Read-only Git diff for one changed file. Remote clients are limited to known project roots. |
+| `workspace.openExternal` | `OpenExternalParams` | `Empty` | Desktop local client only. Opens a workspace folder, terminal, or file in the user's configured external app. |
+| `app.notify` | `NotifyParams` | `Empty` | Desktop local client only. Requests a native OS desktop notification when enabled in settings. |
 | `settings.get` | `Empty` | `Settings` | |
 | `settings.update` | `SettingsUpdateParams` | `Settings` | Desktop client only. |
 | `prefs.get` | `Empty` | `Prefs` | UI preferences of the calling device, stored by the core so they survive a WebView without persistent storage. |
@@ -62,7 +66,7 @@ Unknown fields must be ignored by both sides. Timestamps are milliseconds since 
 
 - `thread.event`: for opened threads only; `seq` increases by one per thread. `ThreadEvent` is `item_added`, `item_updated`, `text_delta`, `summary`, `options`, `commands` or `usage`.
 - `threads.upserted` / `threads.removed`: the thread list changed (new session, title, status, link, history refresh). Sent to every connection.
-- `agents.updated`, `projects.updated`, `index.progress`, `remote.updated`.
+- `agents.updated`, `projects.updated`, `index.progress`, `remote.updated`, `app.navigate`.
 
 Listings and searches use the local index immediately. During a rebuild its initial results can be incomplete. `index.progress` reports a scan per agent. `done` means the scan ended, including sessions whose transcripts require sign-in. `threads.upserted` carries newly indexed summaries and changes to links. Open history threads receive item events as their native transcripts change.
 

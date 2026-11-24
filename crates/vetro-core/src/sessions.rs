@@ -1152,6 +1152,7 @@ fn new_summary(
         child_count: 0,
         model: None,
         archived: false,
+        pinned: false,
         internal: false,
     };
     summary.internal = crate::storage::classified(&summary);

@@ -12,6 +12,10 @@ use crate::{bad_request, internal, page_limit};
 pub(crate) fn normalize(path: &Path) -> PathBuf {
     let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
     let resolved = fs::canonicalize(&absolute).unwrap_or(absolute);
+    display_path(resolved)
+}
+
+pub(crate) fn display_path(resolved: PathBuf) -> PathBuf {
     #[cfg(windows)]
     {
         let text = resolved.to_string_lossy();

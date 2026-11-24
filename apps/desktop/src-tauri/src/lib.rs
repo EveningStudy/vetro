@@ -11,7 +11,9 @@ use tauri::{
     AppHandle, Manager, Theme, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent,
     Wry,
 };
+use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
+use tokio::sync::broadcast::error::RecvError;
 
 use crate::core::CoreHandle;
 
@@ -26,6 +28,7 @@ pub fn run() -> Result<()> {
             show_main_window(app);
         }))
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let app = app.handle().clone();
             let core = tauri::async_runtime::block_on(crate::core::start());
@@ -86,6 +89,28 @@ fn core_window(app: &AppHandle, mut handle: CoreHandle) -> Result<WebviewWindow>
             while theme.changed().await.is_ok() {
                 let mapped = native_theme(theme.borrow_and_update().as_deref());
                 let _ = window.set_theme(mapped);
+            }
+        });
+    }
+    if let Some(mut notifications) = handle.notify_rx {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            loop {
+                match notifications.recv().await {
+                    Ok(params) => {
+                        let result = app
+                            .notification()
+                            .builder()
+                            .title(params.title)
+                            .body(params.body)
+                            .show();
+                        if let Err(error) = result {
+                            eprintln!("Could not show desktop notification: {error}");
+                        }
+                    }
+                    Err(RecvError::Lagged(_)) => continue,
+                    Err(RecvError::Closed) => break,
+                }
             }
         });
     }

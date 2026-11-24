@@ -246,6 +246,9 @@ pub struct ThreadSummary {
     pub child_count: u32,
     pub model: Option<String>,
     pub archived: bool,
+    /// Vetro-local pin flag; never written to the agent's own store.
+    #[serde(default)]
+    pub pinned: bool,
     /// Automated or internal background session (e.g. Codex `subAgent*`, blank history projection, unlinked `exec`).
     /// Hidden from the primary sidebar by default unless explicitly requested.
     #[serde(default)]

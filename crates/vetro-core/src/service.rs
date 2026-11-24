@@ -21,6 +21,7 @@ use crate::{
     registry::Registry,
     sessions::Sessions,
     storage::{Filter, Index},
+    workspace,
 };
 
 pub struct Core {
@@ -28,6 +29,7 @@ pub struct Core {
     registry: RwLock<Arc<Registry>>,
     pub(crate) registry_changed: watch::Sender<()>,
     theme: watch::Sender<Option<String>>,
+    notify_tx: broadcast::Sender<NotifyParams>,
     pub(crate) store: Arc<Index>,
     pub(crate) sessions: Sessions,
     pub(crate) events: broadcast::Sender<Arc<ServerEvent>>,
@@ -49,6 +51,7 @@ impl Core {
             registry: RwLock::new(Arc::new(registry)),
             registry_changed: watch::channel(()).0,
             theme,
+            notify_tx: broadcast::channel(64).0,
             store: Arc::new(store),
             sessions: Sessions::default(),
             events: broadcast::channel(1024).0,
@@ -61,6 +64,61 @@ impl Core {
 
     pub fn theme_watch(&self) -> watch::Receiver<Option<String>> {
         self.theme.subscribe()
+    }
+
+    pub fn notify_subscribe(&self) -> broadcast::Receiver<NotifyParams> {
+        self.notify_tx.subscribe()
+    }
+
+    pub fn emit_navigate(&self, thread_id: String) {
+        self.publish(ServerEvent::AppNavigate { thread_id });
+    }
+
+    pub(crate) fn notify(&self, params: NotifyParams) {
+        if self.home.settings().notifications_enabled {
+            let _ = self.notify_tx.send(params);
+        }
+    }
+
+    pub(crate) async fn git_status(&self, cwd: &Path, remote: bool) -> Result<GitStatusResult> {
+        if !remote {
+            return workspace::git_status(cwd).await;
+        }
+        match self.remote_repository(cwd).await? {
+            Some(repo) => repo.status().await,
+            None => Ok(GitStatusResult::default()),
+        }
+    }
+
+    pub(crate) async fn git_diff(
+        &self,
+        cwd: &Path,
+        path: &str,
+        remote: bool,
+    ) -> Result<GitDiffResult> {
+        if !remote {
+            return workspace::git_diff(cwd, path).await;
+        }
+        self.remote_repository(cwd)
+            .await?
+            .ok_or_else(|| bad_request("Workspace is not inside a Git work tree"))?
+            .diff(path)
+            .await
+    }
+
+    async fn remote_repository(&self, cwd: &Path) -> Result<Option<workspace::Repository>> {
+        let repo = workspace::Repository::discover(cwd).await?;
+        if let Some(repo) = &repo {
+            check_project_path(repo.root(), &self.projects()?)?;
+        }
+        Ok(repo)
+    }
+
+    pub(crate) async fn open_external(&self, params: OpenExternalParams) -> Result<()> {
+        let editor = self.home.settings().external_editor;
+        tokio::task::spawn_blocking(move || workspace::open_external(params, editor.as_deref()))
+            .await
+            .map_err(internal)?
     }
 
     pub(crate) fn prefs_set(&self, device_id: &str, prefs: Value) -> Result<()> {
@@ -471,6 +529,9 @@ impl Core {
                 if let Some(archived) = overlay.archived {
                     thread.archived = archived;
                 }
+                if let Some(pinned) = overlay.pinned {
+                    thread.pinned = pinned;
+                }
             }
         });
         thread
@@ -498,6 +559,7 @@ impl Core {
             return Err(not_found("Unknown thread"));
         }
         let archive_changed = params.archived.is_some();
+        let title_changed = params.title.is_some();
         self.home.change_state(|state| {
             let overlay = state.threads.entry(params.thread_id.clone()).or_default();
             if params.title.is_some() {
@@ -506,12 +568,15 @@ impl Core {
             if params.archived.is_some() {
                 overlay.archived = params.archived;
             }
+            if params.pinned.is_some() {
+                overlay.pinned = params.pinned;
+            }
         })?;
         if archive_changed {
             self.project_refresh_requested
                 .store(true, Ordering::Release);
         }
-        if let Some(existing) = &existing {
+        if let Some(existing) = existing.as_ref().filter(|_| title_changed) {
             let title = self.overlay(existing.clone()).title;
             self.store.rename(&params.thread_id, &title)?;
         }
@@ -774,6 +839,7 @@ pub(crate) fn summary(agent_id: &str, record: SessionRecord) -> ThreadSummary {
         child_count: 0,
         model: record.model,
         archived: false,
+        pinned: false,
         internal: record.internal,
     }
 }
@@ -794,6 +860,25 @@ fn project_at(path: String) -> Project {
         root_thread_count: 0,
         last_root_activity_at: None,
     }
+}
+
+pub(crate) fn in_project(path: &Path, projects: &[Project]) -> bool {
+    let Ok(path) = std::fs::canonicalize(path) else {
+        return false;
+    };
+    projects.iter().any(|project| {
+        std::fs::canonicalize(&project.path).is_ok_and(|root| path.starts_with(root))
+    })
+}
+
+pub(crate) fn check_project_path(path: &Path, projects: &[Project]) -> Result<()> {
+    if in_project(path, projects) {
+        return Ok(());
+    }
+    Err(AgentError::new(
+        ErrorCode::Unauthorized,
+        "Path is outside known project roots",
+    ))
 }
 
 fn pref_theme(prefs: &Value) -> Option<String> {
@@ -826,6 +911,89 @@ mod tests {
         }
         core.prefs_set("local", json!({})).unwrap();
         assert_eq!(*theme.borrow_and_update(), None);
+    }
+
+    #[test]
+    fn thread_pin_persists_in_local_state_and_publishes() {
+        let root = tempfile::tempdir().unwrap();
+        let app_dir = root.path().join(".vetro");
+        let home = Home::open(app_dir.clone(), root.path().into()).unwrap();
+        let core = Core::new(home, Registry::default());
+        let thread = summary(
+            "devin",
+            SessionRecord {
+                native_id: "stored".into(),
+                title: "Original".into(),
+                preview: None,
+                cwd: None,
+                created_at: None,
+                updated_at: 1,
+                source: ThreadSource::Cli,
+                origin: None,
+                model: None,
+                resumable: true,
+                parent_native_id: None,
+                internal: false,
+            },
+        );
+        core.store.mark(&thread, None, "1", &thread.title).unwrap();
+        let mut events = core.events.subscribe();
+        let update = |core: &Core, pinned| {
+            core.update_thread(ThreadUpdateParams {
+                thread_id: thread.id.clone(),
+                pinned,
+                title: None,
+                archived: None,
+            })
+            .unwrap()
+        };
+        assert!(update(&core, Some(true)).pinned);
+        assert!(
+            matches!(&*events.try_recv().unwrap(), ServerEvent::ThreadsUpserted { threads } if threads[0].pinned)
+        );
+        assert!(!core.store.get(&thread.id).unwrap().unwrap().pinned);
+        let state: Value =
+            serde_json::from_slice(&std::fs::read(app_dir.join("state.json")).unwrap()).unwrap();
+        assert_eq!(state["threads"][&thread.id]["pinned"], true);
+        drop(core);
+        let home = Home::open(app_dir, root.path().into()).unwrap();
+        let core = Core::new(home, Registry::default());
+        assert!(core.threads(ThreadsListParams::default()).unwrap().threads[0].pinned);
+        assert!(update(&core, None).pinned);
+        assert!(!update(&core, Some(false)).pinned);
+    }
+
+    #[tokio::test]
+    async fn desktop_notification_respects_settings_and_emits_navigation() {
+        let root = tempfile::tempdir().unwrap();
+        let home = Home::open(root.path().join(".vetro"), root.path().into()).unwrap();
+        let core = Core::new(home, Registry::default());
+        let mut notifications = core.notify_subscribe();
+        let params = NotifyParams {
+            title: "Finished".into(),
+            body: "Done".into(),
+            thread_id: Some("devin:stored".into()),
+        };
+        core.notify(params.clone());
+        assert_eq!(
+            notifications.try_recv().unwrap().thread_id,
+            params.thread_id
+        );
+        core.update_settings(SettingsUpdateParams {
+            patch: json!({"notificationsEnabled": false}),
+        })
+        .await
+        .unwrap();
+        core.notify(params);
+        assert!(matches!(
+            notifications.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+        let mut events = core.events.subscribe();
+        core.emit_navigate("devin:stored".into());
+        assert!(
+            matches!(&*events.try_recv().unwrap(), ServerEvent::AppNavigate { thread_id } if thread_id == "devin:stored")
+        );
     }
 
     #[test]
@@ -952,6 +1120,7 @@ mod tests {
             thread_id: "codex:root".into(),
             title: None,
             archived: Some(true),
+            pinned: None,
         })
         .unwrap();
         let project = core.projects().unwrap().pop().unwrap();

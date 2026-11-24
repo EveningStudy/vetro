@@ -94,6 +94,9 @@ pub enum ServerEvent {
     },
     #[serde(rename = "remote.updated")]
     RemoteUpdated { status: RemoteStatus },
+    /// Local desktop shell request to focus a specific thread (e.g. notification click).
+    #[serde(rename = "app.navigate")]
+    AppNavigate { thread_id: String },
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
@@ -370,6 +373,7 @@ pub struct ThreadUpdateParams {
     pub thread_id: String,
     pub title: Option<String>,
     pub archived: Option<bool>,
+    pub pinned: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -463,6 +467,89 @@ pub struct FsFindResult {
     pub paths: Vec<String>,
 }
 
+// --- workspace (read-only Git inspection & desktop external open) ------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct WorkspacePathParams {
+    pub cwd: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct GitFileChange {
+    /// Path relative to the repository root, using forward slashes.
+    pub path: String,
+    /// `modified`, `added`, `deleted`, `renamed`, `untracked`, or `other`.
+    pub status: String,
+    pub additions: Option<u32>,
+    pub deletions: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct GitStatusResult {
+    pub is_repo: bool,
+    pub root: Option<String>,
+    pub branch: Option<String>,
+    pub dirty: bool,
+    pub files: Vec<GitFileChange>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct GitDiffParams {
+    pub cwd: String,
+    /// File path relative to the repository root (or `cwd`).
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct GitDiffResult {
+    pub path: String,
+    pub old_text: Option<String>,
+    pub new_text: Option<String>,
+    /// Unified diff text when available (capped for large files).
+    pub diff: Option<String>,
+    pub binary: bool,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum OpenTarget {
+    Folder,
+    Terminal,
+    Editor,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, optional_fields)]
+pub struct OpenExternalParams {
+    pub cwd: String,
+    pub target: OpenTarget,
+    /// Optional file path (relative to `cwd` or inside `cwd`) when `target` is `editor`.
+    pub path: Option<String>,
+    pub line: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, optional_fields)]
+pub struct NotifyParams {
+    pub title: String,
+    pub body: String,
+    pub thread_id: Option<String>,
+}
+
 // --- settings ----------------------------------------------------------------------------------
 
 /// Per-agent launch settings. Vetro passes nothing to an agent beyond what is listed here.
@@ -506,6 +593,10 @@ pub struct Settings {
     pub close_to_tray: bool,
     /// Fixed port for the local server. 0 picks a free port.
     pub port: u16,
+    /// Preferred external editor (`auto` / None, `cursor`, `code`, `zed`, `system`, or a command).
+    pub external_editor: Option<String>,
+    /// Show native desktop notifications when background threads need input or finish.
+    pub notifications_enabled: bool,
 }
 
 impl Default for Settings {
@@ -516,6 +607,8 @@ impl Default for Settings {
             idle_release_minutes: 30,
             close_to_tray: false,
             port: 0,
+            external_editor: None,
+            notifications_enabled: true,
         }
     }
 }

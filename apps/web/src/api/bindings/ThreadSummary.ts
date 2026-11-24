@@ -25,6 +25,10 @@ live: boolean,
  */
 resumable: boolean, parent: ThreadParent | null, childCount: number, model: string | null, archived: boolean, 
 /**
+ * Vetro-local pin flag; never written to the agent's own store.
+ */
+pinned: boolean, 
+/**
  * Automated or internal background session (e.g. Codex `subAgent*`, blank history projection, unlinked `exec`).
  * Hidden from the primary sidebar by default unless explicitly requested.
  */

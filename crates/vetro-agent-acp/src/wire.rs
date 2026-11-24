@@ -35,6 +35,7 @@ pub(crate) struct Connection {
     dispatch: Mutex<Dispatch>,
     pub lifecycle: AsyncMutex<()>,
     pub auth: Mutex<AuthState>,
+    auth_required_observed: AtomicBool,
     previous_method: Option<Arc<Mutex<Option<String>>>>,
     attempted_auth: AsyncMutex<bool>,
     signed_in: AtomicBool,
@@ -54,6 +55,7 @@ impl Connection {
             dispatch: Mutex::new(Dispatch::default()),
             lifecycle: AsyncMutex::new(()),
             auth: Mutex::new(AuthState::Unknown),
+            auth_required_observed: AtomicBool::new(false),
             previous_method,
             attempted_auth: AsyncMutex::new(false),
             signed_in: AtomicBool::new(false),
@@ -238,18 +240,21 @@ impl Connection {
     }
 
     pub fn observe_auth(&self, method: &str, reply: &Reply) {
-        let state = match reply {
-            Err(Error::Remote(error)) if error.code == -32000 => AuthState::Required,
-            Ok(_)
-                if method == "authenticate"
-                    || (self.previous_method.is_none()
-                        && matches!(method, "session/new" | "session/prompt")) =>
-            {
-                AuthState::Ok
-            }
-            _ => return,
-        };
-        *self.auth.lock().unwrap() = state;
+        let mut state = self.auth.lock().unwrap();
+        if matches!(reply, Err(Error::Remote(error)) if error.code == -32000) {
+            self.auth_required_observed.store(true, Ordering::Relaxed);
+        }
+        *state = observed_auth(*state, self.previous_method.is_some(), method, reply);
+    }
+
+    pub fn apply_auth_probe(&self, probe: AuthState) {
+        let mut state = self.auth.lock().unwrap();
+        if probe != AuthState::Unknown
+            && !self.auth_required_observed.load(Ordering::Relaxed)
+            && !self.signed_in.load(Ordering::Acquire)
+        {
+            *state = probe;
+        }
     }
 
     pub async fn authenticate(&self, method: &str) -> Result<()> {
@@ -283,9 +288,11 @@ impl Connection {
 
     async fn sign_in(&self, method: &str) -> Result<()> {
         let reply = self.call("authenticate", json!({"methodId": method})).await;
+        if reply.is_ok() {
+            self.signed_in.store(true, Ordering::Release);
+        }
         self.observe_auth("authenticate", &reply);
         reply.map_err(agent_error)?;
-        self.signed_in.store(true, Ordering::Release);
         Ok(())
     }
 }
@@ -372,6 +379,20 @@ async fn drain(connection: Weak<Connection>, mut stdout: Stdout) {
     }
 }
 
+fn observed_auth(state: AuthState, devin: bool, method: &str, reply: &Reply) -> AuthState {
+    match reply {
+        Err(Error::Remote(error)) if error.code == -32000 => AuthState::Required,
+        Ok(_)
+            if method == "authenticate"
+                || (!devin && matches!(method, "session/new" | "session/prompt"))
+                || (!devin && method == "session/list" && state == AuthState::Unknown) =>
+        {
+            AuthState::Ok
+        }
+        _ => state,
+    }
+}
+
 pub(crate) fn agent_error(error: Error) -> AgentError {
     let code = match &error {
         Error::Closed => ErrorCode::AgentUnavailable,
@@ -385,4 +406,40 @@ pub(crate) fn agent_error(error: Error) -> AgentError {
         _ => ErrorCode::Internal,
     };
     AgentError::new(code, error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn list_only_confirms_unknown_generic_auth() {
+        let success = Ok(json!({}));
+        let required = Err(Error::Remote(RemoteError {
+            code: -32000,
+            message: "auth_required".into(),
+            data: None,
+        }));
+        let state = observed_auth(AuthState::Unknown, false, "session/list", &success);
+        assert_eq!(state, AuthState::Ok);
+        for method in [
+            "session/list",
+            "session/new",
+            "session/prompt",
+            "session/load",
+        ] {
+            assert_eq!(
+                observed_auth(state, false, method, &required),
+                AuthState::Required
+            );
+        }
+        assert_eq!(
+            observed_auth(AuthState::Required, false, "session/list", &success),
+            AuthState::Required
+        );
+        assert_eq!(
+            observed_auth(AuthState::Unknown, true, "session/list", &success),
+            AuthState::Unknown
+        );
+    }
 }

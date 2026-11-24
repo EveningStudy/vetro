@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Context};
-use tokio::sync::watch;
+use tokio::sync::{broadcast, watch};
 use vetro_core::{home::Home, registry::Registry, server::Server, Core};
+use vetro_proto::rpc::NotifyParams;
 
 /// Handle for the running Vetro core. The shell only needs the URL to point
 /// the window at; everything else is internal to the core.
@@ -8,6 +9,7 @@ pub struct CoreHandle {
     pub url: String,
     pub close_to_tray: bool,
     pub theme_rx: Option<watch::Receiver<Option<String>>>,
+    pub notify_rx: Option<broadcast::Receiver<NotifyParams>>,
 }
 
 /// Starts the core inside this process and returns its loopback URL.
@@ -23,6 +25,7 @@ pub async fn start() -> anyhow::Result<CoreHandle> {
             url,
             close_to_tray: false,
             theme_rx: None,
+            notify_rx: None,
         });
     }
     let home = Home::discover().map_err(|error| anyhow!("{error:?}"))?;
@@ -30,6 +33,7 @@ pub async fn start() -> anyhow::Result<CoreHandle> {
     let registry = Registry::from_settings(&settings).map_err(|error| anyhow!("{error:?}"))?;
     let core = Core::new(home, registry);
     let theme_rx = core.theme_watch();
+    let notify_rx = core.notify_subscribe();
     let server = Server::bind(core, None)
         .await
         .map_err(|error| anyhow!("{error:?}"))?;
@@ -43,5 +47,6 @@ pub async fn start() -> anyhow::Result<CoreHandle> {
         url,
         close_to_tray: settings.close_to_tray,
         theme_rx: Some(theme_rx),
+        notify_rx: Some(notify_rx),
     })
 }

@@ -13,7 +13,11 @@ use super::{
     auth::{self, Client},
     HttpState,
 };
-use crate::{bad_request, files, internal, sessions::Thread};
+use crate::{
+    bad_request, files, internal,
+    service::{check_project_path, in_project},
+    sessions::Thread,
+};
 
 #[derive(Default)]
 pub(super) struct Connection {
@@ -253,6 +257,26 @@ async fn call(
                     .map_err(internal)??,
             )
         }
+        "workspace.gitStatus" => {
+            let params: WorkspacePathParams = parse(params)?;
+            let cwd = workspace_cwd(state, client, &params.cwd)?;
+            output(core.git_status(&cwd, client.remote()).await?)
+        }
+        "workspace.gitDiff" => {
+            let params: GitDiffParams = parse(params)?;
+            let cwd = workspace_cwd(state, client, &params.cwd)?;
+            output(core.git_diff(&cwd, &params.path, client.remote()).await?)
+        }
+        "workspace.openExternal" => {
+            client.desktop()?;
+            core.open_external(parse(params)?).await?;
+            empty()
+        }
+        "app.notify" => {
+            client.desktop()?;
+            core.notify(parse(params)?);
+            empty()
+        }
         "settings.get" => {
             let mut settings = core.home.settings();
             if client.remote() {
@@ -317,13 +341,13 @@ fn checked_cwd(state: &HttpState, cwd: &str) -> Result<String> {
         .into_owned())
 }
 
-fn in_project(path: &Path, projects: &[vetro_proto::Project]) -> bool {
-    let Ok(path) = std::fs::canonicalize(path) else {
-        return false;
-    };
-    projects.iter().any(|project| {
-        std::fs::canonicalize(&project.path).is_ok_and(|root| path.starts_with(root))
-    })
+fn workspace_cwd(state: &HttpState, client: &Client, cwd: &str) -> Result<PathBuf> {
+    let path = Path::new(cwd);
+    if client.remote() {
+        remote_path(state, path)
+    } else {
+        Ok(path.to_owned())
+    }
 }
 
 fn remote_path(state: &HttpState, path: &Path) -> Result<PathBuf> {
@@ -334,9 +358,7 @@ fn remote_path(state: &HttpState, path: &Path) -> Result<PathBuf> {
         )
     };
     let path = files::directory(path).map_err(|_| forbidden())?;
-    if !in_project(&path, &state.core.projects()?) {
-        return Err(forbidden());
-    }
+    check_project_path(&path, &state.core.projects()?)?;
     Ok(path)
 }
 

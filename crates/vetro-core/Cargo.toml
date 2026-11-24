@@ -27,7 +27,7 @@ serde_json.workspace = true
 sha2 = "0.10"
 subtle = "2"
 tempfile = "3"
-tokio = { version = "1", features = ["fs", "macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1", features = ["fs", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
 vetro-agent-api = { path = "../vetro-agent-api" }
 vetro-agent-acp = { path = "../vetro-agent-acp", optional = true }
 vetro-agent-claude = { path = "../vetro-agent-claude", optional = true }
@@ -35,6 +35,7 @@ vetro-agent-codex = { path = "../vetro-agent-codex", optional = true }
 vetro-proto = { path = "../vetro-proto" }
 vetro-store-antigravity = { path = "../vetro-store-antigravity", optional = true }
 zstd = { version = "0.13", default-features = false, optional = true }
+open = "5"
 
 [dev-dependencies]
 futures-util = "0.3"

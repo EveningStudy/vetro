@@ -26,6 +26,7 @@ CREATE INDEX IF NOT EXISTS threads_agent ON threads(agent);
 CREATE INDEX IF NOT EXISTS threads_updated ON threads(updated DESC, id);
 CREATE INDEX IF NOT EXISTS threads_hint ON threads(hint);
 CREATE INDEX IF NOT EXISTS threads_source ON threads(agent, source);
+CREATE INDEX IF NOT EXISTS threads_untyped_id ON threads(':' || lower(substr(id,instr(id,':')+1)));
 CREATE TABLE IF NOT EXISTS calls (
     parent TEXT NOT NULL, call TEXT NOT NULL, target TEXT, evidence TEXT NOT NULL,
     PRIMARY KEY(parent, call)
@@ -299,8 +300,16 @@ impl Index {
                     .map_err(internal)?;
                 for call in &projection.calls {
                     let evidence = json(call)?;
-                    for target in &call.targets {
-                        let key = format!("{target}:{}", call.id);
+                    let targets = call.targets.iter().map(|target| Some(target.as_str()));
+                    for target in call
+                        .targets
+                        .is_empty()
+                        .then_some(None)
+                        .into_iter()
+                        .chain(targets)
+                    {
+                        let prefix = target.unwrap_or_default();
+                        let key = format!("{prefix}:{}", call.id);
                         tx.execute(
                             "INSERT INTO calls VALUES (?1,?2,?3,?4)",
                             params![thread.id, key, target, evidence],
@@ -309,7 +318,7 @@ impl Index {
                         for child in &call.ids {
                             tx.execute(
                                 "INSERT OR IGNORE INTO call_sessions VALUES (?1,?2,?3)",
-                                params![format!("{target}:{child}"), thread.id, key],
+                                params![format!("{prefix}:{child}"), thread.id, key],
                             )
                             .map_err(internal)?;
                         }
@@ -468,6 +477,10 @@ fn migrate_internal(conn: &mut Connection) -> rusqlite::Result<()> {
             }
         }
     }
+    let version: u32 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    if version < 1 {
+        tx.execute_batch("UPDATE threads SET indexed=NULL; PRAGMA user_version=1;")?;
+    }
     tx.commit()
 }
 
@@ -517,6 +530,9 @@ fn dependents(conn: &Connection, id: &str) -> Result<Vec<String>> {
             "SELECT child FROM links WHERE parent=?1 UNION
          SELECT id FROM threads WHERE hint=?1 UNION
          SELECT child FROM call_sessions WHERE parent=?1 UNION
+         SELECT t.id FROM threads t JOIN call_sessions s
+           ON s.child=':' || lower(substr(t.id,instr(t.id,':')+1))
+           WHERE s.parent=?1 AND s.child LIKE ':%' UNION
          SELECT t.id FROM threads t JOIN (SELECT DISTINCT target FROM calls WHERE parent=?1) c
            ON t.agent=c.target WHERE t.source IN ('exec','unknown')",
         )
@@ -544,19 +560,23 @@ fn relink(tx: &Transaction<'_>, id: &str, changed: &mut HashSet<String>) -> Resu
     };
     let hint = hint.filter(|hint| hint != id && get(tx, hint).ok().flatten().is_some());
     let old = parent(tx, id)?;
+    let untyped = format!(":{}", summary.native_id.to_ascii_lowercase());
     let known_exact: bool = tx
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM call_sessions WHERE child=?1)",
-            [id],
+            "SELECT EXISTS(SELECT 1 FROM call_sessions WHERE child IN (?1,?2))",
+            params![id, untyped],
             |row| row.get(0),
         )
         .map_err(internal)?;
     let matching = if known_exact || hint.is_some() || links::eligible(&summary) {
         let mut stmt = tx.prepare_cached(
-            "SELECT DISTINCT parent,evidence FROM calls WHERE parent<>?1 AND (target=?2 OR parent=?3)",
+            "SELECT DISTINCT parent,evidence FROM calls c WHERE parent<>?1 AND
+             (target=?2 OR (target IS NOT NULL AND parent=?3) OR (target IS NULL AND EXISTS(
+               SELECT 1 FROM call_sessions s WHERE s.child=?4 AND s.parent=c.parent AND s.call=c.call
+             )))",
         ).map_err(internal)?;
         let calls = stmt
-            .query_map(params![id, summary.agent_id, hint], |row| {
+            .query_map(params![id, summary.agent_id, hint, untyped], |row| {
                 Ok((row.get::<_, String>(0)?, decode::<Call>(row, 1)?))
             })
             .map_err(internal)?;

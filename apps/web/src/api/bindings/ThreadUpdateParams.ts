@@ -3,4 +3,4 @@
 /**
  * Vetro-local metadata only; never written into the agent's own store.
  */
-export type ThreadUpdateParams = { threadId: string, title?: string, archived?: boolean, };
+export type ThreadUpdateParams = { threadId: string, title?: string, archived?: boolean, pinned?: boolean, };

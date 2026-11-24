@@ -21,6 +21,9 @@ fn main() {
     match env::args().nth(1).as_deref() {
         Some("--agent") => fake(env::args().nth(2).as_deref().unwrap_or_default()),
         Some("--version") => println!("fake-acp 1.0"),
+        Some("auth") if env::args().nth(2).as_deref() == Some("status") => {
+            println!("Not logged in");
+        }
         Some("--ignored") => {}
         _ => tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -345,20 +348,20 @@ async fn suites() {
     let agent = Arc::new(agent("auth"));
     let info = agent.info().await;
     assert_eq!(info.version.as_deref(), Some("fake-acp 1.0"));
-    assert_eq!(info.auth.state, AuthState::Unknown);
+    assert_eq!(info.auth.state, AuthState::Ok);
     assert_eq!(info.auth.methods[0].id, "test");
     assert_eq!(
         agent.list(None).await.unwrap().sessions[0].updated_at,
         1_795_392_000_250
     );
-    assert_eq!(agent.info().await.auth.state, AuthState::Unknown);
+    assert_eq!(agent.info().await.auth.state, AuthState::Ok);
     assert!(agent
         .options(None, &BTreeMap::new())
         .await
         .unwrap()
         .options
         .is_empty());
-    assert_eq!(agent.info().await.auth.state, AuthState::Unknown);
+    assert_eq!(agent.info().await.auth.state, AuthState::Ok);
     assert_eq!(
         agent
             .prepare_options(None, &BTreeMap::new())
@@ -518,7 +521,7 @@ async fn suites() {
         events.recv().await.unwrap(),
         SessionEvent::Closed { error: Some(_) }
     ) {}
-    assert_eq!(agent.info().await.auth.state, AuthState::Unknown);
+    assert_eq!(agent.info().await.auth.state, AuthState::Ok);
     agent.authenticate("test").await.unwrap();
     agent.prepare_options(None, &BTreeMap::new()).await.unwrap();
     agent.shutdown().await;

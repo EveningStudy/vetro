@@ -95,7 +95,21 @@ impl Projection {
                     }
                     targets.sort_unstable();
                     targets.dedup();
-                    if !targets.is_empty() {
+                    let allow_bare = !targets.is_empty();
+                    let mut ids = Vec::new();
+                    if let Some(output) = &tool.output {
+                        collect_ids(output, false, allow_bare, &mut ids);
+                    }
+                    for content in &tool.content {
+                        match content {
+                            ToolContent::Text { text }
+                            | ToolContent::Terminal { output: text, .. } => {
+                                text_ids(text, allow_bare, &mut ids);
+                            }
+                            _ => {}
+                        }
+                    }
+                    if allow_bare || (tool.kind == ToolKind::Execute && !ids.is_empty()) {
                         let cwd = terminal
                             .and_then(|(_, cwd)| cwd)
                             .or_else(|| {
@@ -107,24 +121,14 @@ impl Projection {
                                     .to_string_lossy()
                                     .into_owned()
                             });
-                        let mut ids = Vec::new();
-                        for child in native_children
-                            .and_then(|children| children.get(&tool.call_id))
-                            .unwrap_or(&tool.child_thread_ids)
-                        {
-                            let native = child.split_once(':').map_or(child.as_str(), |(_, id)| id);
-                            push_id(native, &mut ids);
-                        }
-                        if let Some(output) = &tool.output {
-                            collect_ids(output, false, &mut ids);
-                        }
-                        for content in &tool.content {
-                            match content {
-                                ToolContent::Text { text }
-                                | ToolContent::Terminal { output: text, .. } => {
-                                    text_ids(text, &mut ids);
-                                }
-                                _ => {}
+                        if allow_bare {
+                            for child in native_children
+                                .and_then(|children| children.get(&tool.call_id))
+                                .unwrap_or(&tool.child_thread_ids)
+                            {
+                                let native =
+                                    child.split_once(':').map_or(child.as_str(), |(_, id)| id);
+                                push_id(native, &mut ids);
                             }
                         }
                         ids.sort_unstable();
@@ -185,18 +189,18 @@ fn string<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {
     keys.iter().find_map(|key| value[*key].as_str())
 }
 
-fn collect_ids(value: &Value, keyed: bool, ids: &mut Vec<String>) {
+fn collect_ids(value: &Value, keyed: bool, allow_bare: bool, ids: &mut Vec<String>) {
     match value {
         Value::String(text) => {
             if keyed {
                 push_id(text, ids);
             } else {
-                text_ids(text, ids);
+                text_ids(text, allow_bare, ids);
             }
         }
         Value::Array(values) => {
             for value in values {
-                collect_ids(value, keyed, ids);
+                collect_ids(value, keyed, allow_bare, ids);
             }
         }
         Value::Object(values) => {
@@ -215,6 +219,7 @@ fn collect_ids(value: &Value, keyed: bool, ids: &mut Vec<String>) {
                             | "agentthreadid"
                             | "spawnedagent"
                     ),
+                    allow_bare,
                     ids,
                 );
             }
@@ -223,12 +228,12 @@ fn collect_ids(value: &Value, keyed: bool, ids: &mut Vec<String>) {
     }
 }
 
-fn text_ids(text: &str, ids: &mut Vec<String>) {
+fn text_ids(text: &str, allow_bare: bool, ids: &mut Vec<String>) {
     for line in text.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with('{') && trimmed.len() <= 256 * 1024 {
             if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
-                collect_ids(&value, false, ids);
+                collect_ids(&value, false, allow_bare, ids);
                 continue;
             }
         }
@@ -240,17 +245,31 @@ fn text_ids(text: &str, ids: &mut Vec<String>) {
             "thread_id",
             "agentid:",
             "agent id:",
+            "agent_id:",
         ] {
             for (offset, _) in lower.match_indices(label) {
-                let candidate =
-                    line[offset + label.len()..].trim_start_matches(|character: char| {
-                        character.is_whitespace() || matches!(character, '"' | '\'' | ':' | '=')
-                    });
+                if line[..offset].ends_with(id_character) {
+                    continue;
+                }
+                let suffix = line[offset + label.len()..]
+                    .trim_start_matches(['"', '\''])
+                    .trim_start();
+                let candidate = if label.ends_with(':') {
+                    suffix
+                } else if let Some(value) = suffix.strip_prefix([':', '=']) {
+                    value
+                } else {
+                    continue;
+                };
+                let candidate = candidate.trim_start().trim_start_matches(['"', '\'']);
                 let end = candidate
                     .find(|character: char| !id_character(character))
                     .unwrap_or(candidate.len());
                 push_id(&candidate[..end], ids);
             }
+        }
+        if !allow_bare {
+            continue;
         }
         for word in line.split(|character| !id_character(character)) {
             if word.len() == 36
@@ -408,6 +427,7 @@ impl<'a> Matcher<'a> {
         let prompt = self.prompt.as_deref();
         let direct = score(self.child, self.hint, prompt, None, &parent, call);
         let matched = if direct.is_none_or(|(rank, _)| rank < 2)
+            && !call.targets.is_empty()
             && prompt.is_some()
             && eligible(self.child)
         {
@@ -457,7 +477,7 @@ fn score(
 ) -> Option<(u8, LinkConfidence)> {
     if parent == child.id
         || hint.is_some_and(|hint| hint != parent)
-        || !call.targets.contains(&child.agent_id)
+        || (!call.targets.is_empty() && !call.targets.contains(&child.agent_id))
         || child
             .created_at
             .zip(call.start)
@@ -473,7 +493,7 @@ fn score(
     {
         return Some((if call.activity { 4 } else { 5 }, LinkConfidence::Exact));
     }
-    if !explicit && !eligible(child) {
+    if call.targets.is_empty() || (!explicit && !eligible(child)) {
         return None;
     }
     if prompt.is_some_and(|prompt| {
@@ -570,7 +590,77 @@ mod tests {
             child_count: 0,
             model: None,
             archived: false,
+            pinned: false,
             internal: true,
+        }
+    }
+
+    #[test]
+    fn wrapper_links_only_explicit_output_ids_in_either_indexing_order() {
+        let mut parent = child("codex");
+        parent.created_at = Some(10);
+        let mut target = child("devin");
+        let mut unrelated = child("claude");
+        unrelated.native_id = "45d61caa-427f-4472-8a04-20357eab66ea".into();
+        unrelated.id = format!("claude:{}", unrelated.native_id);
+        target.source = ThreadSource::Cli;
+        let items = [ItemKind::ToolCall(vetro_proto::ToolCall {
+            call_id: "wrapper".into(),
+            kind: ToolKind::Execute,
+            name: None,
+            title: "wrapper.ps1 a specific prompt".into(),
+            status: ToolStatus::Completed,
+            input: None,
+            output: None,
+            content: vec![ToolContent::Text {
+                text: format!(
+                    "session_id={}\n{}\nbackup_session_id={}",
+                    target.native_id, unrelated.native_id, unrelated.native_id
+                ),
+            }],
+            locations: Vec::new(),
+            child_thread_ids: Vec::new(),
+        })];
+        let projection = Projection::from_items(
+            &parent,
+            items.iter().map(|kind| (kind, Some(20), None)),
+            None,
+        );
+        assert_eq!(projection.calls.len(), 1);
+        assert!(projection.calls[0].targets.is_empty());
+        assert_eq!(projection.calls[0].ids, [target.native_id.as_str()]);
+
+        for child_first in [true, false] {
+            let index = crate::storage::Index::temporary();
+            let child_projection = Projection {
+                prompt: Some("a specific prompt".into()),
+                ..Default::default()
+            };
+            let index_children = || {
+                for child in [&target, &unrelated] {
+                    index
+                        .index(child, None, &child_projection, &child.title)
+                        .unwrap();
+                }
+            };
+            if child_first {
+                index_children();
+            }
+            index
+                .index(&parent, None, &projection, &parent.title)
+                .unwrap();
+            if !child_first {
+                index_children();
+            }
+            let link = index.get(&target.id).unwrap().unwrap().parent.unwrap();
+            assert_eq!(link.thread_id, parent.id);
+            assert_eq!(link.call_id.as_deref(), Some("wrapper"));
+            assert_eq!(link.confidence, LinkConfidence::Exact);
+            assert!(index.get(&unrelated.id).unwrap().unwrap().parent.is_none());
+            index
+                .index(&parent, None, &Projection::default(), &parent.title)
+                .unwrap();
+            assert!(index.get(&target.id).unwrap().unwrap().parent.is_none());
         }
     }
 
@@ -663,7 +753,7 @@ mod tests {
             ),
         ] {
             let mut ids = Vec::new();
-            text_ids(output, &mut ids);
+            text_ids(output, true, &mut ids);
             let call = Call {
                 id: "call".into(),
                 targets: invocations(command),
@@ -727,7 +817,7 @@ mod tests {
         let mut child = child("claude");
         child.source = ThreadSource::Cli;
         let mut ids = Vec::new();
-        text_ids("agentId: child-id", &mut ids);
+        text_ids("agentId: child-id", true, &mut ids);
         let call = Call {
             id: "Task".into(),
             targets: vec!["claude".into()],

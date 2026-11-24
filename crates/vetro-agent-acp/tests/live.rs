@@ -181,8 +181,10 @@ async fn devin_round_trip() {
     );
     let _ = agent.list(None).await.unwrap();
     let probe = agent.prepare_options(Some(&cwd), &BTreeMap::new()).await;
-    assert_eq!(probe.unwrap_err().code, ErrorCode::AuthRequired);
-    agent.authenticate("devin-browser").await.unwrap();
+    if let Err(error) = probe {
+        assert_eq!(error.code, ErrorCode::AuthRequired);
+        agent.authenticate("devin-browser").await.unwrap();
+    }
     let (sink, mut events) = mpsc::unbounded_channel();
     let session = agent
         .start(

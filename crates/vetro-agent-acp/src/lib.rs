@@ -45,6 +45,7 @@ struct Runtime {
     capabilities: Capabilities,
     methods: Vec<AuthMethod>,
     prepared: Mutex<Option<(Instant, Arc<AcpSession>)>>,
+    auth_probe: OnceCell<()>,
 }
 
 const PREPARED_TTL: Duration = Duration::from_secs(60);
@@ -144,6 +145,7 @@ impl AcpAgent {
         let runtime = Arc::new(Runtime {
             connection,
             prepared: Mutex::new(None),
+            auth_probe: OnceCell::new(),
             capabilities: Capabilities {
                 image: agent["promptCapabilities"]["image"]
                     .as_bool()
@@ -169,9 +171,6 @@ impl AcpAgent {
                 })
                 .collect(),
         });
-        if self.id == "devin" {
-            *runtime.connection.auth.lock().unwrap() = AuthState::Required;
-        }
         *current = Some(Arc::clone(&runtime));
         *self.connection.lock().unwrap() = Arc::downgrade(&runtime.connection);
         Ok(runtime)
@@ -345,9 +344,17 @@ impl Agent for AcpAgent {
             .as_ref()
             .ok()
             .map(|spec| spec.program.to_string_lossy().into_owned());
-        let version = match spec {
-            Ok(spec) => self.version.get_or_init(|| version(spec)).await.clone(),
+        let version = match &spec {
+            Ok(spec) => self
+                .version
+                .get_or_init(|| version(spec.clone()))
+                .await
+                .clone(),
             Err(_) => None,
+        };
+        let (auth_state, account) = match &spec {
+            Ok(spec) if self.id == "devin" => devin_auth_status(spec).await,
+            _ => (AuthState::Unknown, None),
         };
         let runtime = self.runtime(None).await;
         let mut info = AgentInfo {
@@ -358,9 +365,9 @@ impl Agent for AcpAgent {
             path,
             version,
             auth: AgentAuth {
-                state: AuthState::Unknown,
+                state: auth_state,
                 methods: Vec::new(),
-                account: None,
+                account,
                 provider: None,
                 endpoint: None,
             },
@@ -377,6 +384,25 @@ impl Agent for AcpAgent {
                     list_sessions: caps.list,
                 };
                 info.auth.methods.clone_from(&runtime.methods);
+                if self.id == "devin" {
+                    runtime.connection.apply_auth_probe(auth_state);
+                } else if caps.list
+                    && *runtime.connection.auth.lock().unwrap() == AuthState::Unknown
+                {
+                    runtime
+                        .auth_probe
+                        .get_or_init(|| async {
+                            let result = tokio::time::timeout(
+                                Duration::from_secs(5),
+                                runtime.connection.call("session/list", json!({})),
+                            )
+                            .await;
+                            if let Ok(reply) = result {
+                                runtime.connection.observe_auth("session/list", &reply);
+                            }
+                        })
+                        .await;
+                }
                 info.auth.state = *runtime.connection.auth.lock().unwrap();
             }
             Err(error) => info.error = Some(error.message),
@@ -671,4 +697,83 @@ async fn version(mut spec: SpawnSpec) -> Option<String> {
         let _ = process.kill().await;
     }
     result
+}
+
+async fn devin_auth_status(spec: &SpawnSpec) -> (AuthState, Option<String>) {
+    use std::process::Stdio;
+
+    let mut command = tokio::process::Command::new(&spec.program);
+    command
+        .args(["auth", "status"])
+        .envs(&spec.env)
+        .stdin(Stdio::null())
+        .kill_on_drop(true);
+    if let Some(cwd) = &spec.cwd {
+        command.current_dir(cwd);
+    }
+    #[cfg(windows)]
+    command.creation_flags(0x08000000);
+    match tokio::time::timeout(Duration::from_secs(5), command.output()).await {
+        Ok(Ok(output)) => parse_devin_auth_status(&String::from_utf8_lossy(&output.stdout)),
+        _ => (AuthState::Unknown, None),
+    }
+}
+
+fn parse_devin_auth_status(output: &str) -> (AuthState, Option<String>) {
+    let lower = output.to_ascii_lowercase();
+    if [
+        "not logged in",
+        "not currently logged in",
+        "not yet logged in",
+        "not signed in",
+        "not authenticated",
+        "unauthenticated",
+        "logged out",
+        "login required",
+        "sign in required",
+    ]
+    .iter()
+    .any(|message| lower.contains(message))
+    {
+        return (AuthState::Required, None);
+    }
+    if lower.contains("logged in") {
+        let tier = output.lines().find_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            let value = value.trim();
+            (key.trim().eq_ignore_ascii_case("tier") && !value.is_empty()).then(|| value.to_owned())
+        });
+        return (AuthState::Ok, tier);
+    }
+    (AuthState::Unknown, None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn devin_status_parses_login_and_optional_tier() {
+        assert_eq!(
+            parse_devin_auth_status("LOGGED IN\n Tier: Devin Max"),
+            (AuthState::Ok, Some("Devin Max".into()))
+        );
+        assert_eq!(parse_devin_auth_status("Logged in"), (AuthState::Ok, None));
+        assert_eq!(
+            parse_devin_auth_status("Not logged in\nTier: none"),
+            (AuthState::Required, None)
+        );
+        assert_eq!(
+            parse_devin_auth_status("Not authenticated"),
+            (AuthState::Required, None)
+        );
+        assert_eq!(
+            parse_devin_auth_status("You are not currently logged in"),
+            (AuthState::Required, None)
+        );
+        assert_eq!(
+            parse_devin_auth_status("unexpected output"),
+            (AuthState::Unknown, None)
+        );
+    }
 }

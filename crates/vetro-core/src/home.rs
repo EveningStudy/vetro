@@ -48,6 +48,8 @@ pub(crate) struct Device {
 pub(crate) struct ThreadOverlay {
     pub title: Option<String>,
     pub archived: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pinned: Option<bool>,
     #[serde(default)]
     pub options: BTreeMap<String, String>,
 }

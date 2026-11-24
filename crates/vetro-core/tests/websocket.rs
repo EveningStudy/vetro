@@ -408,6 +408,16 @@ async fn exercise(path: &Path, cwd: &Path, fake_bin: &Path, marker_port: u16) {
         ("settings.update", json!({"patch": {}})),
         ("fs.list", json!({"path": path})),
         ("fs.find", json!({"cwd": path, "query": "sentinel"})),
+        ("workspace.gitStatus", json!({"cwd": path})),
+        (
+            "workspace.gitDiff",
+            json!({"cwd": path, "path": "sentinel"}),
+        ),
+        (
+            "workspace.openExternal",
+            json!({"cwd": cwd, "target": "folder"}),
+        ),
+        ("app.notify", json!({"title": "Test", "body": "Test"})),
         ("agents.options", json!({"agentId": "fake", "cwd": path})),
         ("agents.authenticate", json!({})),
         ("projects.add", json!({"path": cwd})),

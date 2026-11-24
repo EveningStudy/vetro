@@ -18,4 +18,12 @@ closeToTray: boolean,
 /**
  * Fixed port for the local server. 0 picks a free port.
  */
-port: number, };
+port: number, 
+/**
+ * Preferred external editor (`auto` / None, `cursor`, `code`, `zed`, `system`, or a command).
+ */
+externalEditor: string | null, 
+/**
+ * Show native desktop notifications when background threads need input or finish.
+ */
+notificationsEnabled: boolean, };

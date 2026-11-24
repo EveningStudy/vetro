@@ -9,7 +9,12 @@ import type { FsFindParams } from "./bindings/FsFindParams";
 import type { FsFindResult } from "./bindings/FsFindResult";
 import type { FsListParams } from "./bindings/FsListParams";
 import type { FsListResult } from "./bindings/FsListResult";
+import type { GitDiffParams } from "./bindings/GitDiffParams";
+import type { GitDiffResult } from "./bindings/GitDiffResult";
+import type { GitStatusResult } from "./bindings/GitStatusResult";
 import type { HelloParams } from "./bindings/HelloParams";
+import type { NotifyParams } from "./bindings/NotifyParams";
+import type { OpenExternalParams } from "./bindings/OpenExternalParams";
 import type { OptionsResult } from "./bindings/OptionsResult";
 import type { Pairing } from "./bindings/Pairing";
 import type { Prefs } from "./bindings/Prefs";
@@ -40,6 +45,7 @@ import type { ThreadStartParams } from "./bindings/ThreadStartParams";
 import type { ThreadUpdateParams } from "./bindings/ThreadUpdateParams";
 import type { ThreadsListParams } from "./bindings/ThreadsListParams";
 import type { ThreadsListResult } from "./bindings/ThreadsListResult";
+import type { WorkspacePathParams } from "./bindings/WorkspacePathParams";
 
 export const PROTOCOL_VERSION = 1;
 
@@ -68,6 +74,10 @@ export interface Methods {
   "search.threads": [SearchParams, SearchResult];
   "fs.list": [FsListParams, FsListResult];
   "fs.find": [FsFindParams, FsFindResult];
+  "workspace.gitStatus": [WorkspacePathParams, GitStatusResult];
+  "workspace.gitDiff": [GitDiffParams, GitDiffResult];
+  "workspace.openExternal": [OpenExternalParams, Empty];
+  "app.notify": [NotifyParams, Empty];
   "settings.get": [Empty, Settings];
   "settings.update": [SettingsUpdateParams, Settings];
   "prefs.get": [Empty, Prefs];
