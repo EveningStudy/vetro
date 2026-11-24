@@ -2,14 +2,19 @@ import { create } from "zustand";
 
 export type ThemePref = "light" | "dark" | "system";
 export type LanguagePref = "en" | "zh" | "system";
+export type ActivityDays = 7 | 14 | 30 | 0;
 
 /** Everything the UI remembers per device. The core stores it (`prefs.get` / `prefs.set`) so it
  * survives web views without persistent storage; localStorage is only a cache for a fast start. */
 export interface PrefsData {
   theme?: ThemePref;
   language?: LanguagePref;
-  collapsedProjects?: Record<string, boolean>;
-  filters?: { agentIds: string[]; sources: string[]; showArchived: boolean; showHidden: boolean };
+  /** Explicit expand (true) or collapse (false) per project path; missing means the sidebar decides. */
+  projectExpanded?: Record<string, boolean>;
+  filters?: { agentIds: string[]; sources: string[]; showArchived: boolean; showHidden: boolean; showInternal?: boolean };
+  /** Projects active within this many days stay in the main list; 0 keeps all of them. */
+  sidebarActivityDays?: ActivityDays;
+  hideDisabledAgentHistory?: boolean;
   lastAgent?: string;
   lastProject?: string;
 }
@@ -62,7 +67,7 @@ export function connectPrefs(remote: PrefsData | null, push: (prefs: PrefsData) 
   } else if (Object.keys(data).length > 0) {
     push(data);
   }
-  usePrefs.setState({ theme: pick(data.theme, THEMES, "system", query.get("theme")), language: pick(data.language, LANGUAGES, "system", query.get("lang")) });
+  usePrefs.setState(derived(data));
   applyTheme();
 }
 
@@ -78,10 +83,25 @@ function pick<T extends string>(value: string | undefined, allowed: readonly T[]
   return allowed.includes(chosen as T) ? (chosen as T) : fallback;
 }
 
-export const usePrefs = create<{ theme: ThemePref; language: LanguagePref }>(() => ({
-  theme: pick(data.theme, THEMES, "system", query.get("theme")),
-  language: pick(data.language, LANGUAGES, "system", query.get("lang")),
-}));
+const ACTIVITY_DAYS: readonly ActivityDays[] = [7, 14, 30, 0];
+
+interface UiPrefs {
+  theme: ThemePref;
+  language: LanguagePref;
+  sidebarActivityDays: ActivityDays;
+  hideDisabledAgentHistory: boolean;
+}
+
+function derived(prefs: PrefsData): UiPrefs {
+  return {
+    theme: pick(prefs.theme, THEMES, "system", query.get("theme")),
+    language: pick(prefs.language, LANGUAGES, "system", query.get("lang")),
+    sidebarActivityDays: ACTIVITY_DAYS.includes(prefs.sidebarActivityDays as ActivityDays) ? prefs.sidebarActivityDays! : 14,
+    hideDisabledAgentHistory: prefs.hideDisabledAgentHistory ?? true,
+  };
+}
+
+export const usePrefs = create<UiPrefs>(() => derived(data));
 
 const media = matchMedia("(prefers-color-scheme: dark)");
 
@@ -112,4 +132,14 @@ export function setLanguage(language: LanguagePref) {
 export function resolvedLanguage(pref: LanguagePref): "en" | "zh" {
   if (pref !== "system") return pref;
   return navigator.languages.some((lang) => lang.toLowerCase().startsWith("zh")) ? "zh" : "en";
+}
+
+export function setSidebarActivityDays(sidebarActivityDays: ActivityDays) {
+  savePrefs({ sidebarActivityDays });
+  usePrefs.setState({ sidebarActivityDays });
+}
+
+export function setHideDisabledAgentHistory(hideDisabledAgentHistory: boolean) {
+  savePrefs({ hideDisabledAgentHistory });
+  usePrefs.setState({ hideDisabledAgentHistory });
 }

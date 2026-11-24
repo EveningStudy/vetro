@@ -11,6 +11,7 @@ import type {
   RemoteStatus,
   RequestResolution,
   ServerEvent,
+  Settings,
   SlashCommand,
   ThreadEvent,
   ThreadSource,
@@ -44,6 +45,7 @@ export interface Filters {
   sources: ThreadSource[];
   showArchived: boolean;
   showHidden: boolean;
+  showInternal: boolean;
 }
 
 interface State {
@@ -51,13 +53,14 @@ interface State {
   app: AppInfo | null;
   agents: AgentInfo[];
   projects: Project[];
+  settings: Settings | null;
   threads: Record<string, ThreadSummary>;
   threadsLoaded: boolean;
   open: Record<string, OpenThread>;
   remote: RemoteStatus | null;
   route: Route;
   filters: Filters;
-  collapsedProjects: Record<string, boolean>;
+  projectExpanded: Record<string, boolean>;
   rawPanelOpen: boolean;
   paletteOpen: boolean;
   mobileSidebarOpen: boolean;
@@ -104,13 +107,14 @@ export const useStore = create<State>(() => ({
   app: null,
   agents: [],
   projects: [],
+  settings: null,
   threads: {},
   threadsLoaded: false,
   open: {},
   remote: null,
   route: routeFromLocation(),
-  filters: { agentIds: [], sources: [], showArchived: false, showHidden: false, ...(getPrefs().filters as Partial<Filters> | undefined) },
-  collapsedProjects: getPrefs().collapsedProjects ?? {},
+  filters: { agentIds: [], sources: [], showArchived: false, showHidden: false, showInternal: false, ...(getPrefs().filters as Partial<Filters> | undefined) },
+  projectExpanded: getPrefs().projectExpanded ?? {},
   rawPanelOpen: new URLSearchParams(location.search).get("panel") === "raw",
   paletteOpen: new URLSearchParams(location.search).get("palette") === "1",
   mobileSidebarOpen: new URLSearchParams(location.search).get("sidebar") === "1",
@@ -222,12 +226,34 @@ const PROJECT_PAGE = 200;
 
 async function loadLists() {
   const api = client();
-  const [agents, projects] = await Promise.all([api.request("agents.list", {}), api.request("projects.list", {})]);
-  set({ agents: agents.agents, projects: projects.projects });
-  const page = await api.request("threads.list", { includeArchived: true, includeChildren: true, limit: FIRST_PAGE });
+  const [agents, projects, settings] = await Promise.all([
+    api.request("agents.list", {}),
+    api.request("projects.list", {}),
+    api.request("settings.get", {}).catch(() => null),
+  ]);
+  set({ agents: agents.agents, projects: projects.projects, ...(settings ? { settings } : {}) });
+  const page = await api.request("threads.list", { ...rootListParams(), limit: FIRST_PAGE });
   const map: Record<string, ThreadSummary> = {};
+  const open = get().open;
+  for (const thread of Object.values(get().threads)) if (thread.parent && open[thread.parent.threadId]) map[thread.id] = thread;
   for (const thread of page.threads) map[thread.id] = thread;
   set({ threads: map, threadsLoaded: true, threadsCursor: page.nextCursor, projectCursors: {} });
+}
+
+/** Sidebar lists hold root threads only, so child sessions never eat into a page. */
+function rootListParams() {
+  return { includeArchived: true, includeChildren: false, includeInternal: get().filters.showInternal };
+}
+
+async function loadChildren(threadId: string) {
+  const page = await client().request("threads.list", {
+    parentId: threadId,
+    includeChildren: true,
+    includeInternal: true,
+    includeArchived: true,
+    limit: 100,
+  });
+  mergeSummaries(page.threads);
 }
 
 async function loadPrefs() {
@@ -241,10 +267,12 @@ async function loadPrefs() {
 }
 
 onPrefsLoaded((prefs) => {
+  const before = get().filters.showInternal;
   useStore.setState((state) => ({
-    collapsedProjects: prefs.collapsedProjects ?? state.collapsedProjects,
+    projectExpanded: prefs.projectExpanded ?? state.projectExpanded,
     filters: prefs.filters ? { ...state.filters, ...(prefs.filters as Partial<Filters>) } : state.filters,
   }));
+  if (get().threadsLoaded && get().filters.showInternal !== before) void loadLists().catch((error) => toast.error(errorMessage(error)));
 });
 
 let started = false;
@@ -317,6 +345,7 @@ export const actions = {
           },
           threads: { ...get().threads, [threadId]: result.thread },
         });
+        if (result.thread.childCount > 0) void loadChildren(threadId).catch(() => undefined);
       })
       .catch((error) => {
         toast.error(errorMessage(error));
@@ -441,7 +470,7 @@ export const actions = {
     if (!cursor || get().loadingMore) return;
     set({ loadingMore: true });
     try {
-      const page = await client().request("threads.list", { includeArchived: true, includeChildren: true, limit: FIRST_PAGE, cursor });
+      const page = await client().request("threads.list", { ...rootListParams(), limit: FIRST_PAGE, cursor });
       mergeSummaries(page.threads);
       set({ threadsCursor: page.nextCursor });
     } catch (error) {
@@ -460,8 +489,7 @@ export const actions = {
       const cursor = cursors[path];
       const page = await client().request("threads.list", {
         projectPath: path,
-        includeArchived: true,
-        includeChildren: true,
+        ...rootListParams(),
         limit: PROJECT_PAGE,
         ...(cursor ? { cursor } : {}),
       });
@@ -491,16 +519,23 @@ export const actions = {
     }
   },
 
-  toggleProject(path: string) {
-    const collapsedProjects = { ...get().collapsedProjects, [path]: !get().collapsedProjects[path] };
-    savePrefs({ collapsedProjects });
-    set({ collapsedProjects });
+  /** Records an explicit choice so the default expand rule no longer applies to this project. */
+  toggleProject(path: string, currentlyCollapsed: boolean) {
+    const projectExpanded = { ...get().projectExpanded, [path]: currentlyCollapsed };
+    savePrefs({ projectExpanded });
+    set({ projectExpanded });
+  },
+
+  setSettings(settings: Settings) {
+    set({ settings });
   },
 
   setFilters(patch: Partial<Filters>) {
-    const filters = { ...get().filters, ...patch };
+    const previous = get().filters;
+    const filters = { ...previous, ...patch };
     savePrefs({ filters });
     set({ filters });
+    if (filters.showInternal !== previous.showInternal) void loadLists().catch((error) => toast.error(errorMessage(error)));
   },
 
   setDraft(key: string, text: string) {

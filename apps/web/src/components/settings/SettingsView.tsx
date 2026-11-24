@@ -17,7 +17,16 @@ import type { AgentInfo, AgentSettings, Pairing, Settings } from "~/api/types";
 import { useT } from "~/i18n";
 import { relativeTime, shortVersion } from "~/lib/format";
 import { cn } from "~/lib/utils";
-import { type LanguagePref, type ThemePref, setLanguage, setTheme, usePrefs } from "~/state/prefs";
+import {
+  type ActivityDays,
+  type LanguagePref,
+  type ThemePref,
+  setHideDisabledAgentHistory,
+  setLanguage,
+  setSidebarActivityDays,
+  setTheme,
+  usePrefs,
+} from "~/state/prefs";
 import { type SettingsSection, actions, useStore } from "~/state/store";
 import { errorMessage, toast } from "~/state/toast";
 import { AgentIcon } from "../AgentIcon";
@@ -111,17 +120,17 @@ export function displayPath(path: string | null) {
 
 function useSettings() {
   const t = useT();
-  const [settings, setSettings] = useState<Settings | null>(null);
+  const settings = useStore((s) => s.settings);
   useEffect(() => {
     client()
       .request("settings.get", {})
-      .then(setSettings)
+      .then(actions.setSettings)
       .catch((error) => toast.error(errorMessage(error)));
   }, []);
   const update = async (patch: unknown) => {
     try {
       const next = await client().request("settings.update", { patch: patch as never });
-      setSettings(next);
+      actions.setSettings(next);
       toast.success(t("settings.saved"));
       return next;
     } catch (error) {
@@ -210,10 +219,12 @@ function AgentCard({
     setEnv(Object.entries(current.env).map(([k, v]) => `${k}=${v}`).join("\n"));
   }, [settings]);
 
-  const authBadge =
-    agent.auth.state === "ok" ? (
-      <Badge variant="success">{agent.auth.account ?? t("settings.authOk")}</Badge>
-    ) : agent.auth.state === "required" ? (
+  const provider = agent.auth.provider;
+  const authBadge = provider && agent.auth.state !== "required" ? (
+    <Badge variant="info">{t("settings.via", { provider })}</Badge>
+  ) : agent.auth.state === "ok" ? (
+    <Badge variant="success">{agent.auth.account ?? t("settings.authOk")}</Badge>
+  ) : agent.auth.state === "required" ? (
       <Badge variant="warning">
         <KeyRoundIcon />
         {t("settings.authRequired")}
@@ -249,6 +260,13 @@ function AgentCard({
             {custom ? <Badge variant="outline">{t("settings.customAgent")}</Badge> : null}
             {agent.installed ? authBadge : <Badge variant="error">{t("settings.notInstalled")}</Badge>}
           </div>
+          {provider ? (
+            <div className="mt-0.5 truncate text-xs text-muted-foreground">
+              {t("settings.routing", { provider })}
+              {agent.auth.endpoint ? <span className="font-mono text-[11px]"> · {agent.auth.endpoint}</span> : null}
+              {agent.auth.account ? <span className="text-muted-foreground/70"> · {t("settings.localSignIn", { account: agent.auth.account })}</span> : null}
+            </div>
+          ) : null}
           <div className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground" title={agent.path ?? undefined}>
             {displayPath(agent.path) || "—"}
           </div>
@@ -461,6 +479,9 @@ function AppearanceSection() {
   const t = useT();
   const theme = usePrefs((s) => s.theme);
   const language = usePrefs((s) => s.language);
+  const activityDays = usePrefs((s) => s.sidebarActivityDays);
+  const hideDisabled = usePrefs((s) => s.hideDisabledAgentHistory);
+  const showInternal = useStore((s) => s.filters.showInternal);
   return (
     <section>
       <SectionTitle title={t("settings.appearance")} />
@@ -486,6 +507,27 @@ function AppearanceSection() {
               { value: "zh", label: "简体中文" },
             ]}
           />
+        </Row>
+      </Group>
+      <h3 className="mt-6 mb-2 text-sm font-medium text-muted-foreground">{t("settings.sidebarHistory")}</h3>
+      <Group>
+        <Row label={t("settings.activityWindow")} hint={t("settings.activityWindowHint")}>
+          <Segmented<string>
+            value={String(activityDays)}
+            onChange={(value) => setSidebarActivityDays(Number(value) as ActivityDays)}
+            options={[
+              { value: "7", label: t("settings.activityDays", { n: 7 }) },
+              { value: "14", label: t("settings.activityDays", { n: 14 }) },
+              { value: "30", label: t("settings.activityDays", { n: 30 }) },
+              { value: "0", label: t("settings.activityAll") },
+            ]}
+          />
+        </Row>
+        <Row label={t("settings.hideDisabledHistory")} hint={t("settings.hideDisabledHistoryHint")}>
+          <Switch checked={hideDisabled} aria-label={t("settings.hideDisabledHistory")} onCheckedChange={setHideDisabledAgentHistory} />
+        </Row>
+        <Row label={t("settings.showInternal")} hint={t("settings.showInternalHint")}>
+          <Switch checked={showInternal} aria-label={t("settings.showInternal")} onCheckedChange={(checked) => actions.setFilters({ showInternal: checked })} />
         </Row>
       </Group>
     </section>

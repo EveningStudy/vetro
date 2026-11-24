@@ -163,6 +163,9 @@ export class MockTransport implements Transport {
       const threads = [...this.threads.values()].filter((t) => t.summary.cwd === project.path && !t.summary.parent);
       project.threadCount = threads.length;
       project.lastActivityAt = threads.reduce<number | null>((max, t) => Math.max(max ?? 0, t.summary.updatedAt), null);
+      const roots = threads.filter((t) => !t.summary.internal);
+      project.rootThreadCount = roots.length;
+      project.lastRootActivityAt = roots.reduce<number | null>((max, t) => Math.max(max ?? 0, t.summary.updatedAt), null);
     }
   }
 
@@ -346,6 +349,7 @@ export class MockTransport implements Transport {
         childCount: 0,
         model: model?.currentValue ?? null,
         archived: false,
+        internal: false,
       },
       items: [],
       options,
@@ -493,7 +497,7 @@ export class MockTransport implements Transport {
       const existing = this.projects.find((p) => p.path.toLowerCase() === params.path.toLowerCase());
       if (existing) return existing;
       const name = params.path.split(/[\\/]/).filter(Boolean).at(-1) ?? params.path;
-      const project: Project = { path: params.path, name, exists: true, pinned: false, hidden: false, threadCount: 0, lastActivityAt: Date.now() };
+      const project: Project = { path: params.path, name, exists: true, pinned: false, hidden: false, threadCount: 0, lastActivityAt: Date.now(), rootThreadCount: 0, lastRootActivityAt: null };
       this.projects.push(project);
       this.emit({ event: "projects.updated", data: { projects: this.projects } });
       return project;
@@ -524,6 +528,7 @@ export class MockTransport implements Transport {
       if (params.parentId) list = list.filter((t) => t.parent?.threadId === params.parentId);
       else if (!params.includeChildren) list = list.filter((t) => !t.parent);
       if (!params.includeArchived) list = list.filter((t) => !t.archived);
+      if (!params.includeInternal) list = list.filter((t) => !t.internal);
       list.sort((a, b) => b.updatedAt - a.updatedAt);
       const offset = params.cursor ? Number(params.cursor) : 0;
       const limit = params.limit ?? 200;

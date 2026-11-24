@@ -19,11 +19,12 @@ import {
   EyeOffIcon,
 } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Project, ThreadSource, ThreadSummary } from "~/api/types";
+import type { Project, ThreadSource, ThreadStatus, ThreadSummary } from "~/api/types";
 import { useT } from "~/i18n";
 import { relativeTime } from "~/lib/format";
 import { cn, isMac } from "~/lib/utils";
 import { RpcFailure } from "~/api/protocol";
+import { usePrefs } from "~/state/prefs";
 import { actions, useStore } from "~/state/store";
 import { errorMessage, toast } from "~/state/toast";
 import { AgentIcon } from "../AgentIcon";
@@ -47,7 +48,7 @@ import { Kbd } from "../ui/primitives";
 import { VetroMark } from "../VetroMark";
 
 const SOURCES: ThreadSource[] = ["vetro", "desktop", "cli", "exec", "ide", "cloud", "unknown"];
-const PAGE = 8;
+const PAGE = 5;
 
 const rowBase =
   "group/sidebar-row relative flex w-full cursor-pointer select-none items-center gap-2.5 overflow-hidden rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring";
@@ -108,25 +109,42 @@ function StatusLabel({ thread }: { thread: ThreadSummary }) {
   return null;
 }
 
-const ROW_HEIGHT = { project: 40, thread: 37, nested: 33, more: 29, empty: 29, loadall: 37 } as const;
+const ROW_HEIGHT = { project: 40, thread: 37, more: 29, empty: 29, loadall: 37, section: 40 } as const;
 
 type SidebarRow =
   | { kind: "project"; key: string; project: Pick<Project, "path" | "name" | "exists" | "pinned" | "hidden">; suffix?: string; count: number; collapsed: boolean; attention: string | null }
-  | { kind: "thread"; key: string; thread: ThreadSummary; nested: boolean }
+  | { kind: "thread"; key: string; thread: ThreadSummary }
   | { kind: "more"; key: string; path: string; hidden: number; remote: number; expanded: boolean }
+  | { kind: "section"; key: string; count: number; open: boolean }
   | { kind: "loadall"; key: string }
   | { kind: "empty"; key: string; text: string };
+
+const ACTIVE_STATUSES = new Set<ThreadStatus>(["running", "awaiting_input", "error"]);
+const URGENCY: Partial<Record<ThreadStatus, number>> = { awaiting_input: 0, error: 1, running: 2 };
+const DAY = 86_400_000;
+
+/** Throwaway checkouts and temp folders: kept out of the main list unless something is happening there. */
+export function isScratchOrTempPath(path: string) {
+  const p = path.replace(/^\\\\\?\\/, "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  const base = p.split("/").at(-1) ?? "";
+  if (base.startsWith("tmp.") || base.startsWith("scratch-") || base.startsWith("temp-")) return true;
+  return /(^|\/)\.orchestra\/wt(\/|$)/.test(p) || /(^|\/)temp(\/|$)/.test(p) || /^(\/private)?\/tmp(\/|$)/.test(p) || /^\/var\/folders\//.test(p);
+}
+
+function basename(path: string | null) {
+  return (path ?? "").split(/[\\/]/).filter(Boolean).at(-1) ?? "";
+}
 
 const ThreadRow = memo(function ThreadRow({
   thread,
   active,
-  nested = false,
   now,
+  context,
 }: {
   thread: ThreadSummary;
   active: boolean;
-  nested?: boolean;
   now: number;
+  context?: string;
 }) {
   const t = useT();
   const busy = thread.status !== "idle";
@@ -135,34 +153,42 @@ const ThreadRow = memo(function ThreadRow({
       type="button"
       aria-current={active ? "page" : undefined}
       onClick={() => actions.navigate({ view: "thread", threadId: thread.id })}
+      title={context ? `${thread.title} · ${thread.cwd ?? context}` : undefined}
       className={cn(
         rowBase,
-        "pe-2.5",
-        nested ? "h-8 ps-9" : "h-9 ps-3",
+        "h-9 ps-3 pe-2.5",
         active
           ? "bg-sidebar-row-active text-sidebar-foreground light:ring-1 light:ring-inset light:ring-sidebar-border/70"
           : "text-sidebar-foreground hover:bg-sidebar-row-hover",
       )}
     >
-      {nested ? <CornerDownRightIcon className="-ms-4 size-3 shrink-0 text-sidebar-muted-foreground/70" /> : null}
       <span
         className={cn(
           "flex shrink-0 items-center transition-[opacity,filter]",
           !active && !busy && "opacity-60 grayscale group-hover/sidebar-row:opacity-100 group-hover/sidebar-row:grayscale-0",
         )}
       >
-        <AgentIcon agentId={thread.agentId} className={nested ? "size-3.5" : "size-4"} />
+        <AgentIcon agentId={thread.agentId} className="size-4" />
       </span>
       <span
         className={cn(
-          "min-w-0 flex-1 truncate text-start",
-          nested ? "text-[13px]" : "text-sm",
+          "min-w-0 flex-1 truncate text-start text-sm",
           active || busy ? "font-medium text-sidebar-foreground" : "text-sidebar-foreground/80 group-hover/sidebar-row:text-sidebar-foreground",
           thread.archived && "italic",
         )}
       >
         {thread.title}
       </span>
+      {context ? <span className="max-w-[35%] shrink truncate text-xs text-sidebar-muted-foreground">{context}</span> : null}
+      {thread.childCount > 0 ? (
+        <span
+          className="inline-flex shrink-0 items-center gap-0.5 text-[11px] tabular-nums text-sidebar-muted-foreground/80"
+          title={t("sidebar.children", { n: thread.childCount })}
+        >
+          <CornerDownRightIcon className="size-3" />
+          {thread.childCount}
+        </span>
+      ) : null}
       {thread.archived ? <ArchiveIcon className="size-3 shrink-0 text-sidebar-muted-foreground" /> : null}
       <span className="ml-auto flex h-6 shrink-0 items-center justify-end tabular-nums text-secondary-label text-xs">
         {busy ? <StatusLabel thread={thread} /> : relativeTime(thread.updatedAt, t, now)}
@@ -189,7 +215,7 @@ const ProjectHeader = memo(function ProjectHeader({ row }: { row: Extract<Sideba
       <button
         type="button"
         aria-expanded={!collapsed}
-        onClick={() => actions.toggleProject(project.path)}
+        onClick={() => actions.toggleProject(project.path, collapsed)}
         title={project.path || undefined}
         className="flex h-8 w-full cursor-pointer items-center gap-2.5 rounded-(--control-radius) px-(--sidebar-row-content-inset) text-left outline-none hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
       >
@@ -278,11 +304,13 @@ function VirtualRows({
   activeId,
   now,
   onToggleMore,
+  onToggleSection,
 }: {
   rows: SidebarRow[];
   activeId: string | null;
   now: number;
   onToggleMore: (path: string) => void;
+  onToggleSection: () => void;
 }) {
   const scrollerRef = useRef<HTMLDivElement>(null);
   const [view, setView] = useState({ top: 0, height: 800 });
@@ -318,9 +346,11 @@ function VirtualRows({
               {row.kind === "project" ? (
                 <ProjectHeader row={row} />
               ) : row.kind === "thread" ? (
-                <ThreadRow thread={row.thread} nested={row.nested} active={row.thread.id === activeId} now={now} />
+                <ThreadRow thread={row.thread} active={row.thread.id === activeId} now={now} />
               ) : row.kind === "more" ? (
                 <MoreRow row={row} onToggle={onToggleMore} />
+              ) : row.kind === "section" ? (
+                <SectionRow row={row} onToggle={onToggleSection} />
               ) : row.kind === "loadall" ? (
                 <LoadAllRow />
               ) : (
@@ -372,8 +402,25 @@ function MoreRow({ row, onToggle }: { row: Extract<SidebarRow, { kind: "more" }>
   );
 }
 
+function SectionRow({ row, onToggle }: { row: Extract<SidebarRow, { kind: "section" }>; onToggle: () => void }) {
+  const t = useT();
+  return (
+    <div className="pt-2">
+      <button
+        type="button"
+        aria-expanded={row.open}
+        onClick={onToggle}
+        className="flex h-8 w-full cursor-pointer items-center gap-2 rounded-(--control-radius) px-(--sidebar-row-content-inset) text-left text-xs font-medium text-sidebar-muted-foreground outline-none hover:bg-sidebar-row-hover hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+      >
+        <ChevronDownIcon className={cn("size-3 shrink-0 transition-transform", !row.open && "-rotate-90")} />
+        <span className="min-w-0 flex-1 truncate">{t("sidebar.otherFolders", { n: row.count })}</span>
+      </button>
+    </div>
+  );
+}
+
 function rowHeight(row: SidebarRow) {
-  return row.kind === "thread" ? (row.nested ? ROW_HEIGHT.nested : ROW_HEIGHT.thread) : ROW_HEIGHT[row.kind];
+  return ROW_HEIGHT[row.kind];
 }
 
 function upperBound(offsets: number[], value: number) {
@@ -392,7 +439,7 @@ function FilterMenu() {
   const filters = useStore((s) => s.filters);
   const agents = useStore((s) => s.agents);
   const hiddenCount = useStore((s) => s.projects.filter((p) => p.hidden).length);
-  const active = filters.agentIds.length + filters.sources.length + (filters.showArchived ? 1 : 0) + (filters.showHidden ? 1 : 0);
+  const active = filters.agentIds.length + filters.sources.length + (filters.showArchived ? 1 : 0) + (filters.showHidden ? 1 : 0) + (filters.showInternal ? 1 : 0);
   const toggle = <T extends string>(list: T[], value: T) => (list.includes(value) ? list.filter((v) => v !== value) : [...list, value]);
   return (
     <Menu>
@@ -424,18 +471,13 @@ function FilterMenu() {
           </MenuCheckboxItem>
         ))}
         <MenuSeparator />
-        <MenuGroupLabel>{t("sidebar.filterSources")}</MenuGroupLabel>
-        {SOURCES.map((source) => (
-          <MenuCheckboxItem
-            key={source}
-            checked={filters.sources.includes(source)}
-            onCheckedChange={() => actions.setFilters({ sources: toggle(filters.sources, source) })}
-            closeOnClick={false}
-          >
-            {t(`source.${source}`)}
-          </MenuCheckboxItem>
-        ))}
-        <MenuSeparator />
+        <MenuCheckboxItem
+          checked={filters.showInternal}
+          onCheckedChange={(checked) => actions.setFilters({ showInternal: checked })}
+          closeOnClick={false}
+        >
+          {t("sidebar.showInternal")}
+        </MenuCheckboxItem>
         <MenuCheckboxItem
           checked={filters.showArchived}
           onCheckedChange={(checked) => actions.setFilters({ showArchived: checked })}
@@ -451,8 +493,22 @@ function FilterMenu() {
           {t("sidebar.showHidden")}
           {hiddenCount > 0 ? <span className="ms-auto text-xs tabular-nums text-muted-foreground">{hiddenCount}</span> : null}
         </MenuCheckboxItem>
+        <MenuSeparator />
+        <MenuGroupLabel>{t("sidebar.filterSources")}</MenuGroupLabel>
+        <div className="grid grid-cols-2">
+          {SOURCES.map((source) => (
+            <MenuCheckboxItem
+              key={source}
+              checked={filters.sources.includes(source)}
+              onCheckedChange={() => actions.setFilters({ sources: toggle(filters.sources, source) })}
+              closeOnClick={false}
+            >
+              {t(`source.${source}`)}
+            </MenuCheckboxItem>
+          ))}
+        </div>
         {active > 0 ? (
-          <MenuItem onClick={() => actions.setFilters({ agentIds: [], sources: [], showArchived: false, showHidden: false })}>
+          <MenuItem onClick={() => actions.setFilters({ agentIds: [], sources: [], showArchived: false, showHidden: false, showInternal: false })}>
             {t("sidebar.clearFilters")}
           </MenuItem>
         ) : null}
@@ -471,92 +527,164 @@ export function SidebarContent() {
   const projects = useStore((s) => s.projects);
   const threads = useStore((s) => s.threads);
   const filters = useStore((s) => s.filters);
+  const settings = useStore((s) => s.settings);
   const route = useStore((s) => s.route);
   const connection = useStore((s) => s.connection);
   const activeId = route.view === "thread" ? route.threadId : null;
+  const openSummary = useStore((s) => (activeId ? s.open[activeId]?.summary : undefined));
+  const activityDays = usePrefs((s) => s.sidebarActivityDays);
+  const hideDisabled = usePrefs((s) => s.hideDisabledAgentHistory);
+  const minute = Math.floor(now / 60_000);
 
   const groups = useMemo(() => {
-    const all = Object.values(threads).sort((a, b) => b.updatedAt - a.updatedAt);
+    const all = Object.values(threads)
+      .filter((thread) => !thread.parent)
+      .sort((a, b) => b.updatedAt - a.updatedAt);
+    const disabled = (agentId: string) =>
+      hideDisabled && settings?.agents[agentId]?.enabled === false && !filters.agentIds.includes(agentId);
     const matches = (thread: ThreadSummary) =>
       (filters.showArchived || !thread.archived) &&
       (filters.agentIds.length === 0 || filters.agentIds.includes(thread.agentId)) &&
-      (filters.sources.length === 0 || filters.sources.includes(thread.source));
-    const children = new Map<string, ThreadSummary[]>();
-    for (const thread of all) {
-      if (!thread.parent || !matches(thread)) continue;
-      const list = children.get(thread.parent.threadId) ?? [];
-      list.push(thread);
-      children.set(thread.parent.threadId, list);
-    }
+      (filters.sources.length === 0 || filters.sources.includes(thread.source)) &&
+      (!thread.internal || filters.showInternal || filters.sources.includes("exec")) &&
+      !disabled(thread.agentId);
     const loaded = new Map<string, number>();
-    for (const thread of all) if (!thread.parent) loaded.set(normalize(thread.cwd), (loaded.get(normalize(thread.cwd)) ?? 0) + 1);
+    for (const thread of all) loaded.set(normalize(thread.cwd), (loaded.get(normalize(thread.cwd)) ?? 0) + 1);
     const byProject = new Map<string, ThreadSummary[]>();
     for (const thread of all) {
-      if (thread.parent && threads[thread.parent.threadId]) continue;
       if (!matches(thread)) continue;
       const key = normalize(thread.cwd);
-      byProject.set(key, [...(byProject.get(key) ?? []), thread]);
+      const list = byProject.get(key);
+      if (list) list.push(thread);
+      else byProject.set(key, [thread]);
     }
-    const visibleProjects = projects
-      .filter((project) => filters.showHidden || !project.hidden)
-      .sort((a, b) => Number(b.pinned) - Number(a.pinned) || (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0));
+    const hiddenPaths = new Set(projects.filter((project) => project.hidden).map((project) => normalize(project.path)));
+    const shown = projects.filter((project) => filters.showHidden || !project.hidden);
     const known = new Set(projects.map((project) => normalize(project.path)));
     const other = [...byProject.entries()].filter(([key]) => !known.has(key)).flatMap(([, list]) => list);
+    other.sort((a, b) => b.updatedAt - a.updatedAt);
+
+    const attention = [...byProject.values()]
+      .flat()
+      .filter((thread) => ACTIVE_STATUSES.has(thread.status) && (filters.showHidden || !hiddenPaths.has(normalize(thread.cwd))))
+      .sort((a, b) => (URGENCY[a.status] ?? 9) - (URGENCY[b.status] ?? 9) || b.updatedAt - a.updatedAt);
+
     const nameCounts = new Map<string, number>();
-    for (const project of visibleProjects) nameCounts.set(project.name.toLowerCase(), (nameCounts.get(project.name.toLowerCase()) ?? 0) + 1);
+    for (const project of shown) nameCounts.set(project.name.toLowerCase(), (nameCounts.get(project.name.toLowerCase()) ?? 0) + 1);
     const suffixes = new Map<string, string>();
-    for (const project of visibleProjects) {
+    for (const project of shown) {
       if ((nameCounts.get(project.name.toLowerCase()) ?? 0) < 2) continue;
       const parts = project.path.split(/[\\/]/).filter(Boolean);
       suffixes.set(project.path, parts.at(-2) ?? "");
     }
-    return { visibleProjects, byProject, children, other, suffixes, loaded };
-  }, [threads, projects, filters]);
+
+    const activeThread = activeId ? (threads[activeId] ?? openSummary) : undefined;
+    const activeKey = activeThread ? normalize(activeThread.cwd) : null;
+    const cutoff = activityDays === 0 ? null : minute * 60_000 - activityDays * DAY;
+    const workspaces: ProjectEntry[] = [];
+    const older: ProjectEntry[] = [];
+    for (const project of shown) {
+      const key = normalize(project.path);
+      const list = byProject.get(key) ?? [];
+      const latest = list[0]?.updatedAt ?? (project.threadCount === 0 ? project.lastActivityAt : project.lastRootActivityAt);
+      const busy = list.some((thread) => ACTIVE_STATUSES.has(thread.status));
+      const containsActive = key === activeKey || list.some((thread) => thread.id === activeId);
+      const recent =
+        project.exists &&
+        !isScratchOrTempPath(project.path) &&
+        (list.length > 0 || project.threadCount === 0) &&
+        (cutoff === null || latest === null || latest >= cutoff);
+      const entry = { project, key, list, latest: latest ?? 0, containsActive };
+      if (project.pinned || busy || containsActive || recent) workspaces.push(entry);
+      else older.push(entry);
+    }
+    workspaces.sort((a, b) => Number(b.project.pinned) - Number(a.project.pinned) || b.latest - a.latest);
+    older.sort((a, b) => b.latest - a.latest);
+    return { workspaces, older, other, attention, suffixes, loaded };
+  }, [threads, projects, filters, settings, hideDisabled, activityDays, minute, activeId, openSummary]);
 
   const filtering = filters.agentIds.length > 0 || filters.sources.length > 0;
-  const collapsedProjects = useStore((s) => s.collapsedProjects);
+  const projectExpanded = useStore((s) => s.projectExpanded);
   const projectCursors = useStore((s) => s.projectCursors);
   const threadsCursor = useStore((s) => s.threadsCursor);
   const [expandedMore, setExpandedMore] = useState<Record<string, boolean>>({});
+  const [otherOpen, setOtherOpen] = useState(false);
   const toggleMore = useCallback((path: string) => setExpandedMore((current) => ({ ...current, [path]: !current[path] })), []);
+  const toggleOther = useCallback(() => setOtherOpen((open) => !open), []);
 
   const rows = useMemo(() => {
     const out: SidebarRow[] = [];
-    const add = (project: Extract<SidebarRow, { kind: "project" }>["project"], list: ThreadSummary[], suffix?: string, total = 0) => {
-      if (filtering && list.length === 0) return;
-      const collapsed = !!collapsedProjects[project.path];
+    const explicit = (path: string): boolean | undefined => projectExpanded[path] ?? projectExpanded[normalize(path)];
+    const activeThread = activeId ? (threads[activeId] ?? openSummary) : undefined;
+    const add = (entry: ProjectEntry, defaultExpanded: boolean, suffix?: string) => {
+      const { project, list } = entry;
+      const collapsed = !(explicit(project.path) ?? defaultExpanded);
       const attention = !collapsed
         ? null
         : list.some((thread) => thread.status === "awaiting_input")
           ? "bg-warning"
-          : list.some((thread) => thread.status === "running")
-            ? "bg-info"
-            : null;
+          : list.some((thread) => thread.status === "error")
+            ? "bg-destructive"
+            : list.some((thread) => thread.status === "running")
+              ? "bg-info"
+              : null;
       out.push({ kind: "project", key: `p:${project.path}`, project, suffix, count: list.length, collapsed, attention });
       if (collapsed) return;
-      const remote = filtering || projectCursors[project.path] === null ? 0 : Math.max(0, total - (groups.loaded.get(normalize(project.path)) ?? 0));
+      const total = filters.showInternal ? project.threadCount : project.rootThreadCount;
+      const remote = filtering || projectCursors[project.path] === null ? 0 : Math.max(0, total - (groups.loaded.get(entry.key) ?? 0));
       if (list.length === 0) {
         if (remote > 0) out.push({ kind: "more", key: `m:${project.path}`, path: project.path, hidden: 0, remote, expanded: true });
         else out.push({ kind: "empty", key: `e:${project.path}`, text: project.exists ? t("sidebar.noThreads") : t("sidebar.missing") });
         return;
       }
       const expanded = !!expandedMore[project.path];
-      const activeIndex = list.findIndex(
-        (thread) => thread.id === activeId || groups.children.get(thread.id)?.some((child) => child.id === activeId),
-      );
+      const activeIndex = list.findIndex((thread) => thread.id === activeId || thread.id === activeThread?.parent?.threadId);
       const limit = expanded ? list.length : Math.max(PAGE, activeIndex + 1);
-      for (const thread of list.slice(0, limit)) {
-        out.push({ kind: "thread", key: `t:${thread.id}`, thread, nested: false });
-        for (const child of groups.children.get(thread.id) ?? []) out.push({ kind: "thread", key: `c:${child.id}`, thread: child, nested: true });
-      }
+      for (const thread of list.slice(0, limit)) out.push({ kind: "thread", key: `t:${thread.id}`, thread });
       const hidden = list.length - Math.min(limit, list.length);
       if (hidden > 0 || remote > 0 || expanded) out.push({ kind: "more", key: `m:${project.path}`, path: project.path, hidden, remote, expanded });
     };
-    for (const project of groups.visibleProjects) add(project, groups.byProject.get(normalize(project.path)) ?? [], groups.suffixes.get(project.path), project.threadCount);
-    if (groups.other.length > 0) add({ path: "", name: t("sidebar.other"), exists: true, pinned: false, hidden: false }, groups.other);
+
+    const ruleExpanded = (entry: ProjectEntry) =>
+      entry.project.pinned ||
+      entry.containsActive ||
+      entry.list.some((thread) => thread.status === "running" || thread.status === "awaiting_input");
+    const workspaces = groups.workspaces.filter((entry) => !filtering || entry.list.length > 0);
+    const fallback = workspaces.some(ruleExpanded) ? null : (workspaces[0]?.project.path ?? null);
+    for (const entry of workspaces) add(entry, ruleExpanded(entry) || entry.project.path === fallback, groups.suffixes.get(entry.project.path));
+
+    const older = groups.older.filter((entry) => !filtering || entry.list.length > 0);
+    const otherEntry: ProjectEntry | null =
+      groups.other.length > 0
+        ? {
+            project: {
+              path: "",
+              name: t("sidebar.other"),
+              exists: true,
+              pinned: false,
+              hidden: false,
+              threadCount: 0,
+              rootThreadCount: 0,
+              lastActivityAt: null,
+              lastRootActivityAt: null,
+            },
+            key: "",
+            list: groups.other,
+            latest: groups.other[0]!.updatedAt,
+            containsActive: false,
+          }
+        : null;
+    const count = older.length + (otherEntry ? 1 : 0);
+    if (count > 0) {
+      out.push({ kind: "section", key: "section:older", count, open: otherOpen });
+      if (otherOpen) {
+        for (const entry of older) add(entry, false, groups.suffixes.get(entry.project.path));
+        if (otherEntry) add(otherEntry, false);
+      }
+    }
     if (threadsCursor) out.push({ kind: "loadall", key: "loadall" });
     return out;
-  }, [groups, collapsedProjects, expandedMore, activeId, filtering, t, projectCursors, threadsCursor]);
+  }, [groups, projectExpanded, expandedMore, otherOpen, activeId, threads, openSummary, filtering, filters.showInternal, t, projectCursors, threadsCursor]);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -581,6 +709,18 @@ export function SidebarContent() {
           }
         />
       </div>
+      {groups.attention.length > 0 ? (
+        <div className="shrink-0 pb-1">
+          <div className="px-(--sidebar-row-content-inset) pt-1 pb-0.5 ps-[calc(var(--sidebar-row-content-inset)+0.5rem)] text-xs font-medium text-sidebar-muted-foreground">
+            {t("sidebar.active")}
+          </div>
+          <div className="flex max-h-[30vh] flex-col gap-px overflow-y-auto px-2 [scrollbar-gutter:stable]">
+            {groups.attention.map((thread) => (
+              <ThreadRow key={thread.id} thread={thread} active={thread.id === activeId} now={now} context={basename(thread.cwd)} />
+            ))}
+          </div>
+        </div>
+      ) : null}
       <div className="shrink-0 px-(--sidebar-row-content-inset) pt-1 pb-0.5 ps-[calc(var(--sidebar-row-content-inset)+0.5rem)] text-xs font-medium text-sidebar-muted-foreground">
         {t("sidebar.projects")}
       </div>
@@ -589,7 +729,7 @@ export function SidebarContent() {
           {filtering ? t("sidebar.noMatches") : t("sidebar.noProjects")}
         </div>
       ) : (
-        <VirtualRows rows={rows} activeId={activeId} now={now} onToggleMore={toggleMore} />
+        <VirtualRows rows={rows} activeId={activeId} now={now} onToggleMore={toggleMore} onToggleSection={toggleOther} />
       )}
       <div className="shrink-0 px-2 pt-1 pb-[calc(0.5rem+env(safe-area-inset-bottom))]">
         <SidebarAction
@@ -606,4 +746,12 @@ export function SidebarContent() {
       </div>
     </div>
   );
+}
+
+interface ProjectEntry {
+  project: Project;
+  key: string;
+  list: ThreadSummary[];
+  latest: number;
+  containsActive: boolean;
 }

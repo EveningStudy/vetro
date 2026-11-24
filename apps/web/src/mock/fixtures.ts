@@ -41,7 +41,7 @@ export const agents: AgentInfo[] = [
     installed: true,
     path: `${HOME}\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\vendor\\x86_64-pc-windows-msvc\\codex\\codex.exe`,
     version: "0.98.0",
-    auth: { state: "ok", methods: [], account: "ChatGPT Plus" },
+    auth: { state: "ok", methods: [], account: "ChatGPT Plus", provider: "magpie", endpoint: "gateway.example.dev" },
     capabilities: { imageInput: true, midTurnInput: true, resume: true, listSessions: true },
     error: null,
   },
@@ -235,10 +235,10 @@ export const agentOptions: Record<string, { options: ConfigOption[]; commands: S
 };
 
 export const projects: Project[] = [
-  { path: "D:\\Dev\\Projects\\vetro", name: "vetro", exists: true, pinned: true, hidden: false, threadCount: 0, lastActivityAt: null },
-  { path: "D:\\Dev\\Projects\\atlas-api", name: "atlas-api", exists: true, pinned: false, hidden: false, threadCount: 0, lastActivityAt: null },
-  { path: "D:\\Dev\\Projects\\field-notes", name: "field-notes", exists: true, pinned: false, hidden: false, threadCount: 0, lastActivityAt: null },
-  { path: `${HOME}\\scratch\\tauri-spike`, name: "tauri-spike", exists: false, pinned: false, hidden: false, threadCount: 0, lastActivityAt: null },
+  { path: "D:\\Dev\\Projects\\vetro", name: "vetro", exists: true, pinned: true, hidden: false, threadCount: 0, lastActivityAt: null, rootThreadCount: 0, lastRootActivityAt: null },
+  { path: "D:\\Dev\\Projects\\atlas-api", name: "atlas-api", exists: true, pinned: false, hidden: false, threadCount: 0, lastActivityAt: null, rootThreadCount: 0, lastRootActivityAt: null },
+  { path: "D:\\Dev\\Projects\\field-notes", name: "field-notes", exists: true, pinned: false, hidden: false, threadCount: 0, lastActivityAt: null, rootThreadCount: 0, lastRootActivityAt: null },
+  { path: `${HOME}\\scratch\\tauri-spike`, name: "tauri-spike", exists: false, pinned: false, hidden: false, threadCount: 0, lastActivityAt: null, rootThreadCount: 0, lastRootActivityAt: null },
 ];
 
 const VETRO = projects[0]!.path;
@@ -540,6 +540,7 @@ function mainThread(): MockThread {
       childCount: 0,
       model: "gpt-5.5-codex",
       archived: false,
+      internal: false,
     },
     items: b.items,
     options: structuredClone(agentOptions.codex!.options),
@@ -680,6 +681,7 @@ function childThreads(): { parent: MockThread; child: MockThread } {
       childCount: 1,
       model: "claude-opus-5-5",
       archived: false,
+      internal: false,
     },
     items: b.items,
     options: structuredClone(agentOptions.claude!.options),
@@ -706,6 +708,7 @@ function childThreads(): { parent: MockThread; child: MockThread } {
       childCount: 0,
       model: "gpt-5.5-codex",
       archived: false,
+      internal: false,
     },
     items: c.items,
     options: structuredClone(agentOptions.codex!.options),
@@ -763,6 +766,7 @@ function pendingThread(): MockThread {
       childCount: 0,
       model: "claude-opus-5-5",
       archived: false,
+      internal: false,
     },
     items: b.items,
     options: structuredClone(agentOptions.devin!.options),
@@ -831,6 +835,7 @@ function questionThread(): MockThread {
       childCount: 0,
       model: "claude-sonnet-5",
       archived: false,
+      internal: false,
     },
     items: b.items,
     options: structuredClone(agentOptions.claude!.options),
@@ -896,6 +901,7 @@ function longThread(): MockThread {
       childCount: 0,
       model: "gpt-5.5-codex",
       archived: false,
+      internal: false,
     },
     items: b.items,
     options: structuredClone(agentOptions.codex!.options),
@@ -906,7 +912,7 @@ function longThread(): MockThread {
 }
 
 function simpleThread(
-  summary: Omit<ThreadSummary, "status" | "live" | "parent" | "childCount" | "archived" | "createdAt"> & Partial<ThreadSummary>,
+  summary: Omit<ThreadSummary, "status" | "live" | "parent" | "childCount" | "archived" | "createdAt" | "internal"> & Partial<ThreadSummary>,
   user: string,
   reply: string,
   extra?: (b: Builder) => void,
@@ -923,6 +929,7 @@ function simpleThread(
       parent: null,
       childCount: 0,
       archived: false,
+      internal: false,
       createdAt: summary.updatedAt - 3 * MIN,
       ...summary,
     },
