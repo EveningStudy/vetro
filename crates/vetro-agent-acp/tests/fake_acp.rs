@@ -71,6 +71,28 @@ fn fake(scenario: &str) {
     let mut prompt_id = Value::Null;
     let mut expected_session = Value::Null;
     let mut permission = false;
+    let mut dynamic = ("auto".to_owned(), "medium".to_owned());
+    let dynamic_config = |model: &str, effort: &str| {
+        let mut opts = vec![json!({
+            "id": "model",
+            "name": "Model",
+            "category": "model",
+            "type": "select",
+            "currentValue": model,
+            "options": [{"value": "auto", "name": "Auto"}, {"value": "pro", "name": "Pro"}]
+        })];
+        if model == "pro" {
+            opts.push(json!({
+                "id": "effortLevel",
+                "name": "Effort",
+                "category": "thought_level",
+                "type": "select",
+                "currentValue": effort,
+                "options": [{"value": "low", "name": "Low"}, {"value": "medium", "name": "Medium"}, {"value": "high", "name": "High"}]
+            }));
+        }
+        Value::Array(opts)
+    };
     let config = json!([{ "id": "model", "name": "Model", "category": "model", "type": "select", "currentValue": "cheap", "options": [{ "group":"fast", "name":"Fast", "options":[{"value":"cheap","name":"Cheap"},{"value":"other","name":"Other"}] }] }]);
     for line in io::stdin().lock().lines() {
         let message: Value = serde_json::from_str(&line.unwrap()).unwrap();
@@ -121,7 +143,12 @@ fn fake(scenario: &str) {
                     &session,
                     json!({"sessionUpdate":"available_commands_update","availableCommands":[{"name":"help","input":{"hint":"topic"}}]}),
                 );
-                json!({"sessionId":session,"configOptions":config})
+                if scenario == "dynamic-options" {
+                    dynamic = ("auto".to_owned(), "medium".to_owned());
+                    json!({"sessionId":session,"configOptions":dynamic_config(&dynamic.0, &dynamic.1)})
+                } else {
+                    json!({"sessionId":session,"configOptions":config})
+                }
             }
             Some("session/list") => {
                 assert!(params.as_object().is_some());
@@ -151,6 +178,20 @@ fn fake(scenario: &str) {
                     continue;
                 }
                 json!({"configOptions":config})
+            }
+            Some("session/set_config_option") if scenario == "dynamic-options" => {
+                match params["configId"].as_str() {
+                    Some("model") => {
+                        dynamic.0 = params["value"].as_str().unwrap().to_owned();
+                        dynamic.1 = "medium".to_owned();
+                    }
+                    Some("effortLevel") => {
+                        assert_eq!(dynamic.0, "pro");
+                        dynamic.1 = params["value"].as_str().unwrap().to_owned();
+                    }
+                    other => panic!("unexpected configId: {other:?}"),
+                }
+                json!({"configOptions": dynamic_config(&dynamic.0, &dynamic.1)})
             }
             Some("session/set_config_option") => {
                 assert_eq!(params["configId"], "model");
@@ -222,6 +263,9 @@ fn fake(scenario: &str) {
                             session,
                             json!({"sessionUpdate":"config_option_update","configOptions":config}),
                         );
+                    }
+                    "hi" if scenario == "dynamic-options" => {
+                        chunk(session, "agent_message_chunk", "ok");
                     }
                     other => panic!("unexpected or modified user input {other:?}"),
                 }
@@ -542,5 +586,86 @@ async fn suites() {
         .iter()
         .all(|entry| !entry.text.contains("synthetic secret")));
     custom.shutdown().await;
+
+    let mut spec = SpawnSpec::new(env::current_exe().unwrap());
+    spec.args = vec!["--agent".into(), "dynamic-options".into()];
+    let dynamic = AcpAgent::new("dynamic", "Dynamic ACP", spec);
+    let base = dynamic
+        .prepare_options(None, &BTreeMap::new())
+        .await
+        .unwrap();
+    assert_eq!(base.options.len(), 1);
+    assert_eq!(base.options[0].current_value, "auto");
+
+    let pro = dynamic
+        .prepare_options(None, &BTreeMap::from([("model".into(), "pro".into())]))
+        .await
+        .unwrap();
+    assert!(pro.options.iter().any(|o| o.id == "effortLevel"));
+
+    let (sink, mut events) = mpsc::unbounded_channel();
+    let reset_session = dynamic
+        .start(
+            StartRequest {
+                cwd: env::current_dir().unwrap(),
+                content: vec![text("hi")],
+                options: BTreeMap::new(),
+            },
+            sink,
+        )
+        .await
+        .unwrap();
+    let initial = reset_session.initial_options().unwrap();
+    assert_eq!(initial.options.len(), 1);
+    assert_eq!(initial.options[0].current_value, "auto");
+    let mut final_model = None;
+    while let Some(event) = events.recv().await {
+        match event {
+            SessionEvent::Options(options) => {
+                final_model = options
+                    .into_iter()
+                    .find(|o| o.id == "model")
+                    .map(|o| o.current_value);
+            }
+            SessionEvent::Item(item) if matches!(item.kind, ItemKind::TurnEnd { .. }) => break,
+            _ => {}
+        }
+    }
+    assert_eq!(final_model.as_deref(), Some("auto"));
+    reset_session.detach().await;
+
+    let (sink, mut events) = mpsc::unbounded_channel();
+    let ordered = dynamic
+        .start(
+            StartRequest {
+                cwd: env::current_dir().unwrap(),
+                content: vec![text("hi")],
+                options: BTreeMap::from([
+                    ("effortLevel".into(), "high".into()),
+                    ("model".into(), "pro".into()),
+                ]),
+            },
+            sink,
+        )
+        .await
+        .unwrap();
+    let mut saw_high = false;
+    while let Some(event) = events.recv().await {
+        match event {
+            SessionEvent::Options(options) => {
+                if options
+                    .iter()
+                    .any(|o| o.id == "effortLevel" && o.current_value == "high")
+                {
+                    saw_high = true;
+                }
+            }
+            SessionEvent::Item(item) if matches!(item.kind, ItemKind::TurnEnd { .. }) => break,
+            _ => {}
+        }
+    }
+    assert!(saw_high);
+    ordered.detach().await;
+    dynamic.shutdown().await;
     println!("ACP fake-agent suites passed");
 }

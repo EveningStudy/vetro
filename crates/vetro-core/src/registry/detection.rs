@@ -3,17 +3,83 @@ use vetro_agent_api::detection::{search_directories, usable};
 
 fn binary_name(command: &str) -> String {
     if cfg!(windows) {
-        format!("{command}.exe")
+        let lower = command.to_ascii_lowercase();
+        if lower.ends_with(".exe") || lower.ends_with(".cmd") || lower.ends_with(".bat") {
+            command.to_owned()
+        } else {
+            format!("{command}.exe")
+        }
     } else {
         command.to_owned()
     }
 }
 
 fn on_path(command: &str) -> Option<PathBuf> {
-    search_directories()
-        .into_iter()
-        .map(|dir| dir.join(binary_name(command)))
+    let name = binary_name(command);
+    let mut dirs = search_directories();
+    #[cfg(all(feature = "acp", windows))]
+    dirs.extend(windows_registry_path_dirs());
+    dirs.into_iter()
+        .map(|dir| dir.join(&name))
         .find(|file| usable(file))
+}
+
+#[cfg(all(feature = "acp", windows))]
+fn windows_registry_path_dirs() -> Vec<PathBuf> {
+    use winreg::{enums::*, RegKey};
+
+    let mut dirs = Vec::new();
+    for (hive, subkey) in [
+        (HKEY_CURRENT_USER, r"Environment"),
+        (
+            HKEY_LOCAL_MACHINE,
+            r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+        ),
+    ] {
+        let Ok(key) = RegKey::predef(hive).open_subkey_with_flags(subkey, KEY_READ) else {
+            continue;
+        };
+        let Ok(raw) = key.get_value::<String, _>("Path") else {
+            continue;
+        };
+        for entry in raw.split(';').map(str::trim).filter(|s| !s.is_empty()) {
+            let expanded = expand_windows_env(entry);
+            let path = PathBuf::from(expanded);
+            if path.is_absolute() {
+                dirs.push(path);
+            }
+        }
+    }
+    dirs
+}
+
+#[cfg(all(feature = "acp", windows))]
+fn expand_windows_env(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut rest = input;
+    while let Some(start) = rest.find('%') {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        if let Some(end) = after.find('%') {
+            let name = &after[..end];
+            if !name.is_empty() {
+                if let Ok(value) = env::var(name) {
+                    out.push_str(&value);
+                } else {
+                    out.push('%');
+                    out.push_str(name);
+                    out.push('%');
+                }
+            }
+            rest = &after[end + 1..];
+        } else {
+            out.push('%');
+            rest = after;
+            break;
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 #[cfg(feature = "claude")]

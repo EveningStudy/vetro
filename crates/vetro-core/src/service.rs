@@ -396,11 +396,7 @@ impl Core {
             None => Some(self.home.scratch_root()?),
         };
         let info = self.agent_info(agent.id()).await?;
-        let selected = if info.kind == AgentKind::Acp {
-            BTreeMap::new()
-        } else {
-            params.selected.unwrap_or_default()
-        };
+        let selected = params.selected.unwrap_or_default();
         let version = info.version;
         let key = option_key(agent.id(), version.as_deref(), cwd.as_deref(), &selected)?;
         if let Some(cached) = self

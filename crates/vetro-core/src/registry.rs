@@ -305,7 +305,12 @@ fn built_ins(_settings: &Settings) -> Vec<Arc<dyn Agent>> {
             let command = config
                 .and_then(|config| config.binary_path.as_ref())
                 .unwrap_or(&custom.command);
-            let mut spec = SpawnSpec::new(command);
+            let binary = if std::path::Path::new(command).components().count() == 1 {
+                detection::acp(command).unwrap_or_else(|| PathBuf::from(command))
+            } else {
+                PathBuf::from(command)
+            };
+            let mut spec = SpawnSpec::new(binary);
             spec.args.extend(custom.args.iter().map(Into::into));
             spec.env.extend(
                 custom

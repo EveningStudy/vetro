@@ -292,6 +292,7 @@ impl AcpAgent {
         );
         session.initialize(&result);
         runtime.connection.register(&id, &session)?;
+        session.capture_initial_options();
         Ok(session)
     }
 }
@@ -456,26 +457,27 @@ impl Agent for AcpAgent {
     async fn prepare_options(
         &self,
         cwd: Option<&Path>,
-        _: &BTreeMap<String, String>,
+        selected: &BTreeMap<String, String>,
     ) -> Result<AgentOptions> {
         let cwd = self.cwd(cwd)?;
         let runtime = self.runtime(Some(&cwd)).await?;
         let _lifecycle = runtime.connection.lifecycle.lock().await;
-        let previous = {
-            let mut prepared = runtime.prepared.lock().unwrap();
-            if let Some((created, session)) = &*prepared {
-                if session.cwd == cwd && created.elapsed() < PREPARED_TTL {
-                    return Ok(session.options());
-                }
+        let previous = runtime.prepared.lock().unwrap().take();
+        let session = match previous {
+            Some((created, session)) if session.cwd == cwd && created.elapsed() < PREPARED_TTL => {
+                session
             }
-            prepared.take()
+            previous => {
+                if let Some((_, session)) = previous {
+                    runtime.discard_prepared(session).await;
+                }
+                self.new_session(&runtime, cwd, None).await?
+            }
         };
-        if let Some((_, session)) = previous {
-            runtime.discard_prepared(session).await;
-        }
-        let session = self.new_session(&runtime, cwd, None).await?;
+        let applied = apply_options(&session, selected, true, true).await;
         let options = session.options();
         *runtime.prepared.lock().unwrap() = Some((Instant::now(), session));
+        applied?;
         Ok(options)
     }
 
@@ -535,7 +537,7 @@ impl Agent for AcpAgent {
         let cwd = self.cwd(Some(&req.cwd))?;
         let runtime = self.runtime(Some(&cwd)).await?;
         mapping::prompt(&req.content, &cwd, runtime.capabilities.image)?;
-        let session = {
+        let (session, reused) = {
             let _lifecycle = runtime.connection.lifecycle.lock().await;
             let previous = runtime.prepared.lock().unwrap().take();
             match previous {
@@ -543,22 +545,23 @@ impl Agent for AcpAgent {
                     if session.cwd == cwd && created.elapsed() < PREPARED_TTL =>
                 {
                     session.activate(&Value::Null, sink);
-                    session
+                    (session, true)
                 }
                 previous => {
                     if let Some((_, session)) = previous {
                         runtime.discard_prepared(session).await;
                     }
-                    self.new_session(&runtime, cwd.clone(), Some(sink)).await?
+                    (
+                        self.new_session(&runtime, cwd.clone(), Some(sink)).await?,
+                        false,
+                    )
                 }
             }
         };
         session.capture_initial_options();
         self.remember(&session.id, &cwd);
         let result = async {
-            for (id, value) in req.options {
-                session.set_option(&id, &value).await?;
-            }
+            apply_options(&session, &req.options, reused, false).await?;
             session.send(req.content).await
         }
         .await;
@@ -643,6 +646,60 @@ impl Agent for AcpAgent {
 
 fn session_params(id: &str, cwd: &Path) -> Value {
     json!({ "sessionId": id, "cwd": cwd, "mcpServers": [] })
+}
+
+async fn apply_options(
+    session: &AcpSession,
+    desired: &BTreeMap<String, String>,
+    reset_to_initial: bool,
+    ignore_missing: bool,
+) -> Result<()> {
+    let mut target = BTreeMap::new();
+    if reset_to_initial {
+        if let Some(initial) = session.initial_options() {
+            for option in initial.options {
+                target.insert(option.id, option.current_value);
+            }
+        }
+    }
+    for (id, value) in desired {
+        target.insert(id.clone(), value.clone());
+    }
+    if target.is_empty() {
+        return Ok(());
+    }
+    let mut applied = Vec::new();
+    for pass in 0..2 {
+        let current = session.options().options;
+        let pending: Vec<(String, String)> = target
+            .iter()
+            .filter(|(id, _)| !applied.contains(*id))
+            .filter_map(|(id, value)| {
+                let option = current.iter().find(|option| option.id == *id);
+                let is_primary = option.is_some_and(|option| {
+                    matches!(
+                        option.category,
+                        vetro_proto::ConfigCategory::Mode | vetro_proto::ConfigCategory::Model
+                    )
+                });
+                if (pass == 0 && !is_primary) || (pass == 1 && is_primary) {
+                    return None;
+                }
+                if option.is_some_and(|option| option.current_value == *value) {
+                    return None;
+                }
+                if pass == 1 && option.is_none() && ignore_missing {
+                    return None;
+                }
+                Some((id.clone(), value.clone()))
+            })
+            .collect();
+        for (id, value) in pending {
+            session.set_option(&id, &value).await?;
+            applied.push(id);
+        }
+    }
+    Ok(())
 }
 
 fn standard_spec(program: &str) -> SpawnSpec {

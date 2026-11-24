@@ -117,9 +117,21 @@ export function NewThread({ projectPath, agentId: routeAgent }: { projectPath: s
     if (!agent || changed?.category !== "model") return;
     setLoadingOptions(true);
     client()
-      .request("agents.options", { agentId: agent.id, ...(effectiveCwd ? { cwd: effectiveCwd } : {}), selected: next })
+      .request("agents.options", {
+        agentId: agent.id,
+        ...(effectiveCwd ? { cwd: effectiveCwd } : {}),
+        selected: { [optionId]: value },
+        prepare: true,
+      })
       .then((result) => {
         setBaseOptions(result.options);
+        setDefaults((current) => {
+          const nextDefaults = { ...current };
+          for (const option of result.options) {
+            if (!(option.id in nextDefaults)) nextDefaults[option.id] = option.currentValue;
+          }
+          return nextDefaults;
+        });
         setOverrides((current) => {
           const kept: Record<string, string> = {};
           for (const [id, chosen] of Object.entries(current)) {
