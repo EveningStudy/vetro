@@ -238,7 +238,10 @@ impl AcpAgent {
 
     async fn list_on(&self, runtime: &Runtime, cursor: Option<String>) -> Result<SessionPage> {
         if !runtime.capabilities.list {
-            return Ok(SessionPage::default());
+            return Ok(SessionPage {
+                incomplete: true,
+                ..Default::default()
+            });
         }
         let params = cursor.map_or_else(|| json!({}), |cursor| json!({ "cursor": cursor }));
         let result = runtime.call("session/list", params).await?;
@@ -268,6 +271,11 @@ impl AcpAgent {
         Ok(SessionPage {
             sessions,
             next_cursor: string(&result, "nextCursor").filter(|cursor| !cursor.is_empty()),
+            incomplete: result["sessions"].as_array().is_none_or(|sessions| {
+                sessions
+                    .iter()
+                    .any(|session| session["sessionId"].as_str().is_none_or(str::is_empty))
+            }),
         })
     }
 
@@ -428,16 +436,12 @@ impl Agent for AcpAgent {
 
     fn process_auth(&self) -> Option<AuthState> {
         self.previous_method.as_ref()?;
-        Some(
-            self.connection
-                .lock()
-                .unwrap()
-                .upgrade()
-                .filter(|connection| connection.alive())
-                .map_or(AuthState::Required, |connection| {
-                    *connection.auth.lock().unwrap()
-                }),
-        )
+        self.connection
+            .lock()
+            .unwrap()
+            .upgrade()
+            .filter(|connection| connection.alive())
+            .map(|connection| *connection.auth.lock().unwrap())
     }
 
     async fn recover_auth(&self) -> Result<bool> {

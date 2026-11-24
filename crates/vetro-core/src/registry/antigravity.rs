@@ -9,7 +9,7 @@ use vetro_agent_api::{
     async_trait, Agent, AgentOptions, EventSink, Result, Session, SessionPage, SessionRecord,
     StartRequest, Transcript,
 };
-use vetro_proto::{rpc::AuthenticateResult, AgentInfo};
+use vetro_proto::{rpc::AuthenticateResult, AgentInfo, ThreadSource};
 use vetro_store_antigravity::Store;
 
 use crate::{bad_request, internal};
@@ -30,15 +30,18 @@ impl Antigravity {
         }
     }
 
-    async fn acp_list(&self) -> Result<Vec<SessionRecord>> {
+    async fn acp_list(&self) -> Result<Option<Vec<SessionRecord>>> {
         let mut sessions = Vec::new();
         let mut cursor = None;
         let mut seen = HashSet::new();
         loop {
             let page = self.acp.list(cursor).await?;
+            if page.incomplete {
+                return Ok(None);
+            }
             sessions.extend(page.sessions);
             let Some(next) = page.next_cursor else {
-                return Ok(sessions);
+                return Ok(Some(sessions));
             };
             if !seen.insert(next.clone()) {
                 return Err(internal("ACP returned a repeated history cursor"));
@@ -51,7 +54,7 @@ impl Antigravity {
         let roots = self.roots.clone();
         let disk = tokio::task::spawn_blocking(move || roots.map(|root| Store::open(root).list()));
         let acp = if use_acp {
-            self.acp_list().await.map(Some)
+            self.acp_list().await
         } else {
             Ok(None)
         };
@@ -72,9 +75,7 @@ impl Antigravity {
                 Ok(records) => {
                     for mut record in records {
                         if let Some(acp) = sessions.get(&record.native_id) {
-                            record.resumable = acp.resumable;
-                            record.model = record.model.or_else(|| acp.model.clone());
-                            record.updated_at = record.updated_at.max(acp.updated_at);
+                            merge_acp_record(&mut record, acp);
                         }
                         sessions.insert(record.native_id.clone(), record);
                     }
@@ -82,6 +83,7 @@ impl Antigravity {
                 Err(error) => disk_error = Some(error),
             }
         }
+        let incomplete = disk_error.is_some() || (use_acp && !matches!(&acp, Ok(Some(_))));
         if let Err(error) = acp {
             if sessions.is_empty() {
                 return Err(disk_error.unwrap_or(error));
@@ -97,8 +99,17 @@ impl Antigravity {
         Ok(SessionPage {
             sessions,
             next_cursor: None,
+            incomplete,
         })
     }
+}
+
+fn merge_acp_record(record: &mut SessionRecord, acp: &SessionRecord) {
+    if record.source != ThreadSource::Desktop {
+        record.resumable = acp.resumable;
+    }
+    record.model = record.model.take().or_else(|| acp.model.clone());
+    record.updated_at = record.updated_at.max(acp.updated_at);
 }
 
 #[async_trait]
@@ -189,5 +200,41 @@ impl Agent for Antigravity {
 
     async fn maintain(&self) {
         self.acp.maintain().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_cli_records_inherit_protocol_resumability() {
+        let acp = SessionRecord {
+            native_id: "conversation".into(),
+            title: "Conversation".into(),
+            preview: None,
+            cwd: None,
+            created_at: None,
+            updated_at: 2,
+            source: ThreadSource::Unknown,
+            origin: None,
+            model: Some("model".into()),
+            resumable: true,
+            parent_native_id: None,
+            internal: false,
+        };
+        for (source, resumable) in [(ThreadSource::Desktop, false), (ThreadSource::Cli, true)] {
+            let mut disk = SessionRecord {
+                source,
+                resumable: false,
+                model: None,
+                updated_at: 1,
+                ..acp.clone()
+            };
+            merge_acp_record(&mut disk, &acp);
+            assert_eq!(disk.resumable, resumable);
+            assert_eq!(disk.model, acp.model);
+            assert_eq!(disk.updated_at, 2);
+        }
     }
 }

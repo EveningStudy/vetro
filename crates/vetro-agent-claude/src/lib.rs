@@ -207,6 +207,7 @@ impl Agent for ClaudeAgent {
     async fn list(&self, _cursor: Option<String>) -> Result<SessionPage> {
         let root = self.projects.clone();
         Ok(SessionPage {
+            incomplete: false,
             sessions: disk(move || history::list(&root)).await?,
             next_cursor: None,
         })

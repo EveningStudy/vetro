@@ -142,6 +142,7 @@ fn latest_claude(stores: impl Iterator<Item = PathBuf>) -> Option<PathBuf> {
 pub(super) fn acp(command: &str) -> Option<PathBuf> {
     match command {
         "devin" => on_path(command).or_else(devin_desktop),
+        "kiro-cli" => on_path(command).or_else(kiro_install),
         "agy" => {
             let installed = if cfg!(windows) {
                 env::var_os("LOCALAPPDATA")
@@ -155,6 +156,15 @@ pub(super) fn acp(command: &str) -> Option<PathBuf> {
         }
         _ => on_path(command),
     }
+}
+
+#[cfg(feature = "acp")]
+fn kiro_install() -> Option<PathBuf> {
+    #[cfg(windows)]
+    let path = PathBuf::from(env::var_os("LOCALAPPDATA")?).join("Kiro-Cli/kiro-cli.exe");
+    #[cfg(not(windows))]
+    let path = env::home_dir()?.join(".local/bin/kiro-cli");
+    usable(&path).then_some(path)
 }
 
 #[cfg(feature = "acp")]

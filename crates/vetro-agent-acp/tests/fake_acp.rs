@@ -379,7 +379,7 @@ async fn suites() {
     devin.authenticate("devin-browser").await.unwrap();
     assert_eq!(devin.process_auth(), Some(AuthState::Ok));
     devin.shutdown().await;
-    assert_eq!(devin.process_auth(), Some(AuthState::Required));
+    assert_eq!(devin.process_auth(), None);
     let (sink, _) = mpsc::unbounded_channel();
     assert!(
         matches!(devin.attach("stored", None, sink.clone()).await, Err(error) if error.code == ErrorCode::AuthRequired)

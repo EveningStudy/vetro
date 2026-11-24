@@ -378,6 +378,23 @@ fn invocations(command: &str) -> Vec<String> {
         let args = words[index + 1..].iter().take_while(|(arg, quoted)| {
             *quoted || !matches!(arg.as_str(), "|" | ";" | "&" | "<" | ">" | ")")
         });
+        if name == "kiro-cli" {
+            let mut args = args.map(|(arg, _)| arg.as_str()).peekable();
+            if args.next() == Some("chat") {
+                while let Some(arg) = args.next() {
+                    if arg == "--" {
+                        break;
+                    }
+                    if matches!(arg, "--no-interactive" | "--output-format=stream-json")
+                        || (arg == "--output-format" && args.peek() == Some(&"stream-json"))
+                    {
+                        agents.push("kiro".into());
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
         let (agent, modes): (&str, &[&str]) = match name {
             "codex" => ("codex", &["exec", "e"]),
             "claude" => ("claude", &["-p", "--print"]),
@@ -787,6 +804,7 @@ mod tests {
             ("claude", r#""C:\Tools\claude.exe" -p 'a specific prompt'"#),
             ("antigravity", "cat prompt.txt | agy -p 'a specific prompt'"),
             ("devin", "devin -p 'a specific prompt'"),
+            ("kiro", "kiro-cli chat --no-interactive 'a specific prompt'"),
         ];
         for (parent, _) in commands {
             for (agent, command) in commands {
@@ -839,6 +857,28 @@ mod tests {
                 .confidence,
             LinkConfidence::Exact
         );
+    }
+
+    #[test]
+    fn recognizes_noninteractive_kiro_chat_commands() {
+        for command in [
+            "kiro-cli chat --no-interactive",
+            r#""C:\Tools\kiro-cli.exe" chat --output-format=stream-json"#,
+            r#"kiro-cli chat --output-format="stream-json""#,
+            "kiro-cli chat --output-format 'stream-json'",
+        ] {
+            assert_eq!(invocations(command), ["kiro"], "{command}");
+        }
+        for command in [
+            "kiro-cli chat",
+            "kiro-cli --no-interactive",
+            "kiro-cli chat -- '--no-interactive'",
+            "kiro-cli login --profile chat --no-interactive",
+            "kiro-cli chat --output-format json",
+            "echo kiro-cli chat --no-interactive",
+        ] {
+            assert!(invocations(command).is_empty(), "{command}");
+        }
     }
 
     #[test]

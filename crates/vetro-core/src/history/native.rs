@@ -15,6 +15,7 @@ use crate::internal;
 #[derive(Default)]
 pub(super) struct Inventory {
     pub authoritative: bool,
+    pub antigravity_disk_scanned: bool,
     pub files: HashMap<String, NativeFile>,
     pub errors: Vec<String>,
 }
@@ -62,16 +63,15 @@ pub(super) fn inventory(agent: &str, roots: &[PathBuf]) -> Result<Inventory> {
                     let Some(id) = path.file_stem().and_then(|id| id.to_str()) else {
                         continue;
                     };
-                    let wal = path.with_extension("db-wal");
-                    insert_file(
-                        &mut inventory.files,
-                        id.into(),
-                        &path,
-                        file_mark(&wal).unwrap_or_default(),
-                        false,
-                    );
+                    let wal = file_mark(&path.with_extension("db-wal")).unwrap_or_default();
+                    if !insert_file(&mut inventory.files, id.into(), &path, wal, false) {
+                        inventory
+                            .errors
+                            .push(format!("Could not stat {}", path.display()));
+                    }
                 }
             }
+            inventory.antigravity_disk_scanned = !roots.is_empty();
         }
         #[cfg(feature = "codex")]
         "codex" if !roots.is_empty() => inventory = codex::inventory(&roots[0])?,
@@ -112,14 +112,16 @@ fn insert_file(
     path: &Path,
     extra: String,
     archived: bool,
-) {
-    let Some(mark) = file_mark(path) else { return };
+) -> bool {
+    let Some(mark) = file_mark(path) else {
+        return false;
+    };
     if files
         .get(&id)
         .and_then(|file| file.path.as_deref())
         .is_some_and(|previous| modified_ms(previous) > modified_ms(path))
     {
-        return;
+        return true;
     }
     files.insert(
         id,
@@ -130,6 +132,7 @@ fn insert_file(
             archived,
         },
     );
+    true
 }
 
 pub(super) fn file_record(agent: &str, path: &Path, id: String) -> Result<Option<SessionRecord>> {

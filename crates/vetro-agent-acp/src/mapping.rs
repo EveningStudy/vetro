@@ -311,7 +311,8 @@ impl Config {
     }
 
     pub fn options(&self) -> Vec<ConfigOption> {
-        self.modern
+        let mut options: Vec<_> = self
+            .modern
             .iter()
             .chain(self.legacy.values().filter(|legacy| {
                 !self
@@ -320,7 +321,9 @@ impl Config {
                     .any(|option| option.category == legacy.category)
             }))
             .cloned()
-            .collect()
+            .collect();
+        vetro_agent_api::normalize_option_danger(&mut options);
+        options
     }
 
     pub fn request(&self, id: &str, value: &str) -> Result<(&'static str, Value)> {

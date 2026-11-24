@@ -199,7 +199,6 @@ impl Registry {
         &self,
         has_live_thread: impl Fn(&str) -> bool,
         idle: Option<Duration>,
-        released: impl Fn(&str),
     ) {
         for (id, entry) in &self.agents {
             let Ok(_access) = entry.access.try_write() else {
@@ -231,9 +230,6 @@ impl Registry {
                 activity.in_use = false;
                 activity.release_requested = false;
                 activity.last_release = Some(Instant::now());
-                if entry.agent.process_auth().is_some() {
-                    released(id);
-                }
             }
         }
     }
@@ -282,6 +278,7 @@ fn built_ins(_settings: &Settings) -> Vec<Arc<dyn Agent>> {
         for (id, name, command) in [
             ("antigravity", "Antigravity", "agy"),
             ("devin", "Devin", "devin"),
+            ("kiro", "Kiro", "kiro-cli"),
         ] {
             let config = _settings.agents.get(id);
             let binary = binary_override(config)
@@ -300,7 +297,14 @@ fn built_ins(_settings: &Settings) -> Vec<Arc<dyn Agent>> {
             }
             agents.push(Arc::new(agent));
         }
+        let built_in_count = agents.len();
         for custom in &_settings.custom_acp_agents {
+            if agents[..built_in_count]
+                .iter()
+                .any(|agent| agent.id() == custom.id)
+            {
+                continue;
+            }
             let config = _settings.agents.get(&custom.id);
             let command = config
                 .and_then(|config| config.binary_path.as_ref())
@@ -335,7 +339,12 @@ fn acp_defaults(id: &str, spec: &mut vetro_agent_api::process::SpawnSpec) {
         spec.args
             .splice(..0, ["--process-model".into(), "in-process".into()]);
     }
-    spec.args.insert(0, "acp".into());
+    if let Some(index) = spec.args.iter().position(|arg| arg == "acp") {
+        let acp = spec.args.remove(index);
+        spec.args.insert(0, acp);
+    } else {
+        spec.args.insert(0, "acp".into());
+    }
 }
 
 #[cfg(all(test, feature = "acp"))]
@@ -356,6 +365,47 @@ fn devin_respects_explicit_process_model() {
     let mut spec = SpawnSpec::new("devin");
     acp_defaults("devin", &mut spec);
     assert_eq!(spec.args, ["acp", "--process-model", "in-process"]);
+}
+
+#[cfg(all(test, feature = "acp"))]
+#[tokio::test]
+async fn kiro_is_registered_once_and_uses_builtin_overrides() {
+    use vetro_agent_api::process::SpawnSpec;
+    use vetro_proto::rpc::{AgentSettings, CustomAcpAgent};
+
+    let mut spec = SpawnSpec::new("kiro-cli");
+    acp_defaults("kiro", &mut spec);
+    acp_defaults("kiro", &mut spec);
+    assert_eq!(spec.args, ["acp"]);
+
+    let directory = tempfile::tempdir().unwrap();
+    let missing = directory.path().join("missing-kiro");
+    let mut settings = Settings::default();
+    settings.custom_acp_agents.push(CustomAcpAgent {
+        id: "kiro".into(),
+        name: "Legacy Kiro".into(),
+        command: std::env::current_exe()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned(),
+        args: Vec::new(),
+        env: BTreeMap::new(),
+    });
+    settings.agents.insert(
+        "kiro".into(),
+        AgentSettings {
+            binary_path: Some(missing.to_string_lossy().into_owned()),
+            ..Default::default()
+        },
+    );
+    let registry = Registry::from_settings(&settings).unwrap();
+    assert_eq!(
+        registry.all().filter(|agent| agent.id() == "kiro").count(),
+        1
+    );
+    let info = registry.get("kiro").unwrap().info().await;
+    assert_eq!(info.name, "Kiro");
+    assert!(!info.installed);
 }
 
 #[cfg(feature = "claude")]
@@ -413,6 +463,7 @@ pub(crate) fn disabled_info(id: &str) -> AgentInfo {
         "codex" => ("Codex", AgentKind::Codex),
         "antigravity" => ("Antigravity", AgentKind::Acp),
         "devin" => ("Devin", AgentKind::Acp),
+        "kiro" => ("Kiro", AgentKind::Acp),
         _ => (id, AgentKind::Acp),
     };
     AgentInfo {

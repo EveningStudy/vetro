@@ -3,7 +3,7 @@
 /**
  * Voice dictation configuration. No API keys or credentials are ever stored.
  */
-export type VoiceSettings = { 
+export type VoiceSettings = { modelId: string | null, 
 /**
  * Optional local OpenAI-compatible `/v1/audio/transcriptions` URL.
  */

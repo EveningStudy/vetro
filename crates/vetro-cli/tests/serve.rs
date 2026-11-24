@@ -11,7 +11,7 @@ async fn serves_on_loopback_and_prints_local_url() {
     let data = tempfile::tempdir().unwrap();
     std::fs::write(
         data.path().join("config.json"),
-        r#"{"agents":{"claude":{"enabled":false},"codex":{"enabled":false},"antigravity":{"enabled":false},"devin":{"enabled":false}}}"#,
+        r#"{"agents":{"claude":{"enabled":false},"codex":{"enabled":false},"antigravity":{"enabled":false},"devin":{"enabled":false},"kiro":{"enabled":false}}}"#,
     )
     .unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_vetro"))

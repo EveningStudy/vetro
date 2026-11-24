@@ -7,8 +7,8 @@ use std::{
 use tokio::sync::mpsc;
 use vetro_proto::{
     rpc::{AuthenticateResult, ErrorCode, RpcError},
-    AgentInfo, ConfigOption, ContentBlock, ItemKind, RequestResolution, SlashCommand, ThreadSource,
-    ThreadStatus, ThreadUsage,
+    AgentInfo, ConfigCategory, ConfigOption, ContentBlock, ItemKind, RequestResolution,
+    SlashCommand, ThreadSource, ThreadStatus, ThreadUsage,
 };
 
 pub use async_trait::async_trait;
@@ -21,6 +21,124 @@ pub mod wirelog;
 
 pub type Result<T> = std::result::Result<T, AgentError>;
 pub type EventSink = mpsc::UnboundedSender<SessionEvent>;
+
+pub fn normalize_option_danger(options: &mut [ConfigOption]) {
+    for option in options {
+        let id = option.id.to_lowercase();
+        let name = option.name.to_lowercase();
+        let matches_option = |term| id.contains(term) || name.contains(term);
+        let mode = id
+            .split("model")
+            .chain(name.split("model"))
+            .any(|part| part.contains("mode"));
+        if option.category != ConfigCategory::Mode
+            && !mode
+            && ![
+                "perm",
+                "approval",
+                "sandbox",
+                "autopilot",
+                "trust",
+                "safety",
+                "policy",
+            ]
+            .into_iter()
+            .any(matches_option)
+        {
+            continue;
+        }
+        let autopilot = matches_option("autopilot");
+        let approval = matches_option("approval");
+        for choice in &mut option.choices {
+            choice.danger |= (approval && choice.value.trim().eq_ignore_ascii_case("never"))
+                || [&choice.value, &choice.name].into_iter().any(|text| {
+                    let text = text.trim().to_lowercase();
+                    (autopilot && matches!(text.as_str(), "on" | "true" | "enabled" | "always"))
+                        || [
+                            "bypass",
+                            "yolo",
+                            "danger",
+                            "full-access",
+                            "full_access",
+                            "full access",
+                            "unrestricted",
+                            "skip-permissions",
+                            "skip_permissions",
+                            "dontask",
+                            "dont-ask",
+                            "autonomous",
+                            "trust-all",
+                            "trust_all",
+                            "allow-all",
+                            "allow_all",
+                        ]
+                        .into_iter()
+                        .any(|term| text.contains(term))
+                });
+        }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn normalizes_builtin_and_custom_agent_choices() {
+    use serde_json::json;
+
+    for (id, category, value, label, danger) in [
+        (
+            "mode",
+            "mode",
+            "bypassPermissions",
+            "Bypass permissions",
+            true,
+        ),
+        (
+            "permissions",
+            "other",
+            ":danger-full-access",
+            "Full access",
+            true,
+        ),
+        ("approvalPolicy", "other", "never", "Never", true),
+        ("mode", "mode", "bypass", "Bypass", true),
+        ("mode", "mode", "autonomous", "Autonomous", true),
+        ("autopilot", "other", "on", "On", true),
+        ("autopilot", "other", "choice-id", "Enabled", true),
+        ("mode", "mode", "auto", "Auto", false),
+        ("toolSafety", "other", "YOLO", "Advanced", true),
+        ("model", "model", "yolo", "YOLO", false),
+    ] {
+        let mut option: ConfigOption = serde_json::from_value(json!({
+            "id": id, "name": id, "category": category, "currentValue": value,
+            "choices": [{"value": value, "name": label}]
+        }))
+        .unwrap();
+        normalize_option_danger(std::slice::from_mut(&mut option));
+        assert_eq!(option.choices[0].danger, danger, "{id}={value}");
+    }
+    let mut option: ConfigOption = serde_json::from_value(json!({
+        "id": "mode", "name": "Mode", "category": "mode", "currentValue": "auto",
+        "choices": [
+            {"value": "vendor-unsafe", "name": "Advanced", "danger": true},
+            {"value": "default", "name": "Default"},
+            {"value": "vibe", "name": "Vibe"},
+            {"value": "plan", "name": "Plan"},
+            {"value": "spec", "name": "Spec"},
+            {"value": "ask", "name": "Ask"},
+            {"value": "smart", "name": "Smart"},
+            {"value": "accept-edits", "name": "Accept edits"},
+            {"value": "acceptEdits", "name": "Accept edits"},
+            {"value": "read-only", "name": "Read only"},
+            {"value": "workspace-write", "name": "Workspace write"},
+            {"value": "off", "name": "Off"},
+            {"value": "false", "name": "False"}
+        ]
+    }))
+    .unwrap();
+    normalize_option_danger(std::slice::from_mut(&mut option));
+    assert!(option.choices[0].danger);
+    assert!(option.choices[1..].iter().all(|choice| !choice.danger));
+}
 
 pub fn gateway_origin(value: &str, official_hosts: &[&str]) -> Option<String> {
     let url = url::Url::parse(value.trim()).ok()?;
@@ -161,6 +279,7 @@ impl SessionRecord {
 pub struct SessionPage {
     pub sessions: Vec<SessionRecord>,
     pub next_cursor: Option<String>,
+    pub incomplete: bool,
 }
 
 #[derive(Debug, Clone, Default)]

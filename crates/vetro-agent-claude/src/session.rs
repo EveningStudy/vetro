@@ -601,13 +601,7 @@ impl State {
                 "auto",
                 "bypassPermissions",
             ];
-            let choices = modes
-                .into_iter()
-                .map(|value| ConfigChoice {
-                    danger: value == "bypassPermissions",
-                    ..choice(value)
-                })
-                .collect();
+            let choices = modes.into_iter().map(choice).collect();
             options.push(option(
                 "mode",
                 "Permission mode",
@@ -616,6 +610,7 @@ impl State {
                 choices,
             ));
         }
+        vetro_agent_api::normalize_option_danger(&mut options);
         options
     }
 

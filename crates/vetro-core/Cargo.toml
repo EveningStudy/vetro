@@ -50,4 +50,5 @@ name = "websocket"
 harness = false
 
 [target."cfg(windows)".dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_LibraryLoader"] }
 winreg = { version = "0.55", optional = true }

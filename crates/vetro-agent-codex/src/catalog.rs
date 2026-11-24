@@ -94,27 +94,18 @@ impl Catalog {
                     ":danger-full-access" => "Full access",
                     other => profile["name"].as_str().unwrap_or(other),
                 };
-                Some(ConfigChoice {
-                    danger: id == ":danger-full-access" || id == "danger-full-access",
-                    ..choice(id, name, string(profile, "description"))
-                })
+                Some(choice(id, name, string(profile, "description")))
             });
         let approvals = self.approvals.iter().filter_map(|entry| {
             let id = choice_id(entry)?;
-            Some(ConfigChoice {
-                danger: id == "never",
-                ..choice(&id, entry.as_str().unwrap_or("Granular"), None)
-            })
+            Some(choice(&id, entry.as_str().unwrap_or("Granular"), None))
         });
         let sandboxes = self
             .sandboxes
             .iter()
             .filter_map(Value::as_str)
-            .map(|id| ConfigChoice {
-                danger: id == "danger-full-access",
-                ..choice(id, id, None)
-            });
-        [
+            .map(|id| choice(id, id, None));
+        let mut options: Vec<_> = [
             option(
                 "model",
                 "Model",
@@ -169,7 +160,9 @@ impl Catalog {
         ]
         .into_iter()
         .filter(|entry| !entry.choices.is_empty())
-        .collect()
+        .collect();
+        vetro_agent_api::normalize_option_danger(&mut options);
+        options
     }
 
     pub(crate) fn validate(

@@ -632,12 +632,30 @@ pub struct CustomAcpAgent {
 #[serde(rename_all = "camelCase", default)]
 #[ts(export)]
 pub struct VoiceSettings {
+    #[serde(default)]
+    pub model_id: Option<String>,
     /// Optional local OpenAI-compatible `/v1/audio/transcriptions` URL.
     pub endpoint_url: Option<String>,
     /// Optional model name sent to `endpoint_url`.
     pub endpoint_model: Option<String>,
     /// Deterministic post-ASR term replacements (spoken -> written).
     pub replacements: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct VoiceModelInfo {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    #[ts(type = "number")]
+    pub download_bytes: u64,
+    pub installed: bool,
+    #[ts(type = "number")]
+    pub installed_bytes: u64,
+    pub active: bool,
+    pub native_punctuation: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -656,6 +674,15 @@ pub struct VoiceStatus {
     #[ts(type = "number")]
     pub installed_bytes: u64,
     pub error: Option<String>,
+    pub active_model_id: String,
+    pub models: Vec<VoiceModelInfo>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, optional_fields)]
+pub struct VoiceModelParams {
+    pub model_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

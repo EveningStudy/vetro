@@ -182,20 +182,49 @@ impl Core {
         for error in &inventory.errors {
             self.home.log(&format!("History {id}: {error}"));
         }
-        let list = if inventory.authoritative {
-            Vec::new()
+        let disk_complete = inventory.errors.is_empty();
+        let (list, authoritative) = if inventory.authoritative {
+            (Vec::new(), disk_complete)
         } else if !allow_protocol {
-            agent
-                .list_without_runtime()
-                .await?
-                .map_or_else(Vec::new, |page| page.sessions)
+            agent.list_without_runtime().await?.map_or_else(
+                || (Vec::new(), false),
+                |page| {
+                    let complete = id == "antigravity"
+                        && inventory.antigravity_disk_scanned
+                        && disk_complete
+                        && !page.incomplete
+                        && page.next_cursor.is_none();
+                    (page.sessions, complete)
+                },
+            )
         } else {
-            let _guard = registry.enter(id, false).await?;
-            match time::timeout(Duration::from_secs(30), list(agent)).await {
-                Ok(Ok(list)) => list,
-                Ok(Err(error)) if inventory.files.is_empty() => return Err(error),
+            let result = {
+                let _guard = registry.enter(id, false).await?;
+                time::timeout(Duration::from_secs(30), list(agent)).await
+            };
+            match result {
+                Ok(Ok((list, complete))) => (
+                    list,
+                    complete
+                        && disk_complete
+                        && if id == "antigravity" {
+                            inventory.antigravity_disk_scanned
+                        } else {
+                            inventory.files.is_empty() && !matches!(id, "claude" | "codex")
+                        },
+                ),
+                Ok(Err(error)) => {
+                    if error.code == ErrorCode::AuthRequired {
+                        self.set_agent_auth(id, vetro_proto::AuthState::Required)
+                            .await;
+                    }
+                    if inventory.files.is_empty() {
+                        return Err(error);
+                    }
+                    (Vec::new(), false)
+                }
                 Err(error) if inventory.files.is_empty() => return Err(internal(error)),
-                _ => Vec::new(),
+                _ => (Vec::new(), false),
             }
         };
         let mut entries = HashMap::new();
@@ -216,6 +245,9 @@ impl Core {
         let mut pending = Vec::new();
         for (native_id, file) in inventory.files {
             let thread_id = format!("{id}:{native_id}");
+            if id == "antigravity" && !entries.contains_key(&thread_id) {
+                known.remove(&thread_id);
+            }
             if let Some(entry) = entries.get_mut(&thread_id) {
                 entry.thread.internal |= file.record.as_ref().is_some_and(|record| {
                     record.internal && record.origin.as_deref() != Some("history projection")
@@ -270,15 +302,17 @@ impl Core {
                 scanned += 1;
             }
         }
-        let removed: Vec<_> = known
-            .into_iter()
-            .filter_map(|(id, (mark, _))| mark.map(|_| id))
-            .collect();
-        if !removed.is_empty() && inventory.authoritative && inventory.errors.is_empty() {
+        if authoritative && !known.is_empty() {
             let store = self.store.clone();
-            let removed = blocking(move || store.remove(removed)).await?;
-            changes.upserted.extend(removed.upserted);
-            changes.removed.extend(removed.removed);
+            let removed: Vec<_> = known
+                .into_keys()
+                .filter(|id| self.sessions.get(id).is_none())
+                .collect();
+            if !removed.is_empty() {
+                let removed = blocking(move || store.remove(removed)).await?;
+                changes.upserted.extend(removed.upserted);
+                changes.removed.extend(removed.removed);
+            }
         }
         self.publish_history(changes);
         let may_read = id != "devin" || agent.process_auth() == Some(vetro_proto::AuthState::Ok);
@@ -507,19 +541,21 @@ impl Core {
     }
 }
 
-async fn list(agent: &Arc<dyn Agent>) -> Result<Vec<SessionRecord>> {
+async fn list(agent: &Arc<dyn Agent>) -> Result<(Vec<SessionRecord>, bool)> {
     let mut records = Vec::new();
     let mut seen = HashSet::new();
     let mut cursor = None;
+    let mut complete = true;
     loop {
         let page = agent.list(cursor).await?;
+        complete &= !page.incomplete;
         records.extend(
             page.sessions
                 .into_iter()
                 .filter(|record| !record.native_id.is_empty()),
         );
         let Some(next) = page.next_cursor else {
-            return Ok(records);
+            return Ok((records, complete));
         };
         if !seen.insert(next.clone()) {
             return Err(internal("Agent returned a repeated history cursor"));
@@ -605,4 +641,263 @@ fn modified_ms(path: &Path) -> i64 {
         .ok()
         .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
         .map_or_else(now, |time| time.as_millis() as i64)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::BTreeMap, sync::Mutex};
+
+    use serde_json::json;
+    use vetro_agent_api::{
+        async_trait, AgentError, AgentOptions, EventSink, Session, SessionPage, StartRequest,
+        WireLog,
+    };
+    use vetro_proto::{
+        rpc::{AgentOptionsParams, AuthenticateResult, ThreadStartParams},
+        AgentInfo, AuthState, ConfigOption, ContentBlock, RequestResolution, ThreadSource,
+    };
+
+    use super::*;
+    use crate::home::Home;
+
+    struct InventoryAgent {
+        id: &'static str,
+        auth: Mutex<Option<AuthState>>,
+        listing: Mutex<Result<SessionPage>>,
+    }
+
+    #[async_trait]
+    impl Agent for InventoryAgent {
+        fn id(&self) -> &str {
+            self.id
+        }
+
+        async fn info(&self) -> AgentInfo {
+            let mut info = crate::registry::disabled_info(self.id);
+            info.installed = true;
+            info.auth.state = self.process_auth().unwrap_or(AuthState::Ok);
+            info
+        }
+
+        fn process_auth(&self) -> Option<AuthState> {
+            *self.auth.lock().unwrap()
+        }
+
+        async fn authenticate(&self, _: &str) -> Result<AuthenticateResult> {
+            unreachable!()
+        }
+
+        async fn options(
+            &self,
+            _: Option<&Path>,
+            _: &BTreeMap<String, String>,
+        ) -> Result<AgentOptions> {
+            unreachable!()
+        }
+
+        async fn list(&self, _: Option<String>) -> Result<SessionPage> {
+            self.listing.lock().unwrap().clone()
+        }
+
+        async fn list_without_runtime(&self) -> Result<Option<SessionPage>> {
+            Ok((self.id == "antigravity").then(SessionPage::default))
+        }
+
+        async fn read(&self, _: &str, _: Option<&Path>) -> Result<Transcript> {
+            Ok(Transcript::default())
+        }
+
+        async fn start(&self, _: StartRequest, _: EventSink) -> Result<Arc<dyn Session>> {
+            Ok(Arc::new(LiveSession))
+        }
+
+        async fn attach(
+            &self,
+            _: &str,
+            _: Option<&Path>,
+            _: EventSink,
+        ) -> Result<Arc<dyn Session>> {
+            unreachable!()
+        }
+
+        async fn shutdown(&self) {
+            *self.auth.lock().unwrap() = None;
+        }
+    }
+
+    struct LiveSession;
+
+    #[async_trait]
+    impl Session for LiveSession {
+        fn native_id(&self) -> &str {
+            "in-memory"
+        }
+
+        async fn send(&self, _: Vec<ContentBlock>) -> Result<()> {
+            unreachable!()
+        }
+
+        async fn interrupt(&self) -> Result<()> {
+            unreachable!()
+        }
+
+        async fn set_option(&self, _: &str, _: &str) -> Result<Vec<ConfigOption>> {
+            unreachable!()
+        }
+
+        async fn respond(&self, _: &str, _: RequestResolution) -> Result<()> {
+            unreachable!()
+        }
+
+        async fn detach(&self) {}
+
+        fn wire_log(&self) -> Arc<WireLog> {
+            Arc::new(WireLog::new(1024))
+        }
+    }
+
+    fn record(id: &str) -> SessionRecord {
+        SessionRecord {
+            native_id: id.into(),
+            title: id.into(),
+            preview: None,
+            cwd: None,
+            created_at: None,
+            updated_at: 1,
+            source: ThreadSource::Cli,
+            origin: None,
+            model: None,
+            resumable: true,
+            parent_native_id: None,
+            internal: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn prunes_only_after_complete_inventory_and_keeps_sessions_in_memory() {
+        for id in ["kiro", "antigravity"] {
+            let root = tempfile::tempdir().unwrap();
+            let home = Home::open(root.path().join(".vetro"), root.path().into()).unwrap();
+            let agent = Arc::new(InventoryAgent {
+                id,
+                auth: Mutex::new(None),
+                listing: Mutex::new(Ok(SessionPage {
+                    sessions: ["deleted", "in-memory", "remaining"].map(record).to_vec(),
+                    ..Default::default()
+                })),
+            });
+            let mut registry = Registry::new([agent.clone() as Arc<dyn Agent>]).unwrap();
+            if id == "antigravity" {
+                registry = registry.watch_history(id, vec![root.path().join("antigravity")]);
+            }
+            let core = Core::new(home, registry);
+            core.refresh_history().await;
+            let deleted = format!("{id}:deleted");
+            let in_memory = format!("{id}:in-memory");
+            let (live, _actor) = core
+                .start(ThreadStartParams {
+                    agent_id: id.into(),
+                    cwd: root.path().to_string_lossy().into_owned(),
+                    options: BTreeMap::new(),
+                    content: Vec::new(),
+                })
+                .await
+                .unwrap();
+            assert_eq!(live.id, in_memory);
+            assert!(live.live);
+
+            *agent.listing.lock().unwrap() =
+                Err(AgentError::new(ErrorCode::AgentUnavailable, "list failed"));
+            core.refresh_history().await;
+            assert!(core.store.get(&deleted).unwrap().is_some());
+
+            *agent.listing.lock().unwrap() = Ok(SessionPage {
+                incomplete: true,
+                ..Default::default()
+            });
+            core.refresh_history().await;
+            assert!(core.store.get(&deleted).unwrap().is_some());
+
+            *agent.listing.lock().unwrap() = Ok(SessionPage {
+                sessions: vec![record("remaining")],
+                ..Default::default()
+            });
+            let mut events = core.events.subscribe();
+            core.refresh_history().await;
+            assert!(core.store.get(&deleted).unwrap().is_none());
+            assert!(core.store.get(&in_memory).unwrap().is_some());
+            assert!(core
+                .store
+                .get(&format!("{id}:remaining"))
+                .unwrap()
+                .is_some());
+            assert!(std::iter::from_fn(|| events.try_recv().ok()).any(|event| {
+                matches!(&*event, ServerEvent::ThreadsRemoved { thread_ids } if thread_ids == std::slice::from_ref(&deleted))
+            }));
+        }
+    }
+
+    #[tokio::test]
+    async fn idle_release_preserves_vendor_sign_in_until_auth_error() {
+        let root = tempfile::tempdir().unwrap();
+        let home = Home::open(root.path().join(".vetro"), root.path().into()).unwrap();
+        let agent = Arc::new(InventoryAgent {
+            id: "devin",
+            auth: Mutex::new(Some(AuthState::Ok)),
+            listing: Mutex::new(Ok(SessionPage::default())),
+        });
+        let registry = Registry::new([agent.clone() as Arc<dyn Agent>]).unwrap();
+        let core = Core::new(home, registry);
+        assert_eq!(core.agents(false).await[0].auth.state, AuthState::Ok);
+        core.registry()
+            .release_idle(|_| false, Some(Duration::ZERO))
+            .await;
+        assert_eq!(agent.process_auth(), None);
+        assert_eq!(core.agents(false).await[0].auth.state, AuthState::Ok);
+        let error = AgentError::new(ErrorCode::AuthRequired, "sign-in needed");
+        assert!(core.auth_result::<()>("devin", Err(error)).await.is_err());
+        assert_eq!(core.agents(false).await[0].auth.state, AuthState::Required);
+    }
+
+    #[tokio::test]
+    async fn old_state_options_are_normalized_in_agent_options_and_thread_open() {
+        let root = tempfile::tempdir().unwrap();
+        let home = Home::open(root.path().join(".vetro"), root.path().into()).unwrap();
+        let agent = Arc::new(InventoryAgent {
+            id: "kiro",
+            auth: Mutex::new(None),
+            listing: Mutex::new(Ok(SessionPage {
+                sessions: vec![record("cached")],
+                ..Default::default()
+            })),
+        });
+        let registry = Registry::new([agent as Arc<dyn Agent>]).unwrap();
+        let core = Core::new(home, registry);
+        let key = json!(["kiro", null, null, {}]).to_string();
+        let cached = serde_json::from_value(json!({
+            "options": [{
+                "id": "mode", "name": "Mode", "category": "mode", "currentValue": "spec",
+                "choices": [{"name": "Autonomous", "value": "autonomous"}]
+            }],
+            "commands": [],
+            "needsSession": false
+        }))
+        .unwrap();
+        core.home
+            .change_state(|state| state.options.insert(key, cached))
+            .unwrap();
+        let options = core
+            .agent_options(AgentOptionsParams {
+                agent_id: "kiro".into(),
+                cwd: None,
+                selected: None,
+                prepare: None,
+            })
+            .await
+            .unwrap();
+        assert!(options.options[0].choices[0].danger);
+        core.refresh_history().await;
+        let open = core.open_thread("kiro:cached", None).await.unwrap();
+        assert!(open.options[0].choices[0].danger);
+    }
 }

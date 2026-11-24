@@ -135,6 +135,7 @@ impl Core {
                 snapshot.commands = cached.commands;
             }
         }
+        vetro_agent_api::normalize_option_danger(&mut snapshot.options);
         Ok((snapshot, thread))
     }
 

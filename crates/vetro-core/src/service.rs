@@ -170,11 +170,7 @@ impl Core {
             let idle = (minutes != 0).then(|| Duration::from_secs(u64::from(minutes) * 60));
             self.sessions.maintenance(idle).await;
             self.registry()
-                .release_idle(
-                    |id| self.sessions.has_live(id),
-                    idle,
-                    |id| self.update_cached_auth(id, AuthState::Required),
-                )
+                .release_idle(|id| self.sessions.has_live(id), idle)
                 .await;
         }
     }
@@ -283,7 +279,10 @@ impl Core {
     fn current_auth(&self, mut agents: Vec<AgentInfo>) -> Vec<AgentInfo> {
         for info in &mut agents {
             if let Ok(agent) = self.registry().get(&info.id) {
-                if let Some(auth) = agent.process_auth() {
+                if let Some(auth) = agent
+                    .process_auth()
+                    .filter(|auth| *auth != AuthState::Unknown)
+                {
                     info.auth.state = auth;
                 }
             }
@@ -427,10 +426,11 @@ impl Core {
             cache_cwd.as_deref(),
             &selected,
         )?;
-        if let Some(cached) = self
+        if let Some(mut cached) = self
             .home
             .read_state(|state| state.options.get(&key).cloned())
         {
+            vetro_agent_api::normalize_option_danger(&mut cached.options);
             return Ok(cached);
         }
         // Two-tier lookup: fall back to any cached (agent, version, *, selected) snapshot from
@@ -462,7 +462,8 @@ impl Core {
                     })
                     .next()
             });
-            if let Some(cached) = fallback {
+            if let Some(mut cached) = fallback {
+                vetro_agent_api::normalize_option_danger(&mut cached.options);
                 return Ok(cached);
             }
         }
@@ -482,11 +483,12 @@ impl Core {
                 }
             })
             .await?;
-        let result = AgentOptionsResult {
+        let mut result = AgentOptionsResult {
             options: options.options,
             commands: options.commands,
             needs_session: false,
         };
+        vetro_agent_api::normalize_option_danger(&mut result.options);
         self.home
             .change_state(|state| state.options.insert(key, result.clone()))?;
         Ok(result)
@@ -537,6 +539,7 @@ impl Core {
                     }
                 }
             }
+            vetro_agent_api::normalize_option_danger(&mut result.options);
             result
         })
     }
@@ -545,7 +548,7 @@ impl Core {
         &self,
         agent_id: &str,
         cwd: &Path,
-        options: vetro_agent_api::AgentOptions,
+        mut options: vetro_agent_api::AgentOptions,
     ) -> Result<()> {
         let version = self.agent_info(agent_id).await?.version;
         let cache_cwd = self.option_cache_cwd(Some(cwd));
@@ -555,6 +558,7 @@ impl Core {
             cache_cwd.as_deref(),
             &BTreeMap::new(),
         )?;
+        vetro_agent_api::normalize_option_danger(&mut options.options);
         self.home.change_state(|state| {
             state.options.insert(
                 key,
@@ -886,19 +890,29 @@ impl Core {
         Ok(self.voice.status(&root, &settings.voice))
     }
 
-    pub(crate) async fn voice_install(self: &Arc<Self>) -> Result<VoiceStatus> {
+    pub(crate) async fn voice_install(
+        self: &Arc<Self>,
+        params: VoiceModelParams,
+    ) -> Result<VoiceStatus> {
         let root = self.home.voice_root()?;
         let settings = self.home.settings();
         let core = Arc::clone(self);
         self.voice
-            .install(root, &settings.voice, move |event| core.publish(event))
+            .install(
+                root,
+                &settings.voice,
+                params.model_id.as_deref(),
+                move |event| core.publish(event),
+            )
             .await
     }
 
-    pub(crate) async fn voice_uninstall(&self) -> Result<VoiceStatus> {
+    pub(crate) async fn voice_uninstall(&self, params: VoiceModelParams) -> Result<VoiceStatus> {
         let root = self.home.voice_root()?;
         let settings = self.home.settings();
-        self.voice.uninstall(&root, &settings.voice).await
+        self.voice
+            .uninstall(&root, &settings.voice, params.model_id.as_deref())
+            .await
     }
 
     pub(crate) async fn voice_transcribe(
@@ -1275,7 +1289,8 @@ mod tests {
         let patch = json!({
             "agents": {
                 "codex": {"enabled": false}, "claude": {"enabled": false},
-                "devin": {"enabled": false}, "antigravity": {"enabled": false}
+                "devin": {"enabled": false}, "antigravity": {"enabled": false},
+                "kiro": {"enabled": false}
             },
             "customAcpAgents": [{"id": "custom", "name": "Custom", "command": command}]
         });

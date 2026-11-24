@@ -216,6 +216,7 @@ impl Agent for CodexAgent {
         }
         let result = self.app().await?.call("thread/list", params).await?;
         Ok(SessionPage {
+            incomplete: false,
             sessions: mapping::array(&result["data"])
                 .iter()
                 .filter_map(mapping::record)

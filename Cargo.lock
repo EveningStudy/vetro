@@ -5351,6 +5351,7 @@ dependencies = [
  "vetro-agent-codex",
  "vetro-proto",
  "vetro-store-antigravity",
+ "windows-sys 0.61.2",
  "winreg 0.55.0",
  "zstd",
 ]

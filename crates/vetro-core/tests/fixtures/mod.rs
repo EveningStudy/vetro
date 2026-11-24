@@ -126,6 +126,7 @@ impl Agent for Fake {
         Ok(SessionPage {
             sessions,
             next_cursor,
+            incomplete: false,
         })
     }
 

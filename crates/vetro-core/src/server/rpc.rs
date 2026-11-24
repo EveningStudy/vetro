@@ -364,11 +364,11 @@ async fn call(
         "voice.status" => output(core.voice_status()?),
         "voice.install" => {
             client.desktop()?;
-            output(core.voice_install().await?)
+            output(core.voice_install(parse(params)?).await?)
         }
         "voice.uninstall" => {
             client.desktop()?;
-            output(core.voice_uninstall().await?)
+            output(core.voice_uninstall(parse(params)?).await?)
         }
         "voice.transcribe" => output(core.voice_transcribe(parse(params)?).await?),
         _ => Err(AgentError::new(
@@ -413,6 +413,21 @@ fn parse<T: DeserializeOwned>(params: Value) -> Result<T> {
     };
     serde_json::from_value(params)
         .map_err(|error| bad_request(format!("Invalid parameters: {error}")))
+}
+
+#[cfg(test)]
+#[test]
+fn voice_model_params_allow_legacy_and_targeted_requests() {
+    use serde_json::json;
+
+    for params in [Value::Null, json!({}), json!({"modelId": null})] {
+        assert!(parse::<VoiceModelParams>(params)
+            .unwrap()
+            .model_id
+            .is_none());
+    }
+    let params = parse::<VoiceModelParams>(json!({"modelId": "qwen3-asr"})).unwrap();
+    assert_eq!(params.model_id.as_deref(), Some("qwen3-asr"));
 }
 
 fn output(value: impl Serialize) -> Result<Value> {
