@@ -341,9 +341,11 @@ impl Thread {
         };
         let mut state = self.state.lock().unwrap();
         let summary_changed = state.summary.parent != summary.parent
-            || state.summary.child_count != summary.child_count;
+            || state.summary.child_count != summary.child_count
+            || state.summary.internal != summary.internal;
         state.summary.parent.clone_from(&summary.parent);
         state.summary.child_count = summary.child_count;
+        state.summary.internal = summary.internal;
         if summary_changed {
             let thread = core.overlay(state.summary.clone());
             state.emit(&core, ThreadEvent::Summary { thread });
@@ -475,6 +477,7 @@ impl Thread {
             }
             SessionEvent::Title(title) => {
                 state.summary.title = title;
+                state.summary.internal = crate::storage::classified(&state.summary);
                 None
             }
             SessionEvent::Model(model) => {
@@ -1131,7 +1134,7 @@ fn new_summary(
     cwd: Option<String>,
 ) -> ThreadSummary {
     let timestamp = now();
-    ThreadSummary {
+    let mut summary = ThreadSummary {
         id: format!("{agent_id}:{native_id}"),
         agent_id: agent_id.into(),
         native_id: native_id.into(),
@@ -1149,5 +1152,8 @@ fn new_summary(
         child_count: 0,
         model: None,
         archived: false,
-    }
+        internal: false,
+    };
+    summary.internal = crate::storage::classified(&summary);
+    summary
 }

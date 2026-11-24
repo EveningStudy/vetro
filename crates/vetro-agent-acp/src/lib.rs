@@ -253,6 +253,7 @@ impl AcpAgent {
             })
             .filter_map(|session| {
                 mapping::record(
+                    &self.id,
                     session,
                     runtime.capabilities.load || runtime.capabilities.resume,
                 )
@@ -360,6 +361,8 @@ impl Agent for AcpAgent {
                 state: AuthState::Unknown,
                 methods: Vec::new(),
                 account: None,
+                provider: None,
+                endpoint: None,
             },
             capabilities: AgentCapabilities::default(),
             error: None,

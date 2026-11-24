@@ -7,4 +7,12 @@ export type Project = {
 /**
  * Normalized absolute path; also the project id.
  */
-path: string, name: string, exists: boolean, pinned: boolean, hidden: boolean, threadCount: number, lastActivityAt: number | null, };
+path: string, name: string, exists: boolean, pinned: boolean, hidden: boolean, threadCount: number, lastActivityAt: number | null, 
+/**
+ * Human-initiated root thread count (excludes child and internal/automated sessions).
+ */
+rootThreadCount: number, 
+/**
+ * Latest update time among human-initiated root threads in this directory.
+ */
+lastRootActivityAt: number | null, };

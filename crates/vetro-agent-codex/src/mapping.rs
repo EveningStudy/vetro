@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
 use serde_json::{json, Value};
-use vetro_agent_api::{ItemDraft, Result, SessionRecord, Transcript};
+use vetro_agent_api::{codex_internal_source, ItemDraft, Result, SessionRecord, Transcript};
 use vetro_proto::{
     ContentBlock, ItemKind, NoticeLevel, PlanEntry, PlanStatus, RateLimit, StopReason,
     ThreadSource, TokenUsage, ToolCall, ToolContent, ToolKind, ToolLocation, ToolStatus,
@@ -143,7 +143,7 @@ pub(crate) fn record(thread: &Value) -> Option<SessionRecord> {
             .or_else(|| source.as_object().map(|_| source.to_string()))
     });
     let preview = string(thread, "preview").filter(|value| !value.is_empty());
-    Some(SessionRecord {
+    let record = SessionRecord {
         native_id: string(thread, "id")?,
         title: string(thread, "name")
             .filter(|value| !value.is_empty())
@@ -159,7 +159,9 @@ pub(crate) fn record(thread: &Value) -> Option<SessionRecord> {
         resumable: thread["ephemeral"] != true,
         parent_native_id: string(thread, "parentThreadId")
             .or_else(|| string(&source["subagent"]["thread_spawn"], "parent_thread_id")),
-    })
+        internal: codex_internal_source(source),
+    };
+    Some(record.classify("codex"))
 }
 
 pub(crate) fn transcript(thread: &Value) -> Transcript {

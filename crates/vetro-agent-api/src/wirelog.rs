@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     fs::{File, OpenOptions},
     io::{self, Write},
     mem::size_of,
@@ -34,6 +34,7 @@ struct Routing {
     early: VecDeque<(String, RawEntry)>,
     sent: HashMap<String, Route>,
     received: HashMap<String, Route>,
+    private_config_reads: HashSet<u64>,
 }
 
 enum Route {
@@ -114,7 +115,7 @@ impl WireLog {
             return;
         }
         text.shrink_to_fit();
-        let entry = RawEntry {
+        let mut entry = RawEntry {
             ts: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
@@ -123,7 +124,9 @@ impl WireLog {
             text,
         };
         if let Some(routing) = &self.routing {
-            routing.lock().unwrap().record(&entry, self.max_bytes);
+            let mut routing = routing.lock().unwrap();
+            routing.redact_config_reply(&mut entry);
+            routing.record(&entry, self.max_bytes);
         }
         self.push(entry);
     }
@@ -151,6 +154,27 @@ impl WireLog {
 }
 
 impl Routing {
+    fn redact_config_reply(&mut self, entry: &mut RawEntry) {
+        let sent = match entry.direction {
+            RawDirection::Sent if entry.text.contains("\"config/read\"") => true,
+            RawDirection::Received if !self.private_config_reads.is_empty() => false,
+            _ => return,
+        };
+        let Ok(message) = serde_json::from_str::<Value>(&entry.text) else {
+            return;
+        };
+        let Some(id) = message["id"].as_u64() else {
+            return;
+        };
+        if sent {
+            if message["method"] == "config/read" {
+                self.private_config_reads.insert(id);
+            }
+        } else if message.get("method").is_none() && self.private_config_reads.remove(&id) {
+            entry.text = serde_json::json!({ "id": id, "redacted": true }).to_string();
+        }
+    }
+
     fn record(&mut self, entry: &RawEntry, max_bytes: usize) {
         let sent = match entry.direction {
             RawDirection::Spawn => {
@@ -348,5 +372,25 @@ mod tests {
         assert!(entries[0].text.contains("session/new"));
         assert!(entries[1].text.contains("session/update") && entries[1].text.contains("created"));
         assert!(entries[2].text.contains("result"));
+    }
+
+    #[test]
+    fn config_replies_are_redacted_from_the_process_log() {
+        let log = WireLog::default().multiplexed();
+        log.record(
+            RawDirection::Sent,
+            r#"{"id":5,"method":"config/read","params":{}}"#.into(),
+        );
+        log.record(
+            RawDirection::Received,
+            r#"{"id":6,"result":{"version":"safe"}}"#.into(),
+        );
+        log.record(
+            RawDirection::Received,
+            r#"{"id":5,"result":{"config":{"base_url":"https://user:secret@example.com"}}}"#.into(),
+        );
+        let entries = log.snapshot();
+        assert!(entries[1].text.contains("safe"));
+        assert_eq!(entries[2].text, r#"{"id":5,"redacted":true}"#);
     }
 }

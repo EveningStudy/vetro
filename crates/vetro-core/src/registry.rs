@@ -421,6 +421,8 @@ pub(crate) fn disabled_info(id: &str) -> AgentInfo {
             state: AuthState::Unknown,
             methods: Vec::new(),
             account: None,
+            provider: None,
+            endpoint: None,
         },
         capabilities: AgentCapabilities::default(),
         error: None,

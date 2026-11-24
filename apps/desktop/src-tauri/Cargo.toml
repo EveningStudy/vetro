@@ -20,3 +20,4 @@ tauri-plugin-opener = "2"
 anyhow = "1"
 vetro-core = { path = "../../../crates/vetro-core", features = ["claude", "codex", "acp", "antigravity-store"] }
 serde_json = { workspace = true }
+tokio = { version = "1", features = ["sync"] }

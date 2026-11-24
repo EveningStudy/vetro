@@ -17,7 +17,7 @@ use serde_json::{json, Value};
 use session::Live;
 use tokio::sync::Mutex as AsyncMutex;
 use vetro_agent_api::{
-    async_trait,
+    async_trait, gateway_origin,
     jsonrpc::{self, Incoming, Peer, RemoteError, Version},
     process::{Process, SpawnSpec},
     Agent, AgentError, AgentOptions, EventSink, Result, Session, SessionPage, StartRequest,
@@ -119,6 +119,8 @@ impl Agent for CodexAgent {
                 state: AuthState::Unknown,
                 methods: Vec::new(),
                 account: None,
+                provider: None,
+                endpoint: None,
             },
             capabilities: AgentCapabilities {
                 image_input: true,
@@ -131,25 +133,14 @@ impl Agent for CodexAgent {
         match self.app().await {
             Ok(app) => {
                 info.version = app.version.get().cloned();
-                match app
-                    .call("account/read", json!({ "refreshToken": false }))
-                    .await
-                {
-                    Ok(response) => {
-                        let account = &response["account"];
-                        info.auth.state =
-                            if account.is_object() || response["requiresOpenaiAuth"] == false {
-                                AuthState::Ok
-                            } else if response["requiresOpenaiAuth"] == true {
-                                AuthState::Required
-                            } else {
-                                AuthState::Unknown
-                            };
-                        info.auth.account = mapping::string(account, "workspaceName")
-                            .or_else(|| mapping::string(account, "planType"))
-                            .or_else(|| mapping::string(account, "type"));
-                        info.auth.methods = auth_methods(&app.requirements().await);
-                    }
+                let (account, config) = tokio::join!(
+                    app.call("account/read", json!({ "refreshToken": false })),
+                    app.call("config/read", json!({})),
+                );
+                let config = config.ok();
+                info.auth = account_info(account.as_ref().ok(), config.as_ref());
+                match account {
+                    Ok(_) => info.auth.methods = auth_methods(&app.requirements().await),
                     Err(error) => info.error = Some(error.message),
                 }
             }
@@ -344,6 +335,116 @@ struct App {
     state: Mutex<AppState>,
 }
 
+fn account_info(response: Option<&Value>, config_reply: Option<&Value>) -> AgentAuth {
+    let response = response.unwrap_or(&Value::Null);
+    let account = &response["account"];
+    let config = &config_reply.unwrap_or(&Value::Null)["config"];
+    let provider_id = config["model_provider"]
+        .as_str()
+        .map(str::trim)
+        .filter(|id| !id.is_empty() && !id.eq_ignore_ascii_case("openai"));
+    let provider_config = provider_id
+        .and_then(|id| config["model_providers"].get(id))
+        .unwrap_or(&Value::Null);
+    let official: &[&str] = if provider_id.is_some() {
+        &[]
+    } else {
+        &["api.openai.com", "chatgpt.com"]
+    };
+    let endpoint = [
+        &provider_config["base_url"],
+        &config["openai_base_url"],
+        &config["base_url"],
+    ]
+    .into_iter()
+    .filter_map(Value::as_str)
+    .find_map(|url| gateway_origin(url, official));
+    let state = if account.is_object() || response["requiresOpenaiAuth"] == false {
+        AuthState::Ok
+    } else if response["requiresOpenaiAuth"] == true {
+        AuthState::Required
+    } else if provider_id.is_some()
+        && provider_config["requiresOpenaiAuth"] != true
+        && provider_config["requires_openai_auth"] != true
+    {
+        AuthState::Ok
+    } else {
+        AuthState::Unknown
+    };
+    let label = mapping::string(account, "workspaceName").or_else(|| {
+        let plan = account["planType"].as_str().or(account["type"].as_str())?;
+        Some(
+            match plan.to_ascii_lowercase().as_str() {
+                "plus" => "ChatGPT Plus",
+                "pro" => "ChatGPT Pro",
+                "team" => "ChatGPT Team",
+                "enterprise" => "ChatGPT Enterprise",
+                "free" => "ChatGPT Free",
+                "apikey" | "api_key" => "API Key",
+                _ => plan,
+            }
+            .to_owned(),
+        )
+    });
+    AgentAuth {
+        state,
+        methods: Vec::new(),
+        account: label,
+        provider: provider_id
+            .map(str::to_owned)
+            .or_else(|| endpoint.as_ref().map(|_| "custom".into())),
+        endpoint,
+    }
+}
+
+#[test]
+fn custom_provider_and_account_label() {
+    let config = json!({"config": {
+        "model_provider": "magpie",
+        "model_providers": {"magpie": {
+            "base_url": "http://user:secret@127.0.0.1:3425/v1?key=secret#token"
+        }}
+    }});
+    let plus = json!({"account": {"planType": "plus"}});
+    let auth = account_info(Some(&plus), Some(&config));
+    assert_eq!(auth.provider.as_deref(), Some("magpie"));
+    assert_eq!(auth.endpoint.as_deref(), Some("http://127.0.0.1:3425"));
+    assert_eq!(auth.account.as_deref(), Some("ChatGPT Plus"));
+    assert_eq!(account_info(None, Some(&config)).state, AuthState::Ok);
+    let required = json!({"requiresOpenaiAuth": true});
+    assert_eq!(
+        account_info(Some(&required), Some(&config)).state,
+        AuthState::Required
+    );
+}
+
+#[test]
+fn gateway_override_and_legacy_account() {
+    let config = json!({"config": {
+        "model_provider": "OpenAI",
+        "openai_base_url": "https://gateway.example/v1"
+    }});
+    let auth = account_info(None, Some(&config));
+    assert_eq!(auth.provider.as_deref(), Some("custom"));
+    assert_eq!(auth.endpoint.as_deref(), Some("https://gateway.example"));
+    let official = json!({"config": {"openai_base_url": "https://api.openai.com/v1"}});
+    assert_eq!(account_info(None, Some(&official)).provider, None);
+    let key = json!({"account": {"type": "apiKey"}});
+    assert_eq!(
+        account_info(Some(&key), None).account.as_deref(),
+        Some("API Key")
+    );
+}
+
+#[test]
+fn native_subagent_source_survives_an_interactive_originator() {
+    let record = mapping::record(&json!({
+        "id": "child", "originator": "codex_cli_rs", "source": "subAgentCompact"
+    }))
+    .unwrap();
+    assert_eq!(record.origin.as_deref(), Some("codex_cli_rs"));
+    assert!(record.internal);
+}
 impl App {
     async fn start(mut spawn: SpawnSpec) -> Result<Arc<Self>> {
         spawn.args.insert(0, "app-server".into());

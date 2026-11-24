@@ -264,6 +264,7 @@ fn record(file: File, id: &str) -> io::Result<SessionRecord> {
         model: None,
         resumable: true,
         parent_native_id: None,
+        internal: false,
     };
     let mut title = None;
     let mut summary = None;
@@ -344,7 +345,7 @@ fn record(file: File, id: &str) -> io::Result<SessionRecord> {
         })
         .unwrap_or_else(|| "Claude session".into());
     record.resumable = record.cwd.is_some();
-    Ok(record)
+    Ok(record.classify("claude"))
 }
 
 fn first_prompt(content: &Value) -> Option<String> {

@@ -570,6 +570,7 @@ mod tests {
             child_count: 0,
             model: None,
             archived: false,
+            internal: true,
         }
     }
 

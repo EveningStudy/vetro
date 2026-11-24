@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Context};
+use tokio::sync::watch;
 use vetro_core::{home::Home, registry::Registry, server::Server, Core};
 
 /// Handle for the running Vetro core. The shell only needs the URL to point
@@ -6,6 +7,7 @@ use vetro_core::{home::Home, registry::Registry, server::Server, Core};
 pub struct CoreHandle {
     pub url: String,
     pub close_to_tray: bool,
+    pub theme_rx: Option<watch::Receiver<Option<String>>>,
 }
 
 /// Starts the core inside this process and returns its loopback URL.
@@ -20,12 +22,14 @@ pub async fn start() -> anyhow::Result<CoreHandle> {
         return Ok(CoreHandle {
             url,
             close_to_tray: false,
+            theme_rx: None,
         });
     }
     let home = Home::discover().map_err(|error| anyhow!("{error:?}"))?;
     let settings = home.settings();
     let registry = Registry::from_settings(&settings).map_err(|error| anyhow!("{error:?}"))?;
     let core = Core::new(home, registry);
+    let theme_rx = core.theme_watch();
     let server = Server::bind(core, None)
         .await
         .map_err(|error| anyhow!("{error:?}"))?;
@@ -38,5 +42,6 @@ pub async fn start() -> anyhow::Result<CoreHandle> {
     Ok(CoreHandle {
         url,
         close_to_tray: settings.close_to_tray,
+        theme_rx: Some(theme_rx),
     })
 }

@@ -99,7 +99,11 @@ fn app_server() {
             "collaborationMode/list" => {
                 json!({"data": [{"mode": "plan", "name": "Plan", "model": "preset", "reasoning_effort": "low"}, {"mode": "default", "name": "Default"}]})
             }
-            "config/read" => json!({"config": {"sandbox_mode": "read-only"}}),
+            "config/read" => json!({"config": {
+                "sandbox_mode": "read-only",
+                "model_provider": "magpie",
+                "model_providers": {"magpie": {"base_url": "http://127.0.0.1:3425/v1"}}
+            }}),
             "permissionProfile/list" => json!({"data": [
                 {"id": ":read-only", "allowed": true}, {"id": ":blocked", "allowed": false},
             ]}),
@@ -321,6 +325,9 @@ async fn test_adapter() {
     let info = agent.info().await;
     assert_eq!(info.version.as_deref(), Some("0.169.0"));
     assert_eq!(info.auth.state, AuthState::Ok);
+    assert_eq!(info.auth.account.as_deref(), Some("ChatGPT Pro"));
+    assert_eq!(info.auth.provider.as_deref(), Some("magpie"));
+    assert_eq!(info.auth.endpoint.as_deref(), Some("http://127.0.0.1:3425"));
     assert_eq!(info.auth.methods[0].id, "chatgpt");
     let auth = agent.authenticate("chatgptDeviceCode").await.unwrap();
     assert_eq!(auth.code.as_deref(), Some("fake-code"));

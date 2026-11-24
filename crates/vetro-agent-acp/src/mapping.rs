@@ -27,9 +27,9 @@ pub fn timestamp(value: &Value) -> Option<i64> {
     })
 }
 
-pub fn record(value: &Value, resumable: bool) -> Option<SessionRecord> {
+pub fn record(agent_id: &str, value: &Value, resumable: bool) -> Option<SessionRecord> {
     let native_id = string(value, "sessionId")?;
-    Some(SessionRecord {
+    let record = SessionRecord {
         title: string(value, "title").unwrap_or_else(|| native_id.clone()),
         native_id,
         preview: string(value, "preview"),
@@ -43,7 +43,9 @@ pub fn record(value: &Value, resumable: bool) -> Option<SessionRecord> {
         model: string(value, "model"),
         resumable,
         parent_native_id: string(value, "parentSessionId"),
-    })
+        internal: false,
+    };
+    Some(record.classify(agent_id))
 }
 
 fn native_cwd(cwd: &str, windows: bool) -> Option<PathBuf> {
@@ -110,10 +112,12 @@ mod cwd_tests {
         assert_eq!(native_cwd(encoded, cfg!(windows)), Some(expected));
         assert_eq!(native_cwd("", cfg!(windows)), None);
         assert_eq!(native_cwd("relative", cfg!(windows)), None);
-        assert!(record(&serde_json::json!({"sessionId": "no-cwd"}), true)
-            .unwrap()
-            .cwd
-            .is_none());
+        assert!(
+            record("devin", &serde_json::json!({"sessionId": "no-cwd"}), true)
+                .unwrap()
+                .cwd
+                .is_none()
+        );
     }
 }
 

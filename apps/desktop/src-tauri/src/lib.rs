@@ -8,7 +8,8 @@ use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::webview::NewWindowResponse;
 use tauri::{
-    AppHandle, Manager, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent, Wry,
+    AppHandle, Manager, Theme, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent,
+    Wry,
 };
 use tauri_plugin_opener::OpenerExt;
 
@@ -33,7 +34,7 @@ pub fn run() -> Result<()> {
                 .map(|handle| handle.close_to_tray)
                 .unwrap_or(false);
             let window = match core {
-                Ok(handle) => core_window(&app, &handle)?,
+                Ok(handle) => core_window(&app, handle)?,
                 Err(err) => error_window(&app, &format!("{err:#}"))?,
             };
             watch_window_close(&window, close_to_tray);
@@ -44,10 +45,20 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-fn core_window(app: &AppHandle, handle: &CoreHandle) -> Result<WebviewWindow> {
+fn core_window(app: &AppHandle, mut handle: CoreHandle) -> Result<WebviewWindow> {
     let url = Url::parse(&handle.url)?;
     let origin = url.origin();
-    let window = window_builder(app, WebviewUrl::External(url))
+    let initial_theme = handle
+        .theme_rx
+        .as_mut()
+        .and_then(|theme| native_theme(theme.borrow_and_update().as_deref()));
+    let builder = window_builder(app, WebviewUrl::External(url)).theme(initial_theme);
+    let builder = if initial_theme == Some(Theme::Dark) {
+        builder.background_color(tauri::window::Color(9, 9, 11, 255))
+    } else {
+        builder
+    };
+    let window = builder
         .on_navigation({
             let app = app.clone();
             let origin = origin.clone();
@@ -69,7 +80,24 @@ fn core_window(app: &AppHandle, handle: &CoreHandle) -> Result<WebviewWindow> {
             }
         })
         .build()?;
+    if let Some(mut theme) = handle.theme_rx {
+        let window = window.clone();
+        tauri::async_runtime::spawn(async move {
+            while theme.changed().await.is_ok() {
+                let mapped = native_theme(theme.borrow_and_update().as_deref());
+                let _ = window.set_theme(mapped);
+            }
+        });
+    }
     Ok(window)
+}
+
+fn native_theme(pref: Option<&str>) -> Option<Theme> {
+    match pref {
+        Some("dark") => Some(Theme::Dark),
+        Some("light") => Some(Theme::Light),
+        _ => None,
+    }
 }
 
 fn error_window(app: &AppHandle, message: &str) -> Result<WebviewWindow> {

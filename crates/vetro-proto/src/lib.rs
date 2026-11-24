@@ -57,6 +57,14 @@ pub struct AgentAuth {
     pub methods: Vec<AuthMethod>,
     /// Short human label reported by the agent (plan name, account type), if any.
     pub account: Option<String>,
+    /// Active non-default model provider or gateway configured in the agent (e.g. `magpie`, `bedrock`, `litellm`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub provider: Option<String>,
+    /// Sanitized endpoint host or URL (never credentials) when routing through a custom provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub endpoint: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -151,6 +159,13 @@ pub struct Project {
     pub thread_count: u32,
     #[ts(type = "number | null")]
     pub last_activity_at: Option<i64>,
+    /// Human-initiated root thread count (excludes child and internal/automated sessions).
+    #[serde(default)]
+    pub root_thread_count: u32,
+    /// Latest update time among human-initiated root threads in this directory.
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub last_root_activity_at: Option<i64>,
 }
 
 /// Where a session was created.
@@ -231,6 +246,10 @@ pub struct ThreadSummary {
     pub child_count: u32,
     pub model: Option<String>,
     pub archived: bool,
+    /// Automated or internal background session (e.g. Codex `subAgent*`, blank history projection, unlinked `exec`).
+    /// Hidden from the primary sidebar by default unless explicitly requested.
+    #[serde(default)]
+    pub internal: bool,
 }
 
 // ---------------------------------------------------------------------------------------------

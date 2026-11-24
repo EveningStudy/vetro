@@ -22,6 +22,53 @@ pub mod wirelog;
 pub type Result<T> = std::result::Result<T, AgentError>;
 pub type EventSink = mpsc::UnboundedSender<SessionEvent>;
 
+pub fn gateway_origin(value: &str, official_hosts: &[&str]) -> Option<String> {
+    let url = url::Url::parse(value.trim()).ok()?;
+    if !matches!(url.scheme(), "http" | "https")
+        || official_hosts.contains(&url.host_str()?.trim_end_matches('.'))
+    {
+        return None;
+    }
+    Some(url.origin().ascii_serialization())
+}
+
+fn codex_subagent(source: &str) -> bool {
+    let source = source.to_ascii_lowercase();
+    source.contains("subagent") || source.contains("sub_agent")
+}
+
+pub fn codex_internal_source(source: &serde_json::Value) -> bool {
+    source.as_str().map_or_else(
+        || {
+            source.as_object().is_some_and(|fields| {
+                fields.iter().any(|(key, value)| {
+                    codex_subagent(key) || value.as_str().is_some_and(codex_subagent)
+                })
+            })
+        },
+        codex_subagent,
+    )
+}
+
+pub fn session_is_internal(
+    agent_id: &str,
+    source: ThreadSource,
+    origin: Option<&str>,
+    title: &str,
+    preview: Option<&str>,
+) -> bool {
+    source == ThreadSource::Exec
+        || (agent_id == "codex"
+            && (origin.is_some_and(codex_subagent)
+                || (origin == Some("history projection")
+                    && title == "Codex thread"
+                    && preview.unwrap_or_default().trim().is_empty())))
+        || [Some(title), preview]
+            .into_iter()
+            .flatten()
+            .any(|text| text.trim_start().starts_with("<caller_constraints>"))
+}
+
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("{message}")]
 pub struct AgentError {
@@ -94,6 +141,20 @@ pub struct SessionRecord {
     pub model: Option<String>,
     pub resumable: bool,
     pub parent_native_id: Option<String>,
+    pub internal: bool,
+}
+
+impl SessionRecord {
+    pub fn classify(mut self, agent_id: &str) -> Self {
+        self.internal |= session_is_internal(
+            agent_id,
+            self.source,
+            self.origin.as_deref(),
+            &self.title,
+            self.preview.as_deref(),
+        );
+        self
+    }
 }
 
 #[derive(Debug, Clone, Default)]

@@ -23,4 +23,9 @@ live: boolean,
 /**
  * Sending a message will continue the native session. False means read-only history.
  */
-resumable: boolean, parent: ThreadParent | null, childCount: number, model: string | null, archived: boolean, };
+resumable: boolean, parent: ThreadParent | null, childCount: number, model: string | null, archived: boolean, 
+/**
+ * Automated or internal background session (e.g. Codex `subAgent*`, blank history projection, unlinked `exec`).
+ * Hidden from the primary sidebar by default unless explicitly requested.
+ */
+internal: boolean, };

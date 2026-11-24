@@ -217,6 +217,9 @@ impl Core {
         for (native_id, file) in inventory.files {
             let thread_id = format!("{id}:{native_id}");
             if let Some(entry) = entries.get_mut(&thread_id) {
+                entry.thread.internal |= file.record.as_ref().is_some_and(|record| {
+                    record.internal && record.origin.as_deref() != Some("history projection")
+                });
                 entry.mark.push_str(&file.mark);
             } else if let Some(record) = file.record {
                 insert(&mut entries, id, record, file.archived, file.mark);
@@ -561,7 +564,8 @@ fn record_mark(record: &SessionRecord) -> String {
         record.resumable,
         record.parent_native_id,
         record.model,
-        record.preview
+        record.preview,
+        record.internal
     ]);
     value.to_string()
 }

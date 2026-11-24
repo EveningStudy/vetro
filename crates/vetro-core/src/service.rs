@@ -2,11 +2,15 @@ use std::{
     collections::BTreeMap,
     future::Future,
     path::Path,
-    sync::{atomic::AtomicBool, Arc, RwLock},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, RwLock,
+    },
     time::Duration,
 };
 
-use tokio::sync::{broadcast, Mutex, Notify};
+use serde_json::Value;
+use tokio::sync::{broadcast, watch, Mutex, Notify};
 use vetro_agent_api::{AgentError, Result, SessionRecord};
 use vetro_proto::{rpc::*, *};
 
@@ -22,7 +26,8 @@ use crate::{
 pub struct Core {
     pub home: Home,
     registry: RwLock<Arc<Registry>>,
-    pub(crate) registry_changed: tokio::sync::watch::Sender<()>,
+    pub(crate) registry_changed: watch::Sender<()>,
+    theme: watch::Sender<Option<String>>,
     pub(crate) store: Arc<Index>,
     pub(crate) sessions: Sessions,
     pub(crate) events: broadcast::Sender<Arc<ServerEvent>>,
@@ -38,10 +43,12 @@ impl Core {
             home.log(&format!("Index unavailable: {error}"));
             Index::temporary()
         });
+        let theme = watch::channel(pref_theme(&home.prefs("local"))).0;
         Arc::new(Self {
             home,
             registry: RwLock::new(Arc::new(registry)),
-            registry_changed: tokio::sync::watch::channel(()).0,
+            registry_changed: watch::channel(()).0,
+            theme,
             store: Arc::new(store),
             sessions: Sessions::default(),
             events: broadcast::channel(1024).0,
@@ -50,6 +57,29 @@ impl Core {
             history_requested: Notify::new(),
             project_refresh_requested: AtomicBool::new(false),
         })
+    }
+
+    pub fn theme_watch(&self) -> watch::Receiver<Option<String>> {
+        self.theme.subscribe()
+    }
+
+    pub(crate) fn prefs_set(&self, device_id: &str, prefs: Value) -> Result<()> {
+        self.home.change_state(|state| {
+            state.prefs.insert(device_id.into(), prefs);
+        })?;
+        if device_id == "local" {
+            self.home.read_state(|state| {
+                let theme = pref_theme(&state.prefs["local"]);
+                self.theme.send_if_modified(|current| {
+                    if *current == theme {
+                        return false;
+                    }
+                    *current = theme;
+                    true
+                });
+            });
+        }
+        Ok(())
     }
 
     pub(crate) fn request_history_refresh(&self) {
@@ -452,6 +482,10 @@ impl Core {
             self.home
                 .log(&format!("Could not save attached thread: {error}"));
         }
+        if thread.cwd.is_some() {
+            self.project_refresh_requested
+                .store(true, Ordering::Release);
+        }
         self.publish(ServerEvent::ThreadsUpserted {
             threads: vec![overlaid],
         });
@@ -463,6 +497,7 @@ impl Core {
         if existing.is_none() && actor.is_none() {
             return Err(not_found("Unknown thread"));
         }
+        let archive_changed = params.archived.is_some();
         self.home.change_state(|state| {
             let overlay = state.threads.entry(params.thread_id.clone()).or_default();
             if params.title.is_some() {
@@ -472,6 +507,10 @@ impl Core {
                 overlay.archived = params.archived;
             }
         })?;
+        if archive_changed {
+            self.project_refresh_requested
+                .store(true, Ordering::Release);
+        }
         if let Some(existing) = &existing {
             let title = self.overlay(existing.clone()).title;
             self.store.rename(&params.thread_id, &title)?;
@@ -506,6 +545,7 @@ impl Core {
             parent: params.parent_id.as_deref(),
             children: params.include_children.unwrap_or(false),
             archived: params.include_archived.unwrap_or(false),
+            include_internal: params.include_internal.unwrap_or(false),
             cursor,
         };
         let mut threads = self.store.list(&filter, limit + 1, &self.overlay_json()?)?;
@@ -583,11 +623,13 @@ impl Core {
 
     pub(crate) fn projects(&self) -> Result<Vec<Project>> {
         let mut projects = BTreeMap::new();
-        for (path, count, updated) in self.store.projects()? {
-            let mut project = project_at(path.clone());
-            project.thread_count = count;
-            project.last_activity_at = Some(updated);
-            projects.insert(path, project);
+        for activity in self.store.projects(&self.overlay_json()?)? {
+            let mut project = project_at(activity.path.clone());
+            project.thread_count = activity.thread_count;
+            project.last_activity_at = Some(activity.last_activity_at);
+            project.root_thread_count = activity.root_thread_count;
+            project.last_root_activity_at = activity.last_root_activity_at;
+            projects.insert(activity.path, project);
         }
         self.home.read_state(|state| {
             for (path, overlay) in &state.projects {
@@ -711,6 +753,7 @@ fn option_key(
 }
 
 pub(crate) fn summary(agent_id: &str, record: SessionRecord) -> ThreadSummary {
+    let record = record.classify(agent_id);
     ThreadSummary {
         id: format!("{agent_id}:{}", record.native_id),
         agent_id: agent_id.into(),
@@ -731,6 +774,7 @@ pub(crate) fn summary(agent_id: &str, record: SessionRecord) -> ThreadSummary {
         child_count: 0,
         model: record.model,
         archived: false,
+        internal: record.internal,
     }
 }
 
@@ -747,14 +791,177 @@ fn project_at(path: String) -> Project {
         hidden: false,
         thread_count: 0,
         last_activity_at: None,
+        root_thread_count: 0,
+        last_root_activity_at: None,
     }
 }
 
-#[cfg(all(test, feature = "acp"))]
+fn pref_theme(prefs: &Value) -> Option<String> {
+    prefs
+        .get("theme")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    fn theme_watch_tracks_only_local_preferences() {
+        let root = tempfile::tempdir().unwrap();
+        let home = Home::open(root.path().join(".vetro"), root.path().into()).unwrap();
+        home.change_state(|state| state.prefs.insert("local".into(), json!({"theme":"dark"})))
+            .unwrap();
+        let core = Core::new(home, Registry::default());
+        let mut theme = core.theme_watch();
+        assert_eq!(theme.borrow().as_deref(), Some("dark"));
+        core.prefs_set("remote", json!({"theme":"light"})).unwrap();
+        assert!(!theme.has_changed().unwrap());
+        for expected in ["light", "system"] {
+            core.prefs_set("local", json!({"theme":expected})).unwrap();
+            assert!(theme.has_changed().unwrap());
+            assert_eq!(theme.borrow_and_update().as_deref(), Some(expected));
+        }
+        core.prefs_set("local", json!({})).unwrap();
+        assert_eq!(*theme.borrow_and_update(), None);
+    }
+
+    #[test]
+    fn thread_visibility_and_project_root_activity() {
+        let root = tempfile::tempdir().unwrap();
+        let home = Home::open(root.path().join(".vetro"), root.path().into()).unwrap();
+        let core = Core::new(home, Registry::default());
+        let records = [
+            ("root", ThreadSource::Cli, None, "Root", None, None, false),
+            ("exec", ThreadSource::Exec, None, "Exec", None, None, false),
+            (
+                "compact",
+                ThreadSource::Unknown,
+                Some("subAgentCompact"),
+                "Compact",
+                None,
+                Some("codex:root"),
+                false,
+            ),
+            (
+                "wrapper",
+                ThreadSource::Cli,
+                None,
+                "Wrapper",
+                Some("<caller_constraints>\nrun"),
+                None,
+                false,
+            ),
+            (
+                "projection",
+                ThreadSource::Unknown,
+                Some("history projection"),
+                "Codex thread",
+                None,
+                None,
+                false,
+            ),
+            (
+                "child",
+                ThreadSource::Cli,
+                None,
+                "Interactive child",
+                None,
+                Some("codex:root"),
+                false,
+            ),
+            (
+                "archived",
+                ThreadSource::Cli,
+                None,
+                "Archived",
+                None,
+                None,
+                true,
+            ),
+        ];
+        for (position, (id, source, origin, title, preview, parent, archived)) in
+            records.into_iter().enumerate()
+        {
+            let mut thread = summary(
+                "codex",
+                SessionRecord {
+                    native_id: id.into(),
+                    title: title.into(),
+                    preview: preview.map(str::to_owned),
+                    cwd: Some(root.path().into()),
+                    created_at: None,
+                    updated_at: position as i64 + 10,
+                    source,
+                    origin: origin.map(str::to_owned),
+                    model: None,
+                    resumable: true,
+                    parent_native_id: None,
+                    internal: false,
+                },
+            );
+            thread.archived = archived;
+            core.store.mark(&thread, parent, id, title).unwrap();
+        }
+        let list = |params| core.threads(params).unwrap().threads;
+        let roots = list(ThreadsListParams::default());
+        assert_eq!(
+            roots
+                .iter()
+                .map(|thread| thread.native_id.as_str())
+                .collect::<Vec<_>>(),
+            ["root"]
+        );
+        let all = list(ThreadsListParams {
+            include_internal: Some(true),
+            include_children: Some(true),
+            ..Default::default()
+        });
+        let internal = all
+            .iter()
+            .filter(|thread| thread.internal)
+            .map(|thread| thread.native_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(internal, ["projection", "wrapper", "compact", "exec"]);
+        let exec = list(ThreadsListParams {
+            sources: Some(vec![ThreadSource::Exec]),
+            ..Default::default()
+        });
+        assert_eq!(exec[0].native_id, "exec");
+        let children = list(ThreadsListParams {
+            parent_id: Some("codex:root".into()),
+            ..Default::default()
+        });
+        assert_eq!(children.len(), 2);
+        assert!(children[1].internal);
+        assert_eq!(children[1].parent.as_ref().unwrap().thread_id, "codex:root");
+        assert_eq!(core.links().unwrap().len(), 2);
+
+        let project = core.projects().unwrap().pop().unwrap();
+        assert_eq!(
+            (project.thread_count, project.last_activity_at),
+            (7, Some(16))
+        );
+        assert_eq!(
+            (project.root_thread_count, project.last_root_activity_at),
+            (1, Some(10))
+        );
+        core.update_thread(ThreadUpdateParams {
+            thread_id: "codex:root".into(),
+            title: None,
+            archived: Some(true),
+        })
+        .unwrap();
+        let project = core.projects().unwrap().pop().unwrap();
+        assert_eq!(
+            (project.root_thread_count, project.last_root_activity_at),
+            (0, None)
+        );
+    }
+
+    #[cfg(feature = "acp")]
     #[tokio::test]
     async fn settings_add_and_remove_custom_agents_without_restart() {
         let root = tempfile::tempdir().unwrap();

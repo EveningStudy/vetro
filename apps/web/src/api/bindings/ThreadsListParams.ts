@@ -9,4 +9,8 @@ parentId?: string,
 /**
  * Include sessions that have a parent in a flat listing. Default false: they are reached through the parent.
  */
-includeChildren?: boolean, includeArchived?: boolean, limit?: number, cursor?: string, };
+includeChildren?: boolean, 
+/**
+ * Include automated or internal background sessions (`ThreadSummary.internal`). Default false.
+ */
+includeInternal?: boolean, includeArchived?: boolean, limit?: number, cursor?: string, };

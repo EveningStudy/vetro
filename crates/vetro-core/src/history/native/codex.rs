@@ -2,7 +2,7 @@ use std::io::Read;
 
 use rusqlite::{Connection, OptionalExtension, Row};
 use serde_json::json;
-use vetro_agent_api::{ItemDraft, Transcript};
+use vetro_agent_api::{codex_internal_source, ItemDraft, Transcript};
 use vetro_proto::{ContentBlock, ItemKind, ToolCall, ToolContent, ToolKind, ToolStatus};
 use vetro_store_antigravity::sqlite::open_readonly;
 
@@ -18,6 +18,7 @@ pub(super) fn inventory(root: &Path) -> Result<Inventory> {
                 .iter()
                 .filter_map(|path| file_mark(path))
                 .collect::<String>();
+            mark.push_str(":source");
             if parts
                 .iter()
                 .any(|path| path.extension().is_some_and(|ext| ext == "zst"))
@@ -91,7 +92,9 @@ fn read_state(path: &Path, files: &mut HashMap<String, NativeFile>) -> Result<()
             model: column(row, "model"),
             resumable: true,
             parent_native_id: parent,
-        };
+            internal: codex_internal_source(&src),
+        }
+        .classify("codex");
         let file = files.remove(&id);
         let path = file.as_ref().and_then(|file| file.path.clone()).or(rollout);
         let disk_mark = file.map(|file| file.mark).unwrap_or_default();
@@ -140,7 +143,7 @@ fn read_projection_inventory(path: &Path, files: &mut HashMap<String, NativeFile
         files.insert(
             id,
             NativeFile {
-                record: Some(record),
+                record: Some(record.classify("codex")),
                 mark: format!("projection:{ordinal}"),
                 archived: false,
                 path: None,
@@ -202,7 +205,9 @@ fn read_catalog(path: &Path, files: &mut HashMap<String, NativeFile>) -> Result<
             model: None,
             resumable: false,
             parent_native_id: None,
-        };
+            internal: false,
+        }
+        .classify("codex");
         files.insert(
             id,
             NativeFile {
@@ -284,6 +289,7 @@ pub(super) fn rollout_record(path: &Path, id: String) -> Result<Option<SessionRe
             Some("session_meta") => {
                 record.origin = string(payload, "originator");
                 record.source = source_kind(&payload["source"], record.origin.as_deref());
+                record.internal = codex_internal_source(&payload["source"]);
                 record.parent_native_id = parent(&payload["source"]);
                 record.created_at =
                     timestamp(&payload["timestamp"]).or_else(|| timestamp(&row["timestamp"]));
@@ -305,7 +311,7 @@ pub(super) fn rollout_record(path: &Path, id: String) -> Result<Option<SessionRe
             _ => {}
         }
     }
-    Ok(Some(record))
+    Ok(Some(record.classify("codex")))
 }
 
 fn source_kind(source: &Value, origin: Option<&str>) -> ThreadSource {

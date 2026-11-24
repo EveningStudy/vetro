@@ -455,7 +455,7 @@ impl Store {
                 Some(CliMode::Acp) => format!("{base} acp"),
                 _ => base,
             };
-            out.push(SessionRecord {
+            let record = SessionRecord {
                 native_id: id.to_owned(),
                 title,
                 preview,
@@ -467,7 +467,9 @@ impl Store {
                 model: None,
                 resumable: false,
                 parent_native_id: s.parent.clone(),
-            });
+                internal: false,
+            };
+            out.push(record.classify("antigravity"));
         }
         out.sort_by(|a, b| {
             b.updated_at

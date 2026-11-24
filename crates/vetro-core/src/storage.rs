@@ -3,7 +3,7 @@ use std::{collections::HashSet, fs, path::Path, sync::Mutex};
 use rusqlite::{
     params, Connection, ErrorCode, OptionalExtension, Row, Transaction, TransactionBehavior,
 };
-use vetro_agent_api::Result;
+use vetro_agent_api::{session_is_internal, Result};
 use vetro_proto::{rpc::SearchHit, ThreadParent, ThreadStatus, ThreadSummary};
 
 use crate::{
@@ -20,7 +20,7 @@ CREATE TEMP TABLE IF NOT EXISTS attached (id TEXT PRIMARY KEY, summary TEXT NOT 
 CREATE TABLE IF NOT EXISTS threads (
     id TEXT PRIMARY KEY, agent TEXT NOT NULL, cwd TEXT, source TEXT NOT NULL,
     updated INTEGER NOT NULL, archived INTEGER NOT NULL, summary TEXT NOT NULL,
-    hint TEXT, mark TEXT, prompt TEXT, indexed TEXT
+    hint TEXT, mark TEXT, prompt TEXT, indexed TEXT, internal INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS threads_agent ON threads(agent);
 CREATE INDEX IF NOT EXISTS threads_updated ON threads(updated DESC, id);
@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS documents (thread TEXT NOT NULL, row_id INTEGER NOT N
 ";
 
 const SUMMARY: &str = "coalesce((SELECT summary FROM attached WHERE id=t.id),t.summary), l.data,
-    (SELECT count(*) FROM links WHERE parent=t.id)";
+    (SELECT count(*) FROM links WHERE parent=t.id), t.internal";
 const JOIN: &str = "threads t LEFT JOIN links l ON l.child=t.id";
 
 #[derive(Default)]
@@ -61,10 +61,19 @@ pub(crate) struct Filter<'a> {
     pub parent: Option<&'a str>,
     pub children: bool,
     pub archived: bool,
+    pub include_internal: bool,
     pub cursor: Option<(i64, String)>,
 }
 
 pub(crate) struct Index(Mutex<Connection>);
+
+pub(crate) struct ProjectActivity {
+    pub path: String,
+    pub thread_count: u32,
+    pub last_activity_at: i64,
+    pub root_thread_count: u32,
+    pub last_root_activity_at: Option<i64>,
+}
 
 impl Index {
     pub fn temporary() -> Self {
@@ -107,8 +116,9 @@ impl Index {
             Ok(())
         };
         let connect = || {
-            let conn = Connection::open(&path)?;
+            let mut conn = Connection::open(&path)?;
             conn.execute_batch(SCHEMA)?;
+            migrate_internal(&mut conn)?;
             Ok(conn)
         };
         open()?;
@@ -143,13 +153,28 @@ impl Index {
         get(&self.0.lock().unwrap(), id)
     }
 
-    pub fn projects(&self) -> Result<Vec<(String, u32, i64)>> {
+    pub fn projects(&self, overlays: &str) -> Result<Vec<ProjectActivity>> {
         let conn = self.0.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT cwd, count(*), max(updated) FROM threads WHERE cwd IS NOT NULL GROUP BY cwd",
-        ).map_err(internal)?;
-        collect(&mut stmt, [], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        let mut stmt = conn
+            .prepare_cached(
+                "WITH project_threads AS (
+                SELECT t.cwd, t.updated, l.child IS NULL AND t.internal=0
+                    AND NOT coalesce(o.value->>'archived',t.archived) AS root
+                FROM threads t LEFT JOIN links l ON l.child=t.id
+                LEFT JOIN json_each(?1) o ON o.key=t.id WHERE t.cwd IS NOT NULL
+            )
+            SELECT cwd, count(*), max(updated), count(*) FILTER (WHERE root),
+                   max(updated) FILTER (WHERE root) FROM project_threads GROUP BY cwd",
+            )
+            .map_err(internal)?;
+        collect(&mut stmt, [overlays], |row| {
+            Ok(ProjectActivity {
+                path: row.get(0)?,
+                thread_count: row.get(1)?,
+                last_activity_at: row.get(2)?,
+                root_thread_count: row.get(3)?,
+                last_root_activity_at: row.get(4)?,
+            })
         })
     }
 
@@ -167,6 +192,8 @@ impl Index {
                AND (f.v->>'cwd' IS NULL OR t.cwd=f.v->>'cwd')
                AND (f.v->>'agents' IS NULL OR t.agent IN (SELECT value FROM json_each(f.v,'$.agents')))
                AND (f.v->>'sources' IS NULL OR t.source IN (SELECT value FROM json_each(f.v,'$.sources')))
+               AND (t.internal=0 OR f.v->>'include_internal' OR f.v->>'parent' IS NOT NULL
+                    OR 'exec' IN (SELECT value FROM json_each(f.v,'$.sources')))
                AND (CASE WHEN f.v->>'parent' IS NOT NULL THEN l.parent=f.v->>'parent'
                     ELSE f.v->>'children' OR l.parent IS NULL END)
                AND (f.v->>'cursor' IS NULL OR t.updated < f.v->>'$.cursor[0]'
@@ -236,7 +263,9 @@ impl Index {
             (Some(old), None, Some(_)) => old,
             _ => thread,
         };
-        save(&tx, chosen)?;
+        let internal_flag = classified(chosen)
+            || (chosen.live && (classified(thread) || old.as_ref().is_some_and(classified)));
+        save(&tx, chosen, internal_flag)?;
         if native.is_none() && projection.is_none() {
             if thread.live {
                 tx.execute(
@@ -402,7 +431,7 @@ impl Index {
             };
             let thread = row_summary(row).map_err(internal)?;
             if visible(&thread) {
-                let snippet: String = row.get(3).map_err(internal)?;
+                let snippet: String = row.get(4).map_err(internal)?;
                 hits.push(SearchHit {
                     thread,
                     snippet: snippet
@@ -420,8 +449,42 @@ impl Index {
     }
 }
 
-fn save(conn: &Connection, thread: &ThreadSummary) -> Result<()> {
+fn migrate_internal(conn: &mut Connection) -> rusqlite::Result<()> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let exists: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('threads') WHERE name='internal')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !exists {
+        tx.execute_batch("ALTER TABLE threads ADD COLUMN internal INTEGER NOT NULL DEFAULT 0")?;
+        let mut read = tx.prepare("SELECT id, summary FROM threads")?;
+        let mut update = tx.prepare("UPDATE threads SET internal=1 WHERE id=?1")?;
+        let mut rows = read.query([])?;
+        while let Some(row) = rows.next()? {
+            let summary = decode::<ThreadSummary>(row, 1)?;
+            if classified(&summary) {
+                update.execute([row.get_ref(0)?.as_str()?])?;
+            }
+        }
+    }
+    tx.commit()
+}
+
+pub(crate) fn classified(thread: &ThreadSummary) -> bool {
+    thread.internal
+        || session_is_internal(
+            &thread.agent_id,
+            thread.source,
+            thread.origin.as_deref(),
+            &thread.title,
+            thread.preview.as_deref(),
+        )
+}
+
+fn save(conn: &Connection, thread: &ThreadSummary, internal_flag: bool) -> Result<()> {
     let mut summary = thread.clone();
+    summary.internal = internal_flag;
     if summary.live {
         summary.live = false;
         summary.status = ThreadStatus::Idle;
@@ -429,12 +492,13 @@ fn save(conn: &Connection, thread: &ThreadSummary) -> Result<()> {
     summary.parent = None;
     summary.child_count = 0;
     conn.execute(
-        "INSERT INTO threads(id,agent,cwd,source,updated,archived,summary)
-         VALUES (?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(id) DO UPDATE SET
+        "INSERT INTO threads(id,agent,cwd,source,updated,archived,summary,internal)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(id) DO UPDATE SET
          cwd=excluded.cwd,source=excluded.source,updated=excluded.updated,archived=excluded.archived,
-         summary=excluded.summary WHERE summary<>excluded.summary",
+         summary=excluded.summary,internal=excluded.internal
+         WHERE summary<>excluded.summary OR internal<>excluded.internal",
         params![thread.id, thread.agent_id, thread.cwd, json(&thread.source)?.trim_matches('"'),
-            thread.updated_at, thread.archived, json(&summary)?],
+            thread.updated_at, thread.archived, json(&summary)?, internal_flag],
     ).map_err(internal)?;
     Ok(())
 }
@@ -635,6 +699,7 @@ fn row_summary(row: &Row<'_>) -> rusqlite::Result<ThreadSummary> {
         summary.parent = Some(decode(row, 1)?);
     }
     summary.child_count = row.get(2)?;
+    summary.internal = row.get(3)?;
     Ok(summary)
 }
 
@@ -650,4 +715,76 @@ fn decode<T: serde::de::DeserializeOwned>(row: &Row<'_>, column: usize) -> rusql
 
 fn json(value: &impl serde::Serialize) -> Result<String> {
     serde_json::to_string(value).map_err(internal)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vetro_proto::ThreadSource;
+
+    #[test]
+    fn migrates_legacy_index_in_place() {
+        let root = tempfile::tempdir().unwrap();
+        let index = Index::open(root.path()).unwrap();
+        let mut summary = crate::service::summary(
+            "codex",
+            vetro_agent_api::SessionRecord {
+                native_id: "child".into(),
+                title: "Legacy child".into(),
+                preview: None,
+                cwd: Some(root.path().into()),
+                created_at: None,
+                updated_at: 15,
+                source: ThreadSource::Exec,
+                origin: None,
+                model: None,
+                resumable: true,
+                parent_native_id: None,
+                internal: false,
+            },
+        );
+        summary.source = ThreadSource::Cli;
+        summary.internal = false;
+        summary.id = "codex:parent".into();
+        summary.native_id = "parent".into();
+        index.mark(&summary, None, "parent-mark", "Parent").unwrap();
+        summary.source = ThreadSource::Exec;
+        summary.id = "codex:child".into();
+        summary.native_id = "child".into();
+        index
+            .mark(
+                &summary,
+                Some("codex:parent"),
+                "legacy-mark",
+                &summary.title,
+            )
+            .unwrap();
+        index
+            .0
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "ALTER TABLE threads DROP COLUMN internal;
+             UPDATE threads SET summary=json_remove(summary,'$.internal');",
+            )
+            .unwrap();
+        drop(index);
+
+        let migrated = Index::open(root.path()).unwrap();
+        let child = migrated.get("codex:child").unwrap().unwrap();
+        assert!(child.internal);
+        assert_eq!(child.parent.unwrap().thread_id, "codex:parent");
+        assert!(migrated
+            .marks("codex")
+            .unwrap()
+            .iter()
+            .any(|(id, mark, _)| {
+                id == "codex:child" && mark.as_deref() == Some("legacy-mark")
+            }));
+        let hits = migrated
+            .search("Legacy child", 10, "{}", None, None, |_| true)
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].thread.internal);
+    }
 }

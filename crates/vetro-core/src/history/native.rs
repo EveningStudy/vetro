@@ -156,6 +156,7 @@ fn blank(id: String, path: &Path, title: &str) -> SessionRecord {
         model: None,
         resumable: false,
         parent_native_id: None,
+        internal: false,
     }
 }
 

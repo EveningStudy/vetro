@@ -272,19 +272,11 @@ async fn call(
             output(settings)
         }
         "prefs.get" => output(Prefs {
-            prefs: core.home.read_state(|state| {
-                state
-                    .prefs
-                    .get(client.device_key())
-                    .cloned()
-                    .unwrap_or(Value::Null)
-            }),
+            prefs: core.home.prefs(client.device_key()),
         }),
         "prefs.set" => {
             let params: Prefs = parse(params)?;
-            core.home.change_state(|state| {
-                state.prefs.insert(client.device_key().into(), params.prefs);
-            })?;
+            core.prefs_set(client.device_key(), params.prefs)?;
             empty()
         }
         "settings.update" => {

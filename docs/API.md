@@ -32,7 +32,7 @@ Unknown fields must be ignored by both sides. Timestamps are milliseconds since 
 | `projects.add` | `ProjectAddParams` | `Project` | Desktop client only. Adds a folder to Vetro's list. |
 | `projects.remove` | `ProjectAddParams` | `Empty` | Desktop client only. Removes a manually added folder. Projects discovered from sessions can only be hidden. |
 | `projects.update` | `ProjectUpdateParams` | `Project` | Vetro-local name, pin, hide. |
-| `threads.list` | `ThreadsListParams` | `ThreadsListResult` | Newest first, paged. Linked children appear when `includeChildren` is true or `parentId` is supplied. |
+| `threads.list` | `ThreadsListParams` | `ThreadsListResult` | Newest first, paged. Linked children appear when `includeChildren` is true or `parentId` is supplied. Automated/internal sessions (`internal: true`) are omitted unless `includeInternal` is true. |
 | `threads.open` | `ThreadOpenParams` | `ThreadOpenResult` | Loads items and subscribes to `thread.event`. A detached thread also gets its cached options, commands and saved choices. |
 | `threads.close` | `ThreadIdParams` | `Empty` | Unsubscribes. Does not stop the agent. |
 | `threads.items` | `ThreadItemsParams` | `ThreadItemsResult` | Older page. |

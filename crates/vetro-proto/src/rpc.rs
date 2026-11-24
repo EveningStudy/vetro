@@ -242,6 +242,8 @@ pub struct ThreadsListParams {
     pub parent_id: Option<String>,
     /// Include sessions that have a parent in a flat listing. Default false: they are reached through the parent.
     pub include_children: Option<bool>,
+    /// Include automated or internal background sessions (`ThreadSummary.internal`). Default false.
+    pub include_internal: Option<bool>,
     pub include_archived: Option<bool>,
     pub limit: Option<u32>,
     pub cursor: Option<String>,

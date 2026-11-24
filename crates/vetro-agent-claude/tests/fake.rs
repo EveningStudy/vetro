@@ -7,7 +7,7 @@ use std::{
 
 use serde_json::{json, Value};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
-use vetro_agent_api::{Agent, SessionEvent, StartRequest};
+use vetro_agent_api::{process::SpawnSpec, Agent, SessionEvent, StartRequest};
 use vetro_agent_claude::ClaudeAgent;
 use vetro_proto::{
     ContentBlock, ItemKind, RawDirection, RequestResolution, StopReason, ThreadSource,
@@ -50,7 +50,12 @@ fn main() {
 
 async fn test() {
     let temp = tempfile::tempdir().unwrap();
-    let agent = ClaudeAgent::new(env::current_exe().unwrap(), temp.path());
+    let mut spec = SpawnSpec::new(env::current_exe().unwrap());
+    spec.env.insert(
+        "ANTHROPIC_BASE_URL".into(),
+        "https://user:fake@gateway.example:8443/v1?key=fake".into(),
+    );
+    let agent = ClaudeAgent::from_spec(Some(spec), temp.path());
     let starter = agent
         .options(Some(temp.path()), &BTreeMap::new())
         .await
@@ -73,7 +78,12 @@ async fn test() {
             .iter()
             .any(|choice| choice.value == "default")));
     let info = agent.info().await;
-    assert_eq!(info.auth.account.as_deref(), Some("synthetic-plan"));
+    assert_eq!(info.auth.account.as_deref(), Some("Claude Pro"));
+    assert_eq!(info.auth.provider.as_deref(), Some("Vertex AI"));
+    assert_eq!(
+        info.auth.endpoint.as_deref(),
+        Some("https://gateway.example:8443")
+    );
     assert_eq!(info.version.as_deref(), Some("test-version"));
     assert!(info.capabilities.mid_turn_input);
 
@@ -220,7 +230,7 @@ async fn test() {
     let mut expected = PREFIX.to_vec();
     expected.extend(["--session-id", session.native_id()]);
     assert_eq!(spawn["args"], json!(expected));
-    assert_eq!(spawn["env"], json!({}));
+    assert_eq!(spawn["env"], json!({"ANTHROPIC_BASE_URL": "<redacted>"}));
     let sent: Vec<Value> = log
         .iter()
         .filter(|entry| entry.direction == RawDirection::Sent)
@@ -348,7 +358,7 @@ fn fake(args: &[String]) {
                             "models":[{"value":"haiku","displayName":"Haiku","supportedEffortLevels":["low"],"defaultEffortLevel":"low"}],
                             "commands":[{"name":"help","description":"Help","argumentHint":""}],
                             "claude_code_version":"test-version","current_permission_mode":"default",
-                            "account":{"subscriptionType":"synthetic-plan"}
+                            "account":{"subscriptionType":"pro","apiProvider":"vertex"}
                         })
                     }
                     "set_model" => {

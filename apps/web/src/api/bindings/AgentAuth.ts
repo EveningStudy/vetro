@@ -10,4 +10,12 @@ methods: Array<AuthMethod>,
 /**
  * Short human label reported by the agent (plan name, account type), if any.
  */
-account: string | null, };
+account: string | null, 
+/**
+ * Active non-default model provider or gateway configured in the agent (e.g. `magpie`, `bedrock`, `litellm`).
+ */
+provider?: string, 
+/**
+ * Sanitized endpoint host or URL (never credentials) when routing through a custom provider.
+ */
+endpoint?: string, };

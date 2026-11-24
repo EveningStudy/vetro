@@ -47,6 +47,8 @@ impl Agent for Fake {
                     description: None,
                 }],
                 account: None,
+                provider: None,
+                endpoint: None,
             },
             capabilities: AgentCapabilities {
                 resume: true,
@@ -107,6 +109,7 @@ impl Agent for Fake {
             model: None,
             resumable,
             parent_native_id: None,
+            internal: false,
         }];
         if cursor.is_none() {
             if let Ok(metadata) = std::fs::metadata(self.history_path.with_file_name("fake-child"))

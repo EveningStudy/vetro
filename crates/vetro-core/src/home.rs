@@ -164,6 +164,10 @@ impl Home {
         action(&self.state.lock().unwrap())
     }
 
+    pub(crate) fn prefs(&self, device_id: &str) -> serde_json::Value {
+        self.read_state(|state| state.prefs.get(device_id).cloned().unwrap_or_default())
+    }
+
     pub(crate) fn change_state<T>(&self, action: impl FnOnce(&mut State) -> T) -> Result<T> {
         let mut state = self.state.lock().unwrap();
         let mut next = state.clone();

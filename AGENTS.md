@@ -12,6 +12,7 @@ Read `docs/ARCHITECTURE.md` before changing the core, and `docs/API.md` before t
 4. **No orphans.** Every child process dies when Vetro exits (Windows Job Object; Unix process group).
 5. **Light.** One Rust process. No Node, Electron or bundled browser at runtime. Idle agent processes are released and resumed on demand.
 6. **Same rules for every agent.** No agent gets special restrictions or special features in the UI.
+7. **Progressive disclosure.** The primary interface surfaces only user intent, items needing human action, and final answers. Intermediate reasoning, tool logs, code diffs, linked child sessions, internal or automated sessions, and raw protocol traffic stay collapsed or inside on-demand drawers by default — nothing is hidden from inspection, and nothing competes with the conversation.
 
 ## Layout
 
