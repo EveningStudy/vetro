@@ -41,7 +41,7 @@ export const agents: AgentInfo[] = [
     installed: true,
     path: `${HOME}\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\vendor\\x86_64-pc-windows-msvc\\codex\\codex.exe`,
     version: "0.98.0",
-    auth: { state: "ok", methods: [], account: "ChatGPT Plus", provider: "magpie", endpoint: "gateway.example.dev" },
+    auth: { state: "ok", methods: [], account: "ChatGPT Plus", provider: "litellm", endpoint: "http://127.0.0.1:4000" },
     capabilities: { imageInput: true, midTurnInput: true, resume: true, listSessions: true },
     error: null,
   },
@@ -125,6 +125,18 @@ export const agentOptions: Record<string, { options: ConfigOption[]; commands: S
           choice("read-only", "Read only", "Asks before editing files or running commands"),
           choice("auto", "Auto", "Edits and runs commands in the workspace"),
           choice("full-access", "Full access", "No sandbox, no approvals"),
+        ],
+      },
+      {
+        id: "sandbox",
+        name: "Sandbox",
+        description: null,
+        category: "other",
+        currentValue: "workspace-write",
+        choices: [
+          choice("read-only", "Read only", "The agent can only read files"),
+          choice("workspace-write", "Workspace write", "Edits stay inside the workspace"),
+          choice("danger-full-access", "Full access", "No sandbox"),
         ],
       },
     ],
@@ -239,12 +251,14 @@ export const projects: Project[] = [
   { path: "D:\\Dev\\Projects\\atlas-api", name: "atlas-api", exists: true, pinned: false, hidden: false, threadCount: 0, lastActivityAt: null, rootThreadCount: 0, lastRootActivityAt: null },
   { path: "D:\\Dev\\Projects\\field-notes", name: "field-notes", exists: true, pinned: false, hidden: false, threadCount: 0, lastActivityAt: null, rootThreadCount: 0, lastRootActivityAt: null },
   { path: `${HOME}\\scratch\\tauri-spike`, name: "tauri-spike", exists: false, pinned: false, hidden: false, threadCount: 0, lastActivityAt: null, rootThreadCount: 0, lastRootActivityAt: null },
+  { path: "D:\\Dev\\Sandbox\\tmp.scratch-run", name: "tmp.scratch-run", exists: true, pinned: false, hidden: false, threadCount: 0, lastActivityAt: null, rootThreadCount: 0, lastRootActivityAt: null },
 ];
 
 const VETRO = projects[0]!.path;
 const ATLAS = projects[1]!.path;
 const NOTES = projects[2]!.path;
 const SPIKE = projects[3]!.path;
+const SCRATCH = projects[4]!.path;
 
 export interface MockThread {
   summary: ThreadSummary;
@@ -1052,6 +1066,41 @@ export function buildThreads(): MockThread[] {
       },
       "Add a nightly CI job on Windows.",
       "Added a `windows-latest` job that runs `cargo test --workspace` and the web build every night at 03:00 UTC.",
+    ),
+    simpleThread(
+      {
+        id: "codex:subAgent04d7-index-sweep",
+        agentId: "codex",
+        nativeId: "subAgent04d7-index-sweep",
+        title: "subAgent · index sweep",
+        preview: "Removed 0 stale entries",
+        cwd: VETRO,
+        updatedAt: now - 40 * MIN,
+        source: "exec",
+        origin: "codex_exec",
+        resumable: false,
+        model: "gpt-5.5-codex",
+        internal: true,
+      },
+      "Sweep the session index for stale entries and report the count.",
+      "Removed 0 stale entries; the index was already clean.",
+    ),
+    simpleThread(
+      {
+        id: "claude:scratch-9e2f",
+        agentId: "claude",
+        nativeId: "scratch-9e2f",
+        title: "Scratch: reconnecting ws client",
+        preview: "Backoff and replay work",
+        cwd: SCRATCH,
+        updatedAt: now - 12 * DAY,
+        source: "cli",
+        origin: "cli",
+        resumable: true,
+        model: "claude-sonnet-5",
+      },
+      "Wire up a reconnecting websocket client in this scratch folder.",
+      "The client reconnects with exponential backoff and replays the last subscription.",
     ),
     simpleThread(
       {

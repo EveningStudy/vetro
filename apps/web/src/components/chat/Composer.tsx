@@ -29,13 +29,18 @@ function findTrigger(text: string, caret: number): Trigger | null {
   return null;
 }
 
+function isImageFile(file: File) {
+  return file.type.startsWith("image/") || (file.type === "" && /\.(png|jpe?g|gif|webp|bmp|avif)$/i.test(file.name));
+}
+
 function readImage(file: File): Promise<Omit<Attachment, "id">> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onerror = () => reject(reader.error);
     reader.onload = () => {
       const result = String(reader.result);
-      resolve({ mimeType: file.type, data: result.slice(result.indexOf(",") + 1), url: result });
+      const inferred = /^data:(image\/[\w.+-]+)/.exec(result)?.[1];
+      resolve({ mimeType: file.type || inferred || "image/png", data: result.slice(result.indexOf(",") + 1), url: result });
     };
     reader.readAsDataURL(file);
   });
@@ -151,14 +156,18 @@ export function Composer(props: ComposerProps) {
   };
 
   const addFiles = async (list: FileList | File[]) => {
-    const images = [...list].filter((file) => file.type.startsWith("image/"));
+    const images = [...list].filter(isImageFile);
     if (images.length === 0) return;
     if (!props.imageInput) {
       toast.info(t("composer.noImages", { agent: props.agentName }));
       return;
     }
-    const read = await Promise.all(images.map(readImage));
-    setAttachments((current) => [...current, ...read.map((image) => ({ ...image, id: ++attachmentSeq }))]);
+    try {
+      const read = await Promise.all(images.map(readImage));
+      setAttachments((current) => [...current, ...read.map((image) => ({ ...image, id: ++attachmentSeq }))]);
+    } catch {
+      toast.error(t("composer.attachFailed"));
+    }
   };
 
   const hasContent = draft.trim().length > 0 || attachments.length > 0;
@@ -270,7 +279,14 @@ export function Composer(props: ComposerProps) {
           onSelect={(event) => updateTrigger(event.currentTarget.value, event.currentTarget.selectionStart)}
           onBlur={() => setTimeout(() => setTrigger(null), 120)}
           onPaste={(event) => {
-            const images = [...event.clipboardData.files].filter((file) => file.type.startsWith("image/"));
+            const data = event.clipboardData;
+            const fromFiles = [...data.files].filter(isImageFile);
+            const images =
+              fromFiles.length > 0
+                ? fromFiles
+                : [...data.items]
+                    .map((item) => (item.kind === "file" && item.type.startsWith("image/") ? item.getAsFile() : null))
+                    .filter((file): file is File => file !== null);
             if (images.length > 0) {
               event.preventDefault();
               void addFiles(images);

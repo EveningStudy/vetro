@@ -5,11 +5,8 @@ export const en = {
   "common.cancel": "Cancel",
   "common.save": "Save",
   "common.close": "Close",
-  "common.open": "Open",
   "common.loading": "Loading…",
-  "common.none": "None",
   "common.retry": "Retry",
-  "common.back": "Back",
 
   "time.now": "now",
   "time.minutes": "{n}m",
@@ -31,7 +28,6 @@ export const en = {
   "status.running": "Working",
   "status.awaiting_input": "Needs input",
   "status.error": "Failed",
-  "status.idle": "Idle",
 
   "sidebar.newThread": "New thread",
   "sidebar.search": "Search",
@@ -74,7 +70,6 @@ export const en = {
   "palette.results": "Results",
   "palette.empty": "No matching threads",
   "palette.actions": "Actions",
-  "palette.hint": "to open",
 
   "empty.title": "Pick a thread or start a new one",
   "empty.body": "Vetro shows the sessions your agents already keep, and starts new ones with the agents installed on this machine.",
@@ -110,7 +105,6 @@ export const en = {
   "item.input": "Input",
   "item.output": "Output",
   "item.exitCode": "exit {code}",
-  "item.running": "Running",
   "item.failed": "Failed",
   "item.pending": "Waiting",
   "item.delegatedTo": "Delegated to {agent}",
@@ -133,7 +127,6 @@ export const en = {
   "item.stop.max_tokens": "Hit the output limit",
   "item.stop.refusal": "Refused",
   "item.stop.error": "Ended with an error",
-  "item.files": "{n} files",
   "item.newFile": "new file",
   "item.image": "Image",
   "item.raw": "Raw",
@@ -143,7 +136,6 @@ export const en = {
   "request.answered": "Answered",
   "request.cancelled": "Cancelled",
   "request.submit": "Submit",
-  "request.other": "Other…",
   "request.otherPlaceholder": "Type your answer",
   "request.dismiss": "Dismiss",
 
@@ -155,8 +147,8 @@ export const en = {
   "composer.queue": "Send (queued until the turn ends)",
   "composer.stop": "Stop",
   "composer.attach": "Attach image",
+  "composer.attachFailed": "Could not read that image.",
   "composer.noImages": "{agent} does not accept images",
-  "composer.dropHint": "Drop images to attach",
   "composer.files": "Files",
   "composer.commands": "Commands",
   "composer.noFiles": "No matching files",
@@ -168,7 +160,6 @@ export const en = {
   "composer.addFolder": "Add folder…",
   "composer.unavailable": "Unavailable",
   "composer.needsSignIn": "Sign in required",
-  "composer.signIn": "Sign in",
   "composer.signingIn": "Signing in…",
   "composer.signInHint": "{agent} needs you to sign in. The sign-in runs inside the agent; Vetro never sees your credentials.",
   "signin.waiting": "Waiting for {agent} to finish signing in…",
@@ -292,7 +283,6 @@ export const en = {
   "pair.deviceName": "Device name",
   "pair.submit": "Connect",
   "pair.failed": "Pairing failed",
-  "pair.desktopToken": "Signing in…",
 } as const;
 
 export type MessageKey = keyof typeof en;

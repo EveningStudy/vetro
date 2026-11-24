@@ -455,7 +455,7 @@ function QuestionsForm({ item, questions, threadId }: { item: ItemOf<"request">;
         <Button size="sm" type="submit" disabled={!complete}>
           {t("request.submit")}
         </Button>
-        <Button size="sm" variant="ghost-muted" onClick={() => void actions.respond(threadId, item.requestId, { type: "cancelled" })}>
+        <Button size="sm" type="button" variant="ghost-muted" onClick={() => void actions.respond(threadId, item.requestId, { type: "cancelled" })}>
           {t("request.dismiss")}
         </Button>
       </div>
