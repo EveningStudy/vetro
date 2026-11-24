@@ -252,7 +252,10 @@ export const projects: Project[] = [
   { path: "D:\\Dev\\Projects\\field-notes", name: "field-notes", exists: true, pinned: false, hidden: false, threadCount: 0, lastActivityAt: null, rootThreadCount: 0, lastRootActivityAt: null },
   { path: `${HOME}\\scratch\\tauri-spike`, name: "tauri-spike", exists: false, pinned: false, hidden: false, threadCount: 0, lastActivityAt: null, rootThreadCount: 0, lastRootActivityAt: null },
   { path: "D:\\Dev\\Sandbox\\tmp.scratch-run", name: "tmp.scratch-run", exists: true, pinned: false, hidden: false, threadCount: 0, lastActivityAt: null, rootThreadCount: 0, lastRootActivityAt: null },
+  { path: `${HOME}\\Documents\\Codex\\2026-11-20\\regex-help`, name: "regex-help", exists: true, pinned: false, hidden: false, threadCount: 0, lastActivityAt: null, rootThreadCount: 0, lastRootActivityAt: null },
 ];
+
+const QUICK = projects[5]!.path;
 
 const VETRO = projects[0]!.path;
 const ATLAS = projects[1]!.path;
@@ -555,6 +558,7 @@ function mainThread(): MockThread {
       model: "gpt-5.5-codex",
       archived: false,
       internal: false,
+      pinned: false,
     },
     items: b.items,
     options: structuredClone(agentOptions.codex!.options),
@@ -696,6 +700,7 @@ function childThreads(): { parent: MockThread; child: MockThread } {
       model: "claude-opus-5-5",
       archived: false,
       internal: false,
+      pinned: false,
     },
     items: b.items,
     options: structuredClone(agentOptions.claude!.options),
@@ -723,6 +728,7 @@ function childThreads(): { parent: MockThread; child: MockThread } {
       model: "gpt-5.5-codex",
       archived: false,
       internal: false,
+      pinned: false,
     },
     items: c.items,
     options: structuredClone(agentOptions.codex!.options),
@@ -781,6 +787,7 @@ function pendingThread(): MockThread {
       model: "claude-opus-5-5",
       archived: false,
       internal: false,
+      pinned: false,
     },
     items: b.items,
     options: structuredClone(agentOptions.devin!.options),
@@ -850,6 +857,7 @@ function questionThread(): MockThread {
       model: "claude-sonnet-5",
       archived: false,
       internal: false,
+      pinned: false,
     },
     items: b.items,
     options: structuredClone(agentOptions.claude!.options),
@@ -916,6 +924,7 @@ function longThread(): MockThread {
       model: "gpt-5.5-codex",
       archived: false,
       internal: false,
+      pinned: false,
     },
     items: b.items,
     options: structuredClone(agentOptions.codex!.options),
@@ -926,7 +935,7 @@ function longThread(): MockThread {
 }
 
 function simpleThread(
-  summary: Omit<ThreadSummary, "status" | "live" | "parent" | "childCount" | "archived" | "createdAt" | "internal"> & Partial<ThreadSummary>,
+  summary: Omit<ThreadSummary, "status" | "live" | "parent" | "childCount" | "archived" | "createdAt" | "internal" | "pinned"> & Partial<ThreadSummary>,
   user: string,
   reply: string,
   extra?: (b: Builder) => void,
@@ -944,6 +953,7 @@ function simpleThread(
       childCount: 0,
       archived: false,
       internal: false,
+      pinned: false,
       createdAt: summary.updatedAt - 3 * MIN,
       ...summary,
     },
@@ -964,6 +974,23 @@ export function buildThreads(): MockThread[] {
     parent,
     child,
     longThread(),
+    simpleThread(
+      {
+        id: "codex:019a-quick-regex",
+        agentId: "codex",
+        nativeId: "019a-quick-regex",
+        title: "Regex for ISO dates",
+        preview: "Use a lookahead",
+        cwd: QUICK,
+        updatedAt: now - 5 * HOUR,
+        source: "desktop",
+        origin: "Codex Desktop",
+        resumable: true,
+        model: "gpt-5.5-codex",
+      },
+      "Write a regex that matches ISO dates.",
+      "Use a four-digit year, two-digit month and day, then add a lookahead for a time.",
+    ),
     simpleThread(
       {
         id: "antigravity:conv-3f9e-landing",
@@ -1132,6 +1159,8 @@ export const settings: Settings = {
   idleReleaseMinutes: 15,
   closeToTray: true,
   port: 47600,
+  externalEditor: null,
+  notificationsEnabled: true,
 };
 
 export const remote: RemoteStatus = {

@@ -3,6 +3,7 @@ import type { JsonValue, ToolContent } from "~/api/types";
 import { useT } from "~/i18n";
 import { cn } from "~/lib/utils";
 import { relativeToCwd } from "~/lib/format";
+import { OpenFileButton } from "../OpenFileButton";
 import { useHighlighter } from "./highlight";
 import { useThreadCwd } from "./threadContext";
 
@@ -97,7 +98,7 @@ function languageOf(path: string) {
   return path.split(".").at(-1);
 }
 
-export function DiffBlock({ block }: { block: Extract<ToolContent, { type: "diff" }> }) {
+export function DiffBlock({ block, bare }: { block: Extract<ToolContent, { type: "diff" }>; bare?: boolean }) {
   const t = useT();
   const highlight = useHighlighter();
   const cwd = useThreadCwd();
@@ -106,17 +107,20 @@ export function DiffBlock({ block }: { block: Extract<ToolContent, { type: "diff
   const additions = lines.filter((line) => line.kind === "add").length;
   const deletions = lines.filter((line) => line.kind === "del").length;
   return (
-    <div className={panel}>
-      <div className="flex items-center gap-2 border-b px-3 py-1.5 text-xs">
+    <div className={bare ? "min-w-0 overflow-hidden" : panel}>
+      {bare ? null : (
+      <div className="group/diff-header flex items-center gap-2 border-b px-3 py-1.5 text-xs">
         <span className="min-w-0 flex-1 truncate font-mono text-foreground" title={block.path}>
           {relativeToCwd(block.path, cwd)}
         </span>
+        <OpenFileButton cwd={cwd} path={block.path} className="opacity-0 group-hover/diff-header:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100" />
         {block.oldText === null && !block.unified ? <span className="text-muted-foreground">{t("item.newFile")}</span> : null}
         <span className="shrink-0 font-mono tabular-nums">
           <span className="text-diff-addition-foreground">+{additions}</span>{" "}
           <span className="text-diff-deletion-foreground">−{deletions}</span>
         </span>
       </div>
+      )}
       <div className={cn(mono, "max-h-96 overflow-auto py-1")}>
         {lines.map((line, index) => {
           const html = line.kind === "hunk" || !highlight ? null : highlight(line.text, lang);

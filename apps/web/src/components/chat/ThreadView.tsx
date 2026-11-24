@@ -1,33 +1,45 @@
 import {
   ArchiveIcon,
   ArchiveRestoreIcon,
+  ChevronDownIcon,
+  CodeIcon,
   CopyIcon,
+  CornerDownRightIcon,
   CornerLeftUpIcon,
-  FolderIcon,
+  FileDiffIcon,
+  FolderOpenIcon,
+  GitBranchIcon,
   LockIcon,
   MoreHorizontalIcon,
   PencilIcon,
+  PinIcon,
+  PinOffIcon,
   ScrollTextIcon,
+  SquareArrowOutUpRightIcon,
+  SquareTerminalIcon,
   UnplugIcon,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { ThreadSummary } from "~/api/types";
 import { useT } from "~/i18n";
-import { tildePath } from "~/lib/format";
-import { copyText } from "~/lib/utils";
-import { type OpenThread, actions, useStore } from "~/state/store";
+import { basename, tildePath } from "~/lib/format";
+import { cn, copyText, isMac } from "~/lib/utils";
+import { type OpenThread, actions, useIsLocalDesktop, useStore } from "~/state/store";
 import { toast } from "~/state/toast";
 import { AgentIcon } from "../AgentIcon";
+import { useEditedFiles } from "../drawer/ChangesPanel";
 import { RightDrawer } from "../RightDrawer";
 import { MobileSidebarButton } from "../Shell";
 import { Button } from "../ui/button";
-import { Dialog, DialogDescription, DialogPopup, DialogTitle, Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger, Tip } from "../ui/overlay";
-import { Badge, Input, Spinner } from "../ui/primitives";
+import { Menu, MenuItem, MenuItemHint, MenuPopup, MenuSeparator, MenuTrigger, Tip } from "../ui/overlay";
+import { Badge, Spinner } from "../ui/primitives";
 import { RpcFailure } from "~/api/protocol";
 import { Composer } from "./Composer";
+import { RequestItem } from "./Items";
 import { SignInCard } from "./NewThread";
 import { prepare } from "./OptionPicker";
 import { sourceLabel } from "./sourceLabel";
-import { Timeline } from "./Timeline";
+import { Timeline, isPendingRequest } from "./Timeline";
 
 let expandChildrenOnLoad = new URLSearchParams(location.search).get("expand") === "children";
 
@@ -77,9 +89,14 @@ export function ThreadView({ threadId }: { threadId: string }) {
           </div>
         ) : (
           <>
-            <Timeline threadId={threadId} />
+            <Timeline threadId={threadId} dockRequests />
             <div className="shrink-0 px-(--workspace-gutter) pb-[calc(0.75rem+env(safe-area-inset-bottom))]">
-              {thread ? <ThreadComposer thread={thread} /> : null}
+              {thread ? (
+                <>
+                  <DockedRequests thread={thread} />
+                  <ThreadComposer thread={thread} />
+                </>
+              ) : null}
             </div>
           </>
         )}
@@ -89,7 +106,49 @@ export function ThreadView({ threadId }: { threadId: string }) {
   );
 }
 
-const rawLogShortcut = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘⇧L" : "Ctrl+Shift+L";
+const rawLogShortcut = isMac ? "⌘⇧L" : "Ctrl+Shift+L";
+
+function editable(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) return null;
+  if (target.isContentEditable) return target;
+  return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement ? target : null;
+}
+
+/** Questions and approvals the agent is waiting on sit above the composer, outside the scroller,
+ * so reading back through the thread never hides them. */
+function DockedRequests({ thread }: { thread: OpenThread }) {
+  const pending = useMemo(() => thread.items.filter(isPendingRequest), [thread.items]);
+  const threadId = thread.summary.id;
+  const first = pending[0];
+
+  useEffect(() => {
+    if (!first || first.body.type !== "permission") return;
+    const options = first.body.options;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey || !/^[1-9]$/.test(event.key)) return;
+      const field = editable(event.target);
+      if (field && !(field instanceof HTMLTextAreaElement && field.value === "")) return;
+      if (document.querySelector('[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"]')) return;
+      const option = options[Number(event.key) - 1];
+      if (!option) return;
+      event.preventDefault();
+      void actions.respond(threadId, first.requestId, { type: "selected", optionId: option.id });
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [first, threadId]);
+
+  if (pending.length === 0) return null;
+  return (
+    <div className="mx-auto mb-2 flex max-h-[45vh] w-full max-w-(--chat-content-max-width) flex-col gap-2 overflow-y-auto">
+      {pending.map((item, index) => (
+        <div key={item.id} data-item-id={item.id} data-docked-request>
+          <RequestItem item={item} threadId={threadId} shortcuts={index === 0} />
+        </div>
+      ))}
+    </div>
+  );
+}
 
 function BareHeader() {
   return (
@@ -100,34 +159,190 @@ function BareHeader() {
   );
 }
 
+function InlineTitle({ threadId, title, editing, onEditingChange }: { threadId: string; title: string; editing: boolean; onEditingChange: (editing: boolean) => void }) {
+  const t = useT();
+  const settled = useRef(false);
+  useEffect(() => {
+    if (editing) settled.current = false;
+  }, [editing]);
+  const finish = (value: string | null) => {
+    if (settled.current) return;
+    settled.current = true;
+    const next = value?.trim();
+    if (next && next !== title) void actions.updateThread(threadId, { title: next });
+    onEditingChange(false);
+  };
+  if (editing) {
+    return (
+      <input
+        autoFocus
+        defaultValue={title}
+        aria-label={t("thread.renameTitle")}
+        onFocus={(event) => event.currentTarget.select()}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            finish(event.currentTarget.value);
+          } else if (event.key === "Escape") {
+            event.preventDefault();
+            event.stopPropagation();
+            finish(null);
+          }
+        }}
+        onBlur={(event) => finish(event.currentTarget.value)}
+        className="-mx-1 h-6 min-w-0 flex-1 rounded-sm bg-transparent px-1 text-sm font-medium text-foreground outline-none ring-2 ring-ring/40"
+      />
+    );
+  }
+  return (
+    <h1
+      onDoubleClick={() => onEditingChange(true)}
+      title={t("thread.renameDblClick")}
+      className="min-w-0 cursor-default truncate text-sm font-medium text-foreground select-none"
+    >
+      {title}
+    </h1>
+  );
+}
+
+const Dot = () => <span className="text-muted-foreground/50">·</span>;
+
+function useChildren(threadId: string) {
+  const threads = useStore((s) => s.threads);
+  return useMemo(() => Object.values(threads).filter((thread) => thread.parent?.threadId === threadId), [threads, threadId]);
+}
+
+function SubSessionsPill({ summary }: { summary: ThreadSummary }) {
+  const t = useT();
+  const children = useChildren(summary.id);
+  const drawer = useStore((s) => s.rightDrawer);
+  const count = Math.max(summary.childCount, children.length);
+  if (count === 0) return null;
+  const active =
+    (drawer?.kind === "children" && drawer.parentId === summary.id) ||
+    (drawer?.kind === "child" && children.some((child) => child.id === drawer.threadId));
+  const running = children.some((child) => child.status === "running" || child.status === "awaiting_input");
+  return (
+    <Tip label={t("thread.subSessions", { n: count })}>
+      <Button
+        size="xs"
+        variant="ghost-muted"
+        aria-pressed={active}
+        className={cn("tabular-nums", active && "bg-accent text-foreground")}
+        onClick={() => {
+          if (active) actions.closeDrawer();
+          else if (count === 1 && children.length === 1) actions.openChildDrawer(children[0]!.id, summary.id);
+          else actions.openChildrenDrawer(summary.id);
+        }}
+      >
+        {running ? <Spinner className="size-3 text-info-foreground" /> : <CornerDownRightIcon />}
+        {count}
+      </Button>
+    </Tip>
+  );
+}
+
+function ChangesPill({ threadId, cwd }: { threadId: string; cwd: string | null }) {
+  const t = useT();
+  const status = useStore((s) => (cwd ? s.gitStatus[cwd] : undefined));
+  const edited = useEditedFiles(threadId);
+  const active = useStore((s) => s.rightDrawer?.kind === "changes");
+  const git = status?.isRepo ? status.files : [];
+  const fromGit = git.length > 0;
+  const count = fromGit ? git.length : edited.length;
+  if (count === 0) return null;
+  const additions = fromGit ? git.reduce((sum, file) => sum + (file.additions ?? 0), 0) : edited.reduce((sum, file) => sum + file.additions, 0);
+  const deletions = fromGit ? git.reduce((sum, file) => sum + (file.deletions ?? 0), 0) : edited.reduce((sum, file) => sum + file.deletions, 0);
+  return (
+    <Tip label={t("changes.pill", { n: count })}>
+      <Button
+        size="xs"
+        variant="ghost-muted"
+        aria-pressed={active}
+        className={cn("tabular-nums", active && "bg-accent text-foreground")}
+        onClick={actions.toggleChangesDrawer}
+      >
+        <FileDiffIcon />
+        <span>{count}</span>
+        {additions + deletions > 0 ? (
+          <span className="font-mono text-[11px] max-sm:hidden">
+            <span className="text-diff-addition-foreground">+{additions}</span> <span className="text-diff-deletion-foreground">−{deletions}</span>
+          </span>
+        ) : null}
+      </Button>
+    </Tip>
+  );
+}
+
+function OpenMenu({ cwd }: { cwd: string }) {
+  const t = useT();
+  return (
+    <Menu>
+      <MenuTrigger render={<Button size="xs" variant="ghost-muted" aria-label={t("open.menu")} />}>
+        <SquareArrowOutUpRightIcon />
+        <span className="max-sm:hidden">{t("open.menu")}</span>
+        <ChevronDownIcon className="size-3 opacity-70 max-sm:hidden" />
+      </MenuTrigger>
+      <MenuPopup align="end" className="w-52">
+        <MenuItem onClick={() => void actions.openExternal(cwd, "editor")}>
+          <CodeIcon />
+          {t("open.editor")}
+        </MenuItem>
+        <MenuItem onClick={() => void actions.openExternal(cwd, "terminal")}>
+          <SquareTerminalIcon />
+          {t("open.terminal")}
+        </MenuItem>
+        <MenuItem onClick={() => void actions.openExternal(cwd, "folder")}>
+          <FolderOpenIcon />
+          {t("open.folder")}
+        </MenuItem>
+      </MenuPopup>
+    </Menu>
+  );
+}
+
 function ThreadHeader({ thread, threadId }: { thread: OpenThread | undefined; threadId: string }) {
   const t = useT();
   const summary = useStore((s) => s.threads[threadId] ?? s.open[threadId]?.summary)!;
   const agent = useStore((s) => s.agents.find((a) => a.id === summary.agentId));
   const home = useStore((s) => s.app?.homeDir);
   const parent = useStore((s) => (summary.parent ? s.threads[summary.parent.threadId] : undefined));
-  const [renaming, setRenaming] = useState(false);
+  const projectName = useStore((s) => {
+    const cwd = summary.cwd?.replace(/[\\/]+$/, "").toLowerCase();
+    return cwd ? s.projects.find((project) => project.path.replace(/[\\/]+$/, "").toLowerCase() === cwd)?.name : undefined;
+  });
+  const local = useIsLocalDesktop();
+  const [editing, setEditing] = useState(false);
+  const cwd = summary.cwd?.trim() ? summary.cwd : null;
+  const branch = useStore((s) => (cwd ? s.gitStatus[cwd]?.branch : null));
+  const idle = summary.status === "idle" || summary.status === "error";
   const modelOption = thread?.options.find((option) => option.category === "model");
   const model = (modelOption && prepare(modelOption).find((choice) => choice.value === modelOption.currentValue)?.label) ?? summary.model;
+  const source = summary.source !== "vetro" ? t("thread.from", { source: sourceLabel(summary, agent?.name, t) }) : null;
+
+  useEffect(() => {
+    if (cwd && idle) void actions.refreshGitStatus(cwd);
+  }, [cwd, idle]);
+
+  const where = (
+    <span className="flex flex-col gap-0.5">
+      {cwd ? <span className="font-mono text-[11px] break-all">{tildePath(cwd, home)}</span> : null}
+      {source ? <span className="text-muted-foreground">{source}</span> : null}
+    </span>
+  );
 
   return (
     <header className="flex h-(--workspace-topbar-height) shrink-0 items-center gap-2 px-(--workspace-gutter)">
       <MobileSidebarButton />
       <div className="flex min-w-0 flex-1 flex-col justify-center">
         <div className="flex min-w-0 items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setRenaming(true)}
-            className="group/title inline-flex min-w-0 items-center gap-1 rounded-sm text-left focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            <h1 className="min-w-0 truncate text-sm font-medium text-foreground">{summary.title}</h1>
-            <PencilIcon className="size-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover/title:opacity-100" />
-          </button>
-          {summary.live ? (
+          <InlineTitle threadId={threadId} title={summary.title} editing={editing} onEditingChange={setEditing} />
+          {summary.live && !editing ? (
             <Tip label={t("thread.live")}>
               <span className="size-1.5 shrink-0 rounded-full bg-success" aria-label={t("thread.live")} />
             </Tip>
           ) : null}
+          {summary.pinned && !editing ? <PinIcon className="size-3 shrink-0 text-muted-foreground/70" aria-label={t("thread.pinned")} /> : null}
         </div>
         <div className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
           {summary.parent ? (
@@ -135,42 +350,43 @@ function ThreadHeader({ thread, threadId }: { thread: OpenThread | undefined; th
               <button
                 type="button"
                 onClick={() => actions.navigate({ view: "thread", threadId: summary.parent!.threadId })}
-                className="inline-flex min-w-0 max-w-56 shrink items-center gap-1 rounded-sm hover:text-foreground"
+                className="inline-flex min-w-0 max-w-48 shrink items-center gap-1 rounded-sm hover:text-foreground"
                 title={t("thread.openParent")}
               >
                 <CornerLeftUpIcon className="size-3 shrink-0" />
                 {parent ? <AgentIcon agentId={parent.agentId} className="size-3" /> : null}
                 <span className="truncate">{parent?.title ?? t("thread.parent")}</span>
               </button>
-              <span className="text-muted-foreground/50">·</span>
+              <Dot />
             </>
           ) : null}
-          <AgentIcon agentId={summary.agentId} className="size-3" />
-          <span className="shrink-0">{agent?.name ?? summary.agentId}</span>
-          {model ? (
-            <>
-              <span className="text-muted-foreground/50">·</span>
-              <span className="max-w-32 shrink-0 truncate">{model}</span>
-            </>
-          ) : null}
-          {summary.cwd ? (
-            <>
-              <span className="text-muted-foreground/50 max-sm:hidden">·</span>
-              <span className="inline-flex min-w-0 items-center gap-1 max-sm:hidden" title={summary.cwd}>
-                <FolderIcon className="size-3 shrink-0" />
-                <span className="truncate font-mono text-[11px]">{tildePath(summary.cwd, home)}</span>
+          <span className="inline-flex h-4.5 min-w-0 shrink-0 items-center gap-1 rounded-[5px] bg-foreground/[0.05] px-1.5 dark:bg-foreground/[0.07]">
+            <AgentIcon agentId={summary.agentId} className="size-3" />
+            <span className="shrink-0">{agent?.name ?? summary.agentId}</span>
+            {model ? (
+              <>
+                <span className="text-muted-foreground/50">·</span>
+                <span className="max-w-32 truncate">{model}</span>
+              </>
+            ) : null}
+          </span>
+          {cwd || source ? (
+            <Tip label={where}>
+              <span className="inline-flex min-w-0 items-center gap-1.5 max-sm:hidden">
+                {cwd ? <span className="min-w-0 truncate">{projectName ?? basename(cwd)}</span> : null}
+                {!cwd && source ? <span className="truncate text-muted-foreground/80">{source}</span> : null}
               </span>
-            </>
+            </Tip>
           ) : null}
-          {summary.source !== "vetro" ? (
-            <>
-              <span className="text-muted-foreground/50 max-sm:hidden">·</span>
-              <span className="shrink-0 text-muted-foreground/80 max-sm:hidden">{t("thread.from", { source: sourceLabel(summary, agent?.name, t) })}</span>
-            </>
+          {branch ? (
+            <span className="inline-flex min-w-0 shrink items-center gap-1 max-sm:hidden" title={branch}>
+              <GitBranchIcon className="size-3 shrink-0" />
+              <span className="truncate font-mono text-[11px]">{branch}</span>
+            </span>
           ) : null}
         </div>
       </div>
-      <div className="flex shrink-0 items-center gap-1.5">
+      <div className="flex shrink-0 items-center gap-1">
         {!summary.resumable ? (
           <Tip label={t("thread.readOnlyHint", { agent: agent?.name ?? summary.agentId })}>
             <Badge variant="warning">
@@ -180,18 +396,28 @@ function ThreadHeader({ thread, threadId }: { thread: OpenThread | undefined; th
           </Tip>
         ) : null}
         {summary.archived ? <Badge variant="secondary">{t("sidebar.archived")}</Badge> : null}
+        <SubSessionsPill summary={summary} />
+        <ChangesPill threadId={threadId} cwd={cwd} />
+        {local && cwd ? <OpenMenu cwd={cwd} /> : null}
         <Menu>
           <MenuTrigger render={<Button size="icon-sm" variant="ghost" aria-label={t("thread.more")} />}>
             <MoreHorizontalIcon />
           </MenuTrigger>
-          <MenuPopup align="end" className="w-60">
-            <MenuItem onClick={() => setRenaming(true)}>
+          <MenuPopup align="end" className="w-64">
+            <MenuItem onClick={() => setEditing(true)}>
               <PencilIcon />
               {t("thread.rename")}
             </MenuItem>
-            <MenuItem onClick={() => void actions.updateThread(threadId, { archived: !summary.archived })}>
-              {summary.archived ? <ArchiveRestoreIcon /> : <ArchiveIcon />}
-              {summary.archived ? t("thread.unarchive") : t("thread.archive")}
+            <MenuItem onClick={() => void actions.updateThread(threadId, { pinned: !summary.pinned })}>
+              {summary.pinned ? <PinOffIcon /> : <PinIcon />}
+              {summary.pinned ? t("thread.unpin") : t("thread.pin")}
+            </MenuItem>
+            <MenuItem onClick={() => void actions.updateThread(threadId, { archived: !summary.archived })} className="items-start py-1.5">
+              {summary.archived ? <ArchiveRestoreIcon className="mt-0.5" /> : <ArchiveIcon className="mt-0.5" />}
+              <span className="min-w-0">
+                {summary.archived ? t("thread.unarchive") : t("thread.archive")}
+                <MenuItemHint>{t("thread.archiveHint")}</MenuItemHint>
+              </span>
             </MenuItem>
             <MenuItem onClick={actions.openRawDrawer}>
               <ScrollTextIcon />
@@ -209,6 +435,12 @@ function ThreadHeader({ thread, threadId }: { thread: OpenThread | undefined; th
               <CopyIcon />
               {t("thread.copyId")}
             </MenuItem>
+            {cwd ? (
+              <MenuItem onClick={() => void copyText(cwd).then(() => toast.success(t("common.copied")))}>
+                <CopyIcon />
+                {t("open.copyPath")}
+              </MenuItem>
+            ) : null}
             <MenuItem
               disabled={!summary.live}
               onClick={() => void actions.detach(threadId).then(() => toast.info(t("thread.detached")))}
@@ -216,45 +448,19 @@ function ThreadHeader({ thread, threadId }: { thread: OpenThread | undefined; th
               <UnplugIcon />
               {t("thread.detach")}
             </MenuItem>
+            {cwd || source ? (
+              <>
+                <MenuSeparator />
+                <div className="flex flex-col gap-0.5 px-2 py-1.5 text-xs text-muted-foreground">
+                  {source ? <span>{source}</span> : null}
+                  {cwd ? <span className="font-mono text-[11px] break-all text-muted-foreground/80">{tildePath(cwd, home)}</span> : null}
+                </div>
+              </>
+            ) : null}
           </MenuPopup>
         </Menu>
       </div>
-      <RenameDialog open={renaming} onOpenChange={setRenaming} threadId={threadId} title={summary.title} />
     </header>
-  );
-}
-
-function RenameDialog({ open, onOpenChange, threadId, title }: { open: boolean; onOpenChange: (open: boolean) => void; threadId: string; title: string }) {
-  const t = useT();
-  const [value, setValue] = useState(title);
-  useEffect(() => {
-    if (open) setValue(title);
-  }, [open, title]);
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogPopup className="max-w-md">
-        <form
-          className="flex flex-col gap-4 p-5"
-          onSubmit={(event) => {
-            event.preventDefault();
-            if (value.trim()) void actions.updateThread(threadId, { title: value.trim() });
-            onOpenChange(false);
-          }}
-        >
-          <div className="flex flex-col gap-1 pe-8">
-            <DialogTitle>{t("thread.renameTitle")}</DialogTitle>
-            <DialogDescription>{t("thread.renameHint")}</DialogDescription>
-          </div>
-          <Input autoFocus value={value} onChange={(event) => setValue(event.target.value)} />
-          <div className="flex justify-end gap-2">
-            <Button variant="ghost" onClick={() => onOpenChange(false)}>
-              {t("common.cancel")}
-            </Button>
-            <Button type="submit">{t("common.save")}</Button>
-          </div>
-        </form>
-      </DialogPopup>
-    </Dialog>
   );
 }
 

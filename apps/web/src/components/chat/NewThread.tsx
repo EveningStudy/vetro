@@ -4,13 +4,14 @@ import { client } from "~/api/client";
 import type { AgentInfo, ConfigOption, SlashCommand } from "~/api/types";
 import { useT } from "~/i18n";
 import { shortVersion } from "~/lib/format";
+import { cn } from "~/lib/utils";
 import { getPrefs, savePrefs } from "~/state/prefs";
 import { actions, useStore } from "~/state/store";
 import { errorMessage, toast } from "~/state/toast";
 import { AgentIcon } from "../AgentIcon";
 import { SignInMethods } from "../SignIn";
 import { FolderBrowser } from "../FolderBrowser";
-import { MobileSidebarButton } from "../Shell";
+import { MobileSidebarButton, useSidebarCollapsed } from "../Shell";
 import { Menu, MenuGroupLabel, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from "../ui/overlay";
 import { Spinner } from "../ui/primitives";
 import { Composer } from "./Composer";
@@ -136,10 +137,11 @@ export function NewThread({ projectPath, agentId: routeAgent }: { projectPath: s
   const remoteClient = useStore((s) => s.app?.remoteClient ?? false);
   const unknownFolder = remoteClient && !!effectiveCwd && !projects.some((p) => p.path === effectiveCwd);
   const agentName = agent?.name ?? "";
+  const sidebarCollapsed = useSidebarCollapsed();
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <header className="flex h-(--workspace-topbar-height) shrink-0 items-center gap-2 px-(--workspace-gutter) md:hidden">
+      <header className={cn("flex h-(--workspace-topbar-height) shrink-0 items-center gap-2 px-(--workspace-gutter)", !sidebarCollapsed && "md:hidden")}>
         <MobileSidebarButton />
       </header>
       <div className="flex min-h-0 flex-1 flex-col justify-center overflow-y-auto px-(--workspace-gutter) pb-[calc(1rem+env(safe-area-inset-bottom))] max-sm:justify-end">

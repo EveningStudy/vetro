@@ -31,7 +31,7 @@ import { cn, copyText } from "~/lib/utils";
 import { actions, useStore } from "~/state/store";
 import { AgentIcon } from "../AgentIcon";
 import { Button } from "../ui/button";
-import { Spinner } from "../ui/primitives";
+import { Kbd, Spinner } from "../ui/primitives";
 import { Markdown } from "./Markdown";
 import { DiffBlock, JsonBlock, TerminalBlock, TextBlock, diffStats } from "./ToolDetails";
 import { WorkLogDetails, WorkLogRow } from "./WorkLog";
@@ -330,7 +330,7 @@ function resolutionLabel(item: ItemOf<"request">, t: Translate) {
   return t("request.chosen", { label: option?.label ?? resolution.optionId });
 }
 
-export const RequestItem = memo(function RequestItem({ item, threadId }: { item: ItemOf<"request">; threadId: string }) {
+export const RequestItem = memo(function RequestItem({ item, threadId, shortcuts }: { item: ItemOf<"request">; threadId: string; shortcuts?: boolean }) {
   const t = useT();
   if (item.resolution) {
     const rejected =
@@ -375,6 +375,9 @@ export const RequestItem = memo(function RequestItem({ item, threadId }: { item:
               onClick={() => void actions.respond(threadId, item.requestId, { type: "selected", optionId: option.id })}
             >
               {option.label}
+              {shortcuts && index < 9 ? (
+                <Kbd className="-me-1 h-4 min-w-4 bg-current/12 px-1 text-[10px] text-current opacity-70 max-sm:hidden">{index + 1}</Kbd>
+              ) : null}
             </Button>
           ))}
         </div>

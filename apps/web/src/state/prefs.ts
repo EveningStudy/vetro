@@ -2,7 +2,7 @@ import { create } from "zustand";
 
 export type ThemePref = "light" | "dark" | "system";
 export type LanguagePref = "en" | "zh" | "system";
-export type ActivityDays = 7 | 14 | 30 | 0;
+export type SidebarScope = "all" | "vetro";
 
 /** Everything the UI remembers per device. The core stores it (`prefs.get` / `prefs.set`) so it
  * survives web views without persistent storage; localStorage is only a cache for a fast start. */
@@ -13,7 +13,11 @@ export interface PrefsData {
   projectExpanded?: Record<string, boolean>;
   filters?: { agentIds: string[]; sources: string[]; showArchived: boolean; showHidden: boolean; showInternal?: boolean };
   /** Projects active within this many days stay in the main list; 0 keeps all of them. */
-  sidebarActivityDays?: ActivityDays;
+  sidebarActivityDays?: number;
+  sidebarCollapsed?: boolean;
+  /** `vetro` limits the sidebar to threads started in Vetro; search still covers everything. */
+  sidebarScope?: SidebarScope;
+  drawerWidth?: number;
   hideDisabledAgentHistory?: boolean;
   lastAgent?: string;
   lastProject?: string;
@@ -83,21 +87,36 @@ function pick<T extends string>(value: string | undefined, allowed: readonly T[]
   return allowed.includes(chosen as T) ? (chosen as T) : fallback;
 }
 
-const ACTIVITY_DAYS: readonly ActivityDays[] = [7, 14, 30, 0];
+export const DRAWER_MIN = 340;
+export const DRAWER_MAX = 960;
+
+export function clampDrawerWidth(width: number) {
+  return Math.round(Math.min(DRAWER_MAX, Math.max(DRAWER_MIN, width)));
+}
+
+function activityDays(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.round(value) : 14;
+}
 
 interface UiPrefs {
   theme: ThemePref;
   language: LanguagePref;
-  sidebarActivityDays: ActivityDays;
+  sidebarActivityDays: number;
   hideDisabledAgentHistory: boolean;
+  sidebarCollapsed: boolean;
+  sidebarScope: SidebarScope;
+  drawerWidth: number;
 }
 
 function derived(prefs: PrefsData): UiPrefs {
   return {
     theme: pick(prefs.theme, THEMES, "system", query.get("theme")),
     language: pick(prefs.language, LANGUAGES, "system", query.get("lang")),
-    sidebarActivityDays: ACTIVITY_DAYS.includes(prefs.sidebarActivityDays as ActivityDays) ? prefs.sidebarActivityDays! : 14,
+    sidebarActivityDays: activityDays(prefs.sidebarActivityDays),
     hideDisabledAgentHistory: prefs.hideDisabledAgentHistory ?? true,
+    sidebarCollapsed: prefs.sidebarCollapsed ?? false,
+    sidebarScope: prefs.sidebarScope === "vetro" ? "vetro" : "all",
+    drawerWidth: clampDrawerWidth(typeof prefs.drawerWidth === "number" ? prefs.drawerWidth : 480),
   };
 }
 
@@ -134,7 +153,8 @@ export function resolvedLanguage(pref: LanguagePref): "en" | "zh" {
   return navigator.languages.some((lang) => lang.toLowerCase().startsWith("zh")) ? "zh" : "en";
 }
 
-export function setSidebarActivityDays(sidebarActivityDays: ActivityDays) {
+export function setSidebarActivityDays(days: number) {
+  const sidebarActivityDays = activityDays(days);
   savePrefs({ sidebarActivityDays });
   usePrefs.setState({ sidebarActivityDays });
 }
@@ -142,4 +162,20 @@ export function setSidebarActivityDays(sidebarActivityDays: ActivityDays) {
 export function setHideDisabledAgentHistory(hideDisabledAgentHistory: boolean) {
   savePrefs({ hideDisabledAgentHistory });
   usePrefs.setState({ hideDisabledAgentHistory });
+}
+
+export function setSidebarCollapsed(sidebarCollapsed: boolean) {
+  savePrefs({ sidebarCollapsed });
+  usePrefs.setState({ sidebarCollapsed });
+}
+
+export function setSidebarScope(sidebarScope: SidebarScope) {
+  savePrefs({ sidebarScope });
+  usePrefs.setState({ sidebarScope });
+}
+
+export function setDrawerWidth(width: number) {
+  const drawerWidth = clampDrawerWidth(width);
+  savePrefs({ drawerWidth });
+  usePrefs.setState({ drawerWidth });
 }

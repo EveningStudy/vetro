@@ -1,8 +1,9 @@
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
-import { CircleAlertIcon, CircleCheckIcon, InfoIcon, PanelLeftIcon, WifiOffIcon, XIcon } from "lucide-react";
+import { CircleAlertIcon, CircleCheckIcon, InfoIcon, PanelLeftIcon, PanelLeftOpenIcon, WifiOffIcon, XIcon } from "lucide-react";
 import { useEffect } from "react";
 import { useT } from "~/i18n";
 import { cn } from "~/lib/utils";
+import { usePrefs } from "~/state/prefs";
 import { actions, useStore } from "~/state/store";
 import { dismiss, useToasts } from "~/state/toast";
 import { CommandPalette } from "./CommandPalette";
@@ -12,19 +13,36 @@ import { NewThread } from "./chat/NewThread";
 import { ThreadView } from "./chat/ThreadView";
 import { SidebarContent } from "./sidebar/Sidebar";
 import { Button } from "./ui/button";
+import { Tip } from "./ui/overlay";
 
+/** Whether page headers need to show on desktop to hold the expand-sidebar button. */
+export function useSidebarCollapsed() {
+  return usePrefs((s) => s.sidebarCollapsed);
+}
+
+/** Opens the drawer sidebar on small screens and, when the desktop sidebar is collapsed, expands it. */
 export function MobileSidebarButton({ className }: { className?: string }) {
   const t = useT();
+  const collapsed = useSidebarCollapsed();
   return (
-    <Button
-      size="icon-sm"
-      variant="ghost"
-      className={cn("-ms-1.5 md:hidden", className)}
-      aria-label={t("sidebar.toggle")}
-      onClick={() => useStore.setState({ mobileSidebarOpen: true })}
-    >
-      <PanelLeftIcon />
-    </Button>
+    <>
+      <Button
+        size="icon-sm"
+        variant="ghost"
+        className={cn("-ms-1.5 md:hidden", className)}
+        aria-label={t("sidebar.toggle")}
+        onClick={() => useStore.setState({ mobileSidebarOpen: true })}
+      >
+        <PanelLeftIcon />
+      </Button>
+      {collapsed ? (
+        <Tip label={t("sidebar.expand")} side="bottom">
+          <Button size="icon-sm" variant="ghost" className={cn("-ms-1.5 max-md:hidden", className)} aria-label={t("sidebar.expand")} onClick={actions.toggleSidebar}>
+            <PanelLeftOpenIcon />
+          </Button>
+        </Tip>
+      ) : null}
+    </>
   );
 }
 
@@ -83,6 +101,7 @@ function overlayOpen() {
 
 export function Shell() {
   const route = useStore((s) => s.route);
+  const collapsed = useSidebarCollapsed();
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -107,8 +126,18 @@ export function Shell() {
 
   return (
     <div className="flex h-dvh min-h-0 w-full">
-      <aside data-app-sidebar className="hidden h-full w-64 shrink-0 border-r border-sidebar-border bg-sidebar text-sidebar-foreground md:block">
-        <SidebarContent />
+      <aside
+        data-app-sidebar
+        data-collapsed={collapsed || undefined}
+        inert={collapsed}
+        className={cn(
+          "hidden h-full shrink-0 overflow-hidden border-sidebar-border bg-sidebar text-sidebar-foreground transition-[width,border-color] duration-200 ease-out md:block",
+          collapsed ? "w-0 border-r-0" : "w-64 border-r",
+        )}
+      >
+        <div className="h-full w-64">
+          <SidebarContent />
+        </div>
       </aside>
       <MobileSidebar />
       <main className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-background">

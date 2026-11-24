@@ -6,7 +6,9 @@ import type {
   AppInfo,
   ConfigOption,
   ContentBlock,
+  GitStatusResult,
   Item,
+  OpenTarget,
   Project,
   RemoteStatus,
   RequestResolution,
@@ -18,7 +20,8 @@ import type {
   ThreadSummary,
   ThreadUsage,
 } from "~/api/types";
-import { connectPrefs, getPrefs, onPrefsLoaded, type PrefsData, savePrefs } from "./prefs";
+import { translate } from "~/i18n";
+import { connectPrefs, getPrefs, onPrefsLoaded, type PrefsData, resolvedLanguage, savePrefs, setSidebarCollapsed, usePrefs } from "./prefs";
 import { errorMessage, toast } from "./toast";
 
 export interface OpenThread {
@@ -40,7 +43,11 @@ export type Route =
 
 export type SettingsSection = "agents" | "remote" | "appearance" | "about";
 
-export type RightDrawer = { kind: "raw" } | { kind: "child"; threadId: string };
+export type RightDrawer =
+  | { kind: "raw" }
+  | { kind: "changes" }
+  | { kind: "children"; parentId: string }
+  | { kind: "child"; threadId: string; fromParentId?: string };
 
 export interface Filters {
   agentIds: string[];
@@ -73,6 +80,10 @@ interface State {
   /** Per project: undefined = not paged yet, null = all of it loaded, string = more after this. */
   projectCursors: Record<string, string | null>;
   loadingMore: boolean;
+  /** Threads that finished while the user was looking elsewhere; cleared when the thread is opened. */
+  unreadCompleted: Record<string, boolean>;
+  /** Read-only Git summary per working directory, fetched when a thread opens or a turn ends. */
+  gitStatus: Record<string, GitStatusResult>;
 }
 
 export function routeFromLocation(): Route {
@@ -104,6 +115,12 @@ function routeToUrl(route: Route) {
   return `${path}${search ? `?${search}` : ""}`;
 }
 
+function initialDrawer(panel: string | null): RightDrawer | null {
+  if (panel === "raw") return { kind: "raw" };
+  if (panel === "changes") return { kind: "changes" };
+  return null;
+}
+
 export const useStore = create<State>(() => ({
   connection: "connecting",
   app: null,
@@ -117,7 +134,7 @@ export const useStore = create<State>(() => ({
   route: routeFromLocation(),
   filters: { agentIds: [], sources: [], showArchived: false, showHidden: false, showInternal: false, ...(getPrefs().filters as Partial<Filters> | undefined) },
   projectExpanded: getPrefs().projectExpanded ?? {},
-  rightDrawer: new URLSearchParams(location.search).get("panel") === "raw" ? { kind: "raw" } : null,
+  rightDrawer: initialDrawer(new URLSearchParams(location.search).get("panel")),
   paletteOpen: new URLSearchParams(location.search).get("palette") === "1",
   mobileSidebarOpen: new URLSearchParams(location.search).get("sidebar") === "1",
   drafts: {},
@@ -125,6 +142,8 @@ export const useStore = create<State>(() => ({
   threadsCursor: null,
   projectCursors: {},
   loadingMore: false,
+  unreadCompleted: {},
+  gitStatus: {},
 }));
 
 const set = useStore.setState;
@@ -148,7 +167,49 @@ function patchOpen(threadId: string, patch: (thread: OpenThread) => Partial<Open
   set({ open: { ...get().open, [threadId]: { ...thread, ...patch(thread) } } });
 }
 
+const BUSY = new Set<ThreadSummary["status"]>(["running", "awaiting_input"]);
+
+function isThreadVisible(threadId: string) {
+  const route = get().route;
+  return route.view === "thread" && route.threadId === threadId && !document.hidden;
+}
+
+function notify(thread: ThreadSummary, key: "notify.finished" | "notify.needsInput") {
+  const { app, settings } = get();
+  if (!app || app.remoteClient || settings?.notificationsEnabled === false) return;
+  const lang = resolvedLanguage(usePrefs.getState().language);
+  void client()
+    .request("app.notify", { title: thread.title, body: translate(lang, key), threadId: thread.id })
+    .catch(() => undefined);
+}
+
+/** Status transitions of threads the user is not looking at: mark finished ones unread and ask the
+ * desktop for a notification. */
+function noticeTransitions(threads: ThreadSummary[]) {
+  let unread: Record<string, boolean> | null = null;
+  for (const thread of threads) {
+    const before = get().threads[thread.id] ?? get().open[thread.id]?.summary;
+    if (!before || before.status === thread.status || thread.parent || isThreadVisible(thread.id)) continue;
+    if (thread.status === "idle" && BUSY.has(before.status)) {
+      unread ??= { ...get().unreadCompleted };
+      unread[thread.id] = true;
+      notify(thread, "notify.finished");
+    } else if (thread.status === "awaiting_input") {
+      notify(thread, "notify.needsInput");
+    }
+  }
+  if (unread) set({ unreadCompleted: unread });
+}
+
+function clearUnread(threadId: string) {
+  if (!get().unreadCompleted[threadId]) return;
+  const unreadCompleted = { ...get().unreadCompleted };
+  delete unreadCompleted[threadId];
+  set({ unreadCompleted });
+}
+
 function mergeSummaries(threads: ThreadSummary[]) {
+  noticeTransitions(threads);
   const next = { ...get().threads };
   for (const thread of threads) next[thread.id] = thread;
   const open = { ...get().open };
@@ -218,6 +279,9 @@ function handleEvent(event: ServerEvent) {
     case "remote.updated":
       set({ remote: event.data.status });
       break;
+    case "app.navigate":
+      actions.navigate({ view: "thread", threadId: event.data.threadId });
+      break;
     case "index.progress":
       break;
   }
@@ -256,6 +320,7 @@ async function loadChildren(threadId: string) {
     limit: 100,
   });
   mergeSummaries(page.threads);
+  return page.threads;
 }
 
 async function loadPrefs() {
@@ -301,13 +366,23 @@ export function startSync() {
   window.addEventListener("popstate", () => {
     const route = routeFromLocation();
     set({ route, mobileSidebarOpen: false, ...(leavesChildDrawer(get().route, route) ? { rightDrawer: null } : {}) });
+    if (route.view === "thread") clearUnread(route.threadId);
   });
+  const seen = () => {
+    const route = get().route;
+    if (route.view === "thread" && !document.hidden) clearUnread(route.threadId);
+  };
+  document.addEventListener("visibilitychange", seen);
+  window.addEventListener("focus", seen);
 }
 
 function leavesChildDrawer(from: Route, to: Route) {
-  if (get().rightDrawer?.kind !== "child") return false;
+  const kind = get().rightDrawer?.kind;
+  if (kind !== "child" && kind !== "children") return false;
   return from.view !== to.view || (from.view === "thread" && to.view === "thread" && from.threadId !== to.threadId);
 }
+
+const gitInflight = new Map<string, Promise<GitStatusResult | null>>();
 
 const opening = new Map<string, Promise<void>>();
 const refs = new Map<string, number>();
@@ -322,14 +397,41 @@ export const actions = {
     if (replace) history.replaceState(null, "", url);
     else if (url !== `${location.pathname}${location.search}`) history.pushState(null, "", url);
     set({ route, mobileSidebarOpen: false, ...(leavesChildDrawer(get().route, route) ? { rightDrawer: null } : {}) });
+    if (route.view === "thread") clearUnread(route.threadId);
   },
 
   openRawDrawer() {
     set({ rightDrawer: { kind: "raw" } });
   },
 
-  openChildDrawer(threadId: string) {
-    set({ rightDrawer: { kind: "child", threadId } });
+  openChangesDrawer() {
+    set({ rightDrawer: { kind: "changes" } });
+  },
+
+  toggleChangesDrawer() {
+    set({ rightDrawer: get().rightDrawer?.kind === "changes" ? null : { kind: "changes" } });
+  },
+
+  openChildrenDrawer(parentId: string) {
+    set({ rightDrawer: { kind: "children", parentId } });
+    void loadChildren(parentId).catch(() => undefined);
+  },
+
+  openChildDrawer(threadId: string, fromParentId?: string) {
+    set({ rightDrawer: fromParentId ? { kind: "child", threadId, fromParentId } : { kind: "child", threadId } });
+  },
+
+  /** Every session linked to a parent, including ones no tool call points at. */
+  fetchChildren(parentId: string): Promise<ThreadSummary[]> {
+    return loadChildren(parentId);
+  },
+
+  toggleSidebar() {
+    setSidebarCollapsed(!usePrefs.getState().sidebarCollapsed);
+  },
+
+  markSeen(threadId: string) {
+    clearUnread(threadId);
   },
 
   closeDrawer() {
@@ -471,13 +573,34 @@ export const actions = {
     }
   },
 
-  async updateThread(threadId: string, patch: { title?: string; archived?: boolean }) {
+  async updateThread(threadId: string, patch: { title?: string; archived?: boolean; pinned?: boolean }) {
     try {
       const { thread } = await client().request("threads.update", { threadId, ...patch });
       mergeSummaries([thread]);
     } catch (error) {
       toast.error(errorMessage(error));
     }
+  },
+
+  refreshGitStatus(cwd: string): Promise<GitStatusResult | null> {
+    const inflight = gitInflight.get(cwd);
+    if (inflight) return inflight;
+    const promise = client()
+      .request("workspace.gitStatus", { cwd })
+      .then((status) => {
+        set({ gitStatus: { ...get().gitStatus, [cwd]: status } });
+        return status;
+      })
+      .catch(() => null)
+      .finally(() => gitInflight.delete(cwd));
+    gitInflight.set(cwd, promise);
+    return promise;
+  },
+
+  async openExternal(cwd: string, target: OpenTarget, path?: string, line?: number) {
+    await client()
+      .request("workspace.openExternal", { cwd, target, ...(path ? { path } : {}), ...(line ? { line } : {}) })
+      .catch((error) => toast.error(errorMessage(error)));
   },
 
   async detach(threadId: string) {
@@ -579,4 +702,9 @@ export function useHiddenFilter() {
   const showHidden = useStore((s) => s.filters.showHidden);
   const hidden = new Set(projects.filter((project) => project.hidden).map((project) => normalizePath(project.path)));
   return (thread: ThreadSummary) => showHidden || !hidden.has(normalizePath(thread.cwd));
+}
+
+/** The desktop's own window, not a paired phone: only it may open folders, editors and terminals. */
+export function useIsLocalDesktop() {
+  return useStore((s) => s.app !== null && !s.app.remoteClient);
 }

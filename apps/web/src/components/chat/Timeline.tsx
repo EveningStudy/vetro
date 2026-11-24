@@ -14,6 +14,13 @@ const INITIAL_WINDOW = 120;
 const PAGE = 80;
 const BOTTOM_SLACK = 48;
 
+/** Where the reader left each thread, so coming back does not jump to the bottom. */
+const scrollMemory = new Map<string, { top: number; atBottom: boolean; start: number | null }>();
+
+export function isPendingRequest(item: Item): item is ItemOf<"request"> {
+  return item.type === "request" && item.resolution === null;
+}
+
 function isLogRow(item: Item) {
   return (
     item.type === "reasoning" ||
@@ -214,15 +221,21 @@ function WorkGroup({ items, live, threadId }: { items: Item[]; live: boolean; th
   );
 }
 
-function TimelineRows({ items, threadId }: { items: Item[]; threadId: string }) {
+function TimelineRows({ items, threadId, dockRequests }: { items: Item[]; threadId: string; dockRequests: boolean }) {
   const cwd = useStore((s) => s.open[threadId]?.summary.cwd ?? null);
   const running = useStore((s) => {
     const status = s.open[threadId]?.summary.status;
     return status === "running" || status === "awaiting_input";
   });
   const segments = useMemo(
-    () => segment(items.filter((item) => item.type !== "agent_message" || item.streaming || item.text.trim() !== ""), running),
-    [items, running],
+    () =>
+      segment(
+        items.filter(
+          (item) => (item.type !== "agent_message" || item.streaming || item.text.trim() !== "") && !(dockRequests && isPendingRequest(item)),
+        ),
+        running,
+      ),
+    [items, running, dockRequests],
   );
   return (
     <ThreadCwdContext value={cwd}>
@@ -243,21 +256,23 @@ function TimelineRows({ items, threadId }: { items: Item[]; threadId: string }) 
 
 /** A thread's items. The timeline owns the scroller: it windows long threads, loads older
  * pages on demand and stays pinned to the bottom while streaming unless the user scrolled up. */
-export function Timeline({ threadId, footer }: { threadId: string; footer?: React.ReactNode }) {
-  return <ScrollingTimeline key={threadId} threadId={threadId} footer={footer} />;
+export function Timeline({ threadId, footer, dockRequests = false }: { threadId: string; footer?: React.ReactNode; dockRequests?: boolean }) {
+  return <ScrollingTimeline key={threadId} threadId={threadId} footer={footer} dockRequests={dockRequests} />;
 }
 
-function ScrollingTimeline({ threadId, footer }: { threadId: string; footer?: React.ReactNode }) {
+function ScrollingTimeline({ threadId, footer, dockRequests }: { threadId: string; footer?: React.ReactNode; dockRequests: boolean }) {
   const t = useT();
   const thread = useStore((s) => s.open[threadId]);
   const items = useMemo(() => thread?.items ?? [], [thread?.items]);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
-  const atBottomRef = useRef(true);
+  const [memory] = useState(() => scrollMemory.get(threadId));
+  const atBottomRef = useRef(memory?.atBottom ?? true);
+  const restoredRef = useRef(false);
   const anchorRef = useRef<{ height: number; top: number } | null>(null);
-  const [atBottom, setAtBottom] = useState(true);
-  const [startOrdinal, setStartOrdinal] = useState<number | null>(null);
+  const [atBottom, setAtBottom] = useState(memory?.atBottom ?? true);
+  const [startOrdinal, setStartOrdinal] = useState<number | null>(memory?.start ?? null);
 
   const effectiveStart = startOrdinal ?? items[Math.max(0, items.length - INITIAL_WINDOW)]?.ordinal ?? 0;
   const firstVisible = items.findIndex((item) => item.ordinal >= effectiveStart);
@@ -296,10 +311,20 @@ function ScrollingTimeline({ threadId, footer }: { threadId: string; footer?: Re
     scroller.scrollTop = anchor.top + (scroller.scrollHeight - anchor.height);
   }, [effectiveStart, items.length]);
 
+  const loaded = !!thread;
   useLayoutEffect(() => {
     const scroller = scrollerRef.current;
-    if (scroller) scroller.scrollTop = scroller.scrollHeight;
-  }, []);
+    if (!scroller || restoredRef.current) return;
+    if (memory && !memory.atBottom) {
+      if (!loaded) return;
+      scroller.scrollTop = memory.top;
+    } else scroller.scrollTop = scroller.scrollHeight;
+    if (loaded) restoredRef.current = true;
+  }, [loaded, memory]);
+
+  useEffect(() => {
+    scrollMemory.set(threadId, { ...(scrollMemory.get(threadId) ?? { top: 0, atBottom: true }), start: startOrdinal });
+  }, [threadId, startOrdinal]);
 
   useEffect(() => {
     const content = contentRef.current;
@@ -343,6 +368,7 @@ function ScrollingTimeline({ threadId, footer }: { threadId: string; footer?: Re
           const el = event.currentTarget;
           const bottom = el.scrollHeight - el.scrollTop - el.clientHeight < BOTTOM_SLACK;
           atBottomRef.current = bottom;
+          if (restoredRef.current) scrollMemory.set(threadId, { top: el.scrollTop, atBottom: bottom, start: startOrdinal });
           if (bottom !== atBottom) setAtBottom(bottom);
         }}
         className="min-h-0 flex-1 overflow-y-auto overscroll-contain [overflow-anchor:none] [scrollbar-gutter:stable]"
@@ -365,7 +391,7 @@ function ScrollingTimeline({ threadId, footer }: { threadId: string; footer?: Re
             <div className="py-16 text-center text-sm text-muted-foreground">{t("thread.empty")}</div>
           ) : (
             <Fragment>
-              <TimelineRows items={visible} threadId={threadId} />
+              <TimelineRows items={visible} threadId={threadId} dockRequests={dockRequests} />
             </Fragment>
           )}
           {footer}

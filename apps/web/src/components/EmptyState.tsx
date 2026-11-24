@@ -1,17 +1,18 @@
 import { SquarePenIcon } from "lucide-react";
 import { useT } from "~/i18n";
-import { isMac } from "~/lib/utils";
 import { actions } from "~/state/store";
-import { MobileSidebarButton } from "./Shell";
+import { cn, isMac } from "~/lib/utils";
+import { MobileSidebarButton, useSidebarCollapsed } from "./Shell";
 import { Button } from "./ui/button";
 import { Kbd } from "./ui/primitives";
 import { VetroMark } from "./VetroMark";
 
 export function EmptyState() {
   const t = useT();
+  const collapsed = useSidebarCollapsed();
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <header className="flex h-(--workspace-topbar-height) shrink-0 items-center px-(--workspace-gutter) md:hidden">
+      <header className={cn("flex h-(--workspace-topbar-height) shrink-0 items-center px-(--workspace-gutter)", !collapsed && "md:hidden")}>
         <MobileSidebarButton />
       </header>
       <div className="flex flex-1 flex-col items-center justify-center gap-4 px-6 text-center">

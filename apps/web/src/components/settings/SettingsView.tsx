@@ -18,12 +18,13 @@ import { useT } from "~/i18n";
 import { relativeTime, shortVersion } from "~/lib/format";
 import { cn } from "~/lib/utils";
 import {
-  type ActivityDays,
   type LanguagePref,
+  type SidebarScope,
   type ThemePref,
   setHideDisabledAgentHistory,
   setLanguage,
   setSidebarActivityDays,
+  setSidebarScope,
   setTheme,
   usePrefs,
 } from "~/state/prefs";
@@ -36,6 +37,7 @@ import { QrCodeSvg } from "../QrCode";
 import { MobileSidebarButton } from "../Shell";
 import { useNow } from "../hooks";
 import { Button } from "../ui/button";
+import { Menu, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from "../ui/overlay";
 import { Badge, Input, Label, Spinner, Switch, Textarea } from "../ui/primitives";
 
 const SECTIONS: { id: SettingsSection; icon: typeof BotIcon }[] = [
@@ -475,11 +477,115 @@ function Segmented<T extends string>({ value, options, onChange }: { value: T; o
   );
 }
 
+const PRESET_DAYS = [7, 14, 30, 0];
+
+function ActivityWindow() {
+  const t = useT();
+  const days = usePrefs((s) => s.sidebarActivityDays);
+  const [custom, setCustom] = useState(!PRESET_DAYS.includes(days));
+  const [draft, setDraft] = useState(String(days));
+  useEffect(() => setDraft(String(days)), [days]);
+  const commit = () => {
+    const value = Math.round(Number(draft));
+    if (Number.isFinite(value) && value > 0 && value !== days) setSidebarActivityDays(Math.min(value, 3650));
+    else setDraft(String(days));
+  };
+  return (
+    <div className="flex flex-wrap items-center justify-end gap-2">
+      {custom ? (
+        <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+          <Input
+            type="number"
+            min={1}
+            max={3650}
+            value={draft}
+            aria-label={t("settings.activityCustomDays")}
+            onChange={(event) => setDraft(event.target.value)}
+            onBlur={commit}
+            onKeyDown={(event) => event.key === "Enter" && commit()}
+            className="h-7 w-16 text-right tabular-nums sm:h-7"
+          />
+          {t("settings.activityDaysUnit")}
+        </span>
+      ) : null}
+      <Segmented<string>
+        value={custom ? "custom" : String(days)}
+        onChange={(value) => {
+          if (value === "custom") {
+            setCustom(true);
+            return;
+          }
+          setCustom(false);
+          setSidebarActivityDays(Number(value));
+        }}
+        options={[
+          { value: "7", label: t("settings.activityDays", { n: 7 }) },
+          { value: "14", label: t("settings.activityDays", { n: 14 }) },
+          { value: "30", label: t("settings.activityDays", { n: 30 }) },
+          { value: "0", label: t("settings.activityAll") },
+          { value: "custom", label: t("settings.activityCustom") },
+        ]}
+      />
+    </div>
+  );
+}
+
+const EDITORS = ["auto", "cursor", "code", "zed", "system"] as const;
+
+function EditorSelect({ value, disabled, onChange }: { value: string | null; disabled: boolean; onChange: (value: string | null) => void }) {
+  const t = useT();
+  const current = value ?? "auto";
+  const known = (EDITORS as readonly string[]).includes(current);
+  const label = (id: string) => t(`settings.editor.${id as (typeof EDITORS)[number]}`);
+  return (
+    <Menu>
+      <MenuTrigger disabled={disabled} render={<Button size="sm" variant="outline" className="min-w-32 justify-between" />}>
+        <span className="truncate">{known ? label(current) : current}</span>
+        <ChevronDownIcon className="size-3.5 opacity-70" />
+      </MenuTrigger>
+      <MenuPopup align="end" className="w-44">
+        <MenuRadioGroup value={current} onValueChange={(next: string) => onChange(next === "auto" ? null : next)}>
+          {EDITORS.map((id) => (
+            <MenuRadioItem key={id} value={id}>
+              {label(id)}
+            </MenuRadioItem>
+          ))}
+        </MenuRadioGroup>
+      </MenuPopup>
+    </Menu>
+  );
+}
+
+function WorkspaceSettings() {
+  const t = useT();
+  const { settings, update } = useSettings();
+  const remoteClient = useStore((s) => s.app?.remoteClient ?? false);
+  return (
+    <>
+      <h3 className="mt-6 mb-2 text-sm font-medium text-muted-foreground">{t("settings.workspaceNotifications")}</h3>
+      {remoteClient ? <p className="mb-2 text-xs text-muted-foreground">{t("settings.desktopOnly")}</p> : null}
+      <Group>
+        <Row label={t("settings.externalEditor")} hint={t("settings.externalEditorHint")}>
+          <EditorSelect value={settings?.externalEditor ?? null} disabled={remoteClient || !settings} onChange={(externalEditor) => void update({ externalEditor })} />
+        </Row>
+        <Row label={t("settings.notifications")} hint={t("settings.notificationsHint")}>
+          <Switch
+            checked={settings?.notificationsEnabled ?? true}
+            disabled={remoteClient || !settings}
+            aria-label={t("settings.notifications")}
+            onCheckedChange={(notificationsEnabled) => void update({ notificationsEnabled })}
+          />
+        </Row>
+      </Group>
+    </>
+  );
+}
+
 function AppearanceSection() {
   const t = useT();
   const theme = usePrefs((s) => s.theme);
   const language = usePrefs((s) => s.language);
-  const activityDays = usePrefs((s) => s.sidebarActivityDays);
+  const scope = usePrefs((s) => s.sidebarScope);
   const hideDisabled = usePrefs((s) => s.hideDisabledAgentHistory);
   const showInternal = useStore((s) => s.filters.showInternal);
   return (
@@ -511,17 +617,18 @@ function AppearanceSection() {
       </Group>
       <h3 className="mt-6 mb-2 text-sm font-medium text-muted-foreground">{t("settings.sidebarHistory")}</h3>
       <Group>
-        <Row label={t("settings.activityWindow")} hint={t("settings.activityWindowHint")}>
-          <Segmented<string>
-            value={String(activityDays)}
-            onChange={(value) => setSidebarActivityDays(Number(value) as ActivityDays)}
+        <Row label={t("settings.sidebarScope")} hint={t("settings.sidebarScopeHint")}>
+          <Segmented<SidebarScope>
+            value={scope}
+            onChange={setSidebarScope}
             options={[
-              { value: "7", label: t("settings.activityDays", { n: 7 }) },
-              { value: "14", label: t("settings.activityDays", { n: 14 }) },
-              { value: "30", label: t("settings.activityDays", { n: 30 }) },
-              { value: "0", label: t("settings.activityAll") },
+              { value: "all", label: t("sidebar.scopeAll") },
+              { value: "vetro", label: t("sidebar.scopeVetro") },
             ]}
           />
+        </Row>
+        <Row label={t("settings.activityWindow")} hint={t("settings.activityWindowHint")}>
+          <ActivityWindow />
         </Row>
         <Row label={t("settings.hideDisabledHistory")} hint={t("settings.hideDisabledHistoryHint")}>
           <Switch checked={hideDisabled} aria-label={t("settings.hideDisabledHistory")} onCheckedChange={setHideDisabledAgentHistory} />
@@ -530,6 +637,7 @@ function AppearanceSection() {
           <Switch checked={showInternal} aria-label={t("settings.showInternal")} onCheckedChange={(checked) => actions.setFilters({ showInternal: checked })} />
         </Row>
       </Group>
+      <WorkspaceSettings />
     </section>
   );
 }

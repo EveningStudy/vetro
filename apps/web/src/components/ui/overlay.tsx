@@ -1,10 +1,12 @@
 // Tooltip, Menu, Popover and Dialog styling adapted from T3 Code's components/ui (MIT).
+import { ContextMenu as ContextMenuPrimitive } from "@base-ui/react/context-menu";
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { Menu as MenuPrimitive } from "@base-ui/react/menu";
 import { Popover as PopoverPrimitive } from "@base-ui/react/popover";
 import { Tooltip as TooltipPrimitive } from "@base-ui/react/tooltip";
 import { CheckIcon, XIcon } from "lucide-react";
 import type * as React from "react";
+import { useEffect, useRef, useState } from "react";
 import { cn } from "~/lib/utils";
 
 export const TooltipProvider = TooltipPrimitive.Provider;
@@ -107,6 +109,64 @@ export function MenuGroupLabel({ className, ...props }: React.ComponentProps<"di
 
 export function MenuSeparator({ className }: { className?: string }) {
   return <MenuPrimitive.Separator className={cn("mx-2 my-1 h-px bg-border", className)} />;
+}
+
+function Lazy({ render }: { render: () => React.ReactNode }) {
+  return <>{render()}</>;
+}
+
+/** Right-click (or long-press) menu anchored at the cursor. `content` only runs while the menu is
+ * open, so wrapping many rows stays cheap. Closes on outside click, Escape, scroll or resize. */
+export function ContextMenu({
+  children,
+  content,
+  className,
+  disabled,
+}: {
+  children: React.ReactElement;
+  content: () => React.ReactNode;
+  className?: string;
+  disabled?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const popupRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: Event) => {
+      if (event.target instanceof Node && popupRef.current?.contains(event.target)) return;
+      setOpen(false);
+    };
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", close);
+    window.addEventListener("blur", close);
+    return () => {
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("resize", close);
+      window.removeEventListener("blur", close);
+    };
+  }, [open]);
+  return (
+    <ContextMenuPrimitive.Root open={open} onOpenChange={setOpen} disabled={disabled}>
+      <ContextMenuPrimitive.Trigger render={children} />
+      <ContextMenuPrimitive.Portal>
+        <ContextMenuPrimitive.Positioner collisionPadding={8} className="z-[130]">
+          <ContextMenuPrimitive.Popup
+            ref={popupRef}
+            className={cn(popupClass, "min-w-[min(13rem,calc(100vw-2rem))] max-w-[min(20rem,calc(100vw-2rem))]", className)}
+          >
+            <div className="max-h-(--available-height) w-full overflow-y-auto p-1">
+              <Lazy render={content} />
+            </div>
+          </ContextMenuPrimitive.Popup>
+        </ContextMenuPrimitive.Positioner>
+      </ContextMenuPrimitive.Portal>
+    </ContextMenuPrimitive.Root>
+  );
+}
+
+/** A menu item with a muted second line explaining what the action does (or does not) touch. */
+export function MenuItemHint({ children }: { children: React.ReactNode }) {
+  return <span className="block text-2xs leading-tight text-muted-foreground">{children}</span>;
 }
 
 export const Popover = PopoverPrimitive.Root;

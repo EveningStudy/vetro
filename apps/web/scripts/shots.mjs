@@ -57,6 +57,8 @@ const shots = [
   ["question-request", `/t/${QUESTION}?theme=light`, desktop],
   ["child-session-expanded", `/t/${PARENT}?theme=dark&expand=children`, desktop],
   ["raw-log-panel", `/t/${MAIN}?theme=dark&panel=raw`, desktop],
+  ["changes-panel", `/t/${PARENT}?theme=light&panel=changes`, desktop, [{ type: "wait", ms: 300 }, { type: "focus", selector: "[data-right-drawer] [role=button]" }, { type: "key", key: "Enter" }, { type: "wait", ms: 500 }]],
+  ["sidebar-vetro-scope", `/t/${MAIN}?theme=dark`, desktop, [{ type: "click", text: "Vetro" }, { type: "wait", ms: 300 }]],
   ["long-thread", `/t/${LONG}?theme=dark`, desktop],
   ["read-only", `/t/${READONLY}?theme=light`, desktop],
   ["palette", `/t/${MAIN}?theme=dark&palette=1`, desktop, [{ type: "text", text: "raw" }, { type: "wait", ms: 600 }]],
@@ -184,7 +186,7 @@ async function capture(name, path, view, actions = []) {
       if (action.type === "focus")
         await cdp("Runtime.evaluate", { expression: `document.querySelector(${JSON.stringify(action.selector)})?.focus()` }, sessionId);
       if (action.type === "click")
-        await cdp("Runtime.evaluate", { expression: `[...document.querySelectorAll("button")].find((b) => b.textContent.trim() === ${JSON.stringify(action.text)})?.click()` }, sessionId);
+        await cdp("Runtime.evaluate", { expression: `[...document.querySelectorAll("button")].find((b) => [...b.childNodes].filter((n) => n.nodeName !== "KBD").map((n) => n.textContent).join("").trim() === ${JSON.stringify(action.text)})?.click()` }, sessionId);
       if (action.type === "text") await cdp("Input.insertText", { text: action.text }, sessionId);
       if (action.type === "key") {
         const key = { key: action.key, code: action.key, windowsVirtualKeyCode: action.key === "Enter" ? 13 : 0 };

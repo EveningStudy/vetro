@@ -32,6 +32,30 @@ import {
   settings as settingsFixture,
 } from "./fixtures";
 
+const MOCK_GIT_FILES = [
+  { path: "apps/web/src/components/RawLogPanel.tsx", status: "modified", additions: 14, deletions: 3 },
+  { path: "apps/web/src/components/drawer/ChangesPanel.tsx", status: "untracked", additions: null, deletions: null },
+  { path: "docs/screenshot.png", status: "added", additions: null, deletions: null },
+];
+
+const MOCK_DIFF = `diff --git a/apps/web/src/components/RawLogPanel.tsx b/apps/web/src/components/RawLogPanel.tsx
+--- a/apps/web/src/components/RawLogPanel.tsx
++++ b/apps/web/src/components/RawLogPanel.tsx
+@@ -1,5 +1,7 @@
+ import { CopyIcon, RefreshCwIcon, XIcon } from "lucide-react";
+-import { memo, useEffect, useState } from "react";
++import { memo, useCallback, useEffect, useRef, useState } from "react";
+ import { client } from "~/api/client";
++import type { RawEntry } from "~/api/types";
++import { useT } from "~/i18n";
+ import { clockTime } from "~/lib/format";
+`;
+
+const MOCK_NEW_FILE = `export function ChangesPanel() {
+  return null;
+}
+`;
+
 type Run = { cancelled: boolean; resolveRequest?: (optionId: string) => void };
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -350,6 +374,7 @@ export class MockTransport implements Transport {
         model: model?.currentValue ?? null,
         archived: false,
         internal: false,
+        pinned: false,
       },
       items: [],
       options,
@@ -584,6 +609,7 @@ export class MockTransport implements Transport {
       const thread = this.thread(params.threadId);
       if (params.title !== undefined) thread.summary.title = params.title;
       if (params.archived !== undefined) thread.summary.archived = params.archived;
+      if (params.pinned !== undefined) thread.summary.pinned = params.pinned;
       this.threadEvent(params.threadId, { type: "summary", thread: thread.summary });
       this.emit({ event: "threads.upserted", data: { threads: [thread.summary] } });
       return { thread: thread.summary };
@@ -596,6 +622,22 @@ export class MockTransport implements Transport {
     "search.threads": (params) => this.search(params),
     "fs.list": (params) => this.list(params),
     "fs.find": (params) => this.find(params),
+    "workspace.gitStatus": (params) => {
+      if (!/[\\/]vetro$/i.test(params.cwd)) return { isRepo: false, root: null, branch: null, dirty: false, files: [] };
+      return { isRepo: true, root: params.cwd, branch: "main", dirty: true, files: MOCK_GIT_FILES };
+    },
+    "workspace.gitDiff": (params) => {
+      const file = MOCK_GIT_FILES.find((f) => f.path === params.path);
+      if (!file) throw new RpcFailure("not_found", "No such file in the working tree");
+      if (file.path.endsWith(".png")) return { path: file.path, oldText: null, newText: null, diff: null, binary: true, truncated: false };
+      if (file.status === "untracked") return { path: file.path, oldText: null, newText: MOCK_NEW_FILE, diff: null, binary: false, truncated: false };
+      return { path: file.path, oldText: null, newText: null, diff: MOCK_DIFF, binary: false, truncated: false };
+    },
+    "workspace.openExternal": () => {
+      this.desktopOnly();
+      return {};
+    },
+    "app.notify": () => ({}),
     "settings.get": () => this.settings,
     "settings.update": (params) => {
       this.desktopOnly();
