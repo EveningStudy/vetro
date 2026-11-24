@@ -8,7 +8,7 @@ import { relativeTime } from "~/lib/format";
 import { cn, isMac } from "~/lib/utils";
 import { setTheme, setThemeId, usePrefs } from "~/state/prefs";
 import { BUILT_IN_THEMES, type BuiltInTheme, type CustomTheme, resolveTheme } from "~/styles/themes";
-import { actions, useHiddenFilter, useStore } from "~/state/store";
+import { actions, isCatalogStub, useHiddenFilter, useStore } from "~/state/store";
 import { AgentIcon } from "./AgentIcon";
 import { ThemeSwatchDot, themeDisplayName, usePreviewMode } from "./settings/ThemeStudio";
 import { Kbd, Spinner } from "./ui/primitives";
@@ -133,7 +133,7 @@ export function CommandPalette() {
       ];
     }
     const recent = Object.values(threads)
-      .filter((thread) => !thread.archived && visible(thread))
+      .filter((thread) => !thread.archived && !isCatalogStub(thread) && visible(thread))
       .sort((a, b) => b.updatedAt - a.updatedAt)
       .slice(0, 8)
       .map((thread) => threadEntry(thread));

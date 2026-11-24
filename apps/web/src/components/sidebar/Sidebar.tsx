@@ -34,7 +34,7 @@ import { relativeTime } from "~/lib/format";
 import { cn, copyText, isMac } from "~/lib/utils";
 import { RpcFailure } from "~/api/protocol";
 import { type SidebarScope, setSidebarScope, usePrefs } from "~/state/prefs";
-import { actions, useIsLocalDesktop, useStore } from "~/state/store";
+import { actions, isCatalogStubVisible, useIsLocalDesktop, useStore } from "~/state/store";
 import { errorMessage, toast } from "~/state/toast";
 import { AgentIcon } from "../AgentIcon";
 import { useNow } from "../hooks";
@@ -754,6 +754,7 @@ export function SidebarContent() {
       (filters.agentIds.length === 0 || filters.agentIds.includes(thread.agentId)) &&
       (filters.sources.length === 0 || filters.sources.includes(thread.source)) &&
       (!thread.internal || filters.showInternal || filters.sources.includes("exec")) &&
+      isCatalogStubVisible(thread, filters) &&
       !disabled(thread.agentId);
     const loaded = new Map<string, number>();
     for (const thread of all) loaded.set(normalize(thread.cwd), (loaded.get(normalize(thread.cwd)) ?? 0) + 1);

@@ -183,14 +183,21 @@ fn read_catalog(path: &Path, files: &mut HashMap<String, NativeFile>) -> Result<
         let title: String = row.get(1).map_err(internal)?;
         let created: f64 = row.get(2).map_err(internal)?;
         let updated: f64 = row.get(3).map_err(internal)?;
+        let raw_cwd: Option<String> = row.get(4).map_err(internal)?;
         let record = SessionRecord {
             native_id: id.clone(),
             title,
-            preview: None,
+            preview: if host == "remote" {
+                raw_cwd
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned)
+            } else {
+                None
+            },
             cwd: if host == "local" {
-                row.get::<_, Option<String>>(4)
-                    .map_err(internal)?
-                    .map(PathBuf::from)
+                raw_cwd.map(PathBuf::from)
             } else {
                 None
             },

@@ -54,7 +54,7 @@ pub(crate) struct Changes {
     pub removed: Vec<String>,
 }
 
-#[derive(serde::Serialize)]
+#[derive(Default, serde::Serialize)]
 pub(crate) struct Filter<'a> {
     pub cwd: Option<&'a str>,
     pub agents: Option<&'a [String]>,
@@ -195,6 +195,9 @@ impl Index {
                AND (f.v->>'sources' IS NULL OR t.source IN (SELECT value FROM json_each(f.v,'$.sources')))
                AND (t.internal=0 OR f.v->>'include_internal' OR f.v->>'parent' IS NOT NULL
                     OR 'exec' IN (SELECT value FROM json_each(f.v,'$.sources')))
+               AND (coalesce(t.summary->>'origin','') NOT LIKE 'Codex desktop catalog (%'
+                    OR f.v->>'include_internal'
+                    OR (t.source='cloud' AND 'cloud' IN (SELECT value FROM json_each(f.v,'$.sources'))))
                AND (CASE WHEN f.v->>'parent' IS NOT NULL THEN l.parent=f.v->>'parent'
                     ELSE f.v->>'children' OR l.parent IS NULL END)
                AND (f.v->>'cursor' IS NULL OR t.updated < f.v->>'$.cursor[0]'
@@ -806,5 +809,81 @@ mod tests {
             .unwrap();
         assert_eq!(hits.len(), 1);
         assert!(hits[0].thread.internal);
+    }
+
+    #[test]
+    fn hides_metadata_only_codex_catalog_stubs_by_default() {
+        let root = tempfile::tempdir().unwrap();
+        let index = Index::open(root.path()).unwrap();
+        let put = |id: &str, source: ThreadSource, origin: Option<&str>| {
+            let summary = crate::service::summary(
+                "codex",
+                vetro_agent_api::SessionRecord {
+                    native_id: id.into(),
+                    title: id.into(),
+                    preview: None,
+                    cwd: None,
+                    created_at: None,
+                    updated_at: 100,
+                    source,
+                    origin: origin.map(str::to_owned),
+                    model: None,
+                    resumable: origin.is_none(),
+                    parent_native_id: None,
+                    internal: false,
+                },
+            );
+            index.mark(&summary, None, id, id).unwrap();
+        };
+        put("local-quick", ThreadSource::Desktop, None);
+        put(
+            "cloud-stub",
+            ThreadSource::Cloud,
+            Some("Codex desktop catalog (cloud)"),
+        );
+        put(
+            "remote-stub",
+            ThreadSource::Desktop,
+            Some("Codex desktop catalog (remote)"),
+        );
+
+        let default_ids: Vec<_> = index
+            .list(&Filter::default(), 50, "{}")
+            .unwrap()
+            .into_iter()
+            .map(|t| t.native_id)
+            .collect();
+        assert_eq!(default_ids, vec!["local-quick"]);
+
+        let cloud_sources = [ThreadSource::Cloud];
+        let cloud_ids: Vec<_> = index
+            .list(
+                &Filter {
+                    sources: Some(&cloud_sources),
+                    ..Default::default()
+                },
+                50,
+                "{}",
+            )
+            .unwrap()
+            .into_iter()
+            .map(|t| t.native_id)
+            .collect();
+        assert_eq!(cloud_ids, vec!["cloud-stub"]);
+
+        let all_ids: Vec<_> = index
+            .list(
+                &Filter {
+                    include_internal: true,
+                    ..Default::default()
+                },
+                50,
+                "{}",
+            )
+            .unwrap()
+            .into_iter()
+            .map(|t| t.native_id)
+            .collect();
+        assert_eq!(all_ids, vec!["cloud-stub", "local-quick", "remote-stub"]);
     }
 }

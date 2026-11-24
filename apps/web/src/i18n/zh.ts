@@ -97,6 +97,8 @@ export const zh: Record<MessageKey, string> = {
   "thread.jumpLatest": "跳到最新",
   "thread.notFound": "无法加载这个会话。",
   "thread.empty": "还没有消息。",
+  "thread.emptyCatalogRemote": "这个会话在另一台设备上运行。本机只缓存了标题目录，完整对话记录保存在那台设备上。",
+  "thread.emptyCatalogCloud": "这是 Codex 云端目录里仅含标题的条目，消息正文未保存在本机。",
   "thread.renameTitle": "重命名会话",
   "thread.renameHint": "这个标题只在 Vetro 中显示，代理自己的记录不会改动。",
 

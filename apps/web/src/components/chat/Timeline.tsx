@@ -2,7 +2,7 @@ import { ArrowDownIcon, LayersIcon } from "lucide-react";
 import { Fragment, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Item, ItemOf } from "~/api/types";
 import { type MessageKey, type Translate, useT } from "~/i18n";
-import { actions, useStore } from "~/state/store";
+import { actions, isCatalogStub, useStore } from "~/state/store";
 import { Button } from "../ui/button";
 import { Spinner } from "../ui/primitives";
 import { ThreadCwdContext } from "./threadContext";
@@ -388,7 +388,18 @@ function ScrollingTimeline({ threadId, footer, dockRequests }: { threadId: strin
               <Spinner className="text-muted-foreground" />
             </div>
           ) : visible.length === 0 ? (
-            <div className="py-16 text-center text-sm text-muted-foreground">{t("thread.empty")}</div>
+            <div className="mx-auto max-w-md py-16 text-center text-sm text-muted-foreground">
+              {isCatalogStub(thread.summary) ? (
+                <>
+                  <p>{thread.summary.origin === "Codex desktop catalog (remote)" ? t("thread.emptyCatalogRemote") : t("thread.emptyCatalogCloud")}</p>
+                  {thread.summary.preview ? (
+                    <p className="mt-2 break-all font-mono text-xs text-muted-foreground/80">{thread.summary.preview}</p>
+                  ) : null}
+                </>
+              ) : (
+                t("thread.empty")
+              )}
+            </div>
           ) : (
             <Fragment>
               <TimelineRows items={visible} threadId={threadId} dockRequests={dockRequests} />

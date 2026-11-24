@@ -312,9 +312,23 @@ async function loadLists() {
   set({ threads: map, threadsLoaded: true, threadsCursor: page.nextCursor, projectCursors: {} });
 }
 
+export function isCatalogStub(thread: Pick<ThreadSummary, "origin">) {
+  return !!thread.origin?.startsWith("Codex desktop catalog (");
+}
+
+export function isCatalogStubVisible(thread: Pick<ThreadSummary, "origin" | "source">, filters: Pick<Filters, "showInternal" | "sources">) {
+  return !isCatalogStub(thread) || filters.showInternal || (thread.source === "cloud" && filters.sources.includes("cloud"));
+}
+
 /** Sidebar lists hold root threads only, so child sessions never eat into a page. */
 function rootListParams() {
-  return { includeArchived: true, includeChildren: false, includeInternal: get().filters.showInternal };
+  const { showInternal, sources } = get().filters;
+  return {
+    includeArchived: true,
+    includeChildren: false,
+    includeInternal: showInternal,
+    ...(sources.length > 0 ? { sources } : {}),
+  };
 }
 
 async function loadChildren(threadId: string) {
@@ -407,6 +421,7 @@ function sidebarOrder() {
         (filters.agentIds.length === 0 || filters.agentIds.includes(thread.agentId)) &&
         (filters.sources.length === 0 || filters.sources.includes(thread.source)) &&
         (!thread.internal || filters.showInternal || filters.sources.includes("exec")) &&
+        isCatalogStubVisible(thread, filters) &&
         (filters.showHidden || !hidden.has(normalizePath(thread.cwd))) &&
         !disabled(thread.agentId),
     )
@@ -729,7 +744,9 @@ export const actions = {
     const filters = { ...previous, ...patch };
     savePrefs({ filters });
     set({ filters });
-    if (filters.showInternal !== previous.showInternal) void loadLists().catch((error) => toast.error(errorMessage(error)));
+    if (filters.showInternal !== previous.showInternal || filters.sources.join(",") !== previous.sources.join(",")) {
+      void loadLists().catch((error) => toast.error(errorMessage(error)));
+    }
   },
 
   setDraft(key: string, text: string) {

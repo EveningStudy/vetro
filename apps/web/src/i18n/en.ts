@@ -95,6 +95,8 @@ export const en = {
   "thread.jumpLatest": "Jump to latest",
   "thread.notFound": "This thread could not be loaded.",
   "thread.empty": "No messages yet.",
+  "thread.emptyCatalogRemote": "This session ran on another machine. Only its title is cached locally; its messages live on that machine.",
+  "thread.emptyCatalogCloud": "Title-only entry from Codex's cloud catalog. Its messages are not stored on this machine.",
   "thread.renameTitle": "Rename thread",
   "thread.renameHint": "Only Vetro shows this title. The agent's own records stay unchanged.",
 
