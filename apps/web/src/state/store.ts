@@ -295,6 +295,18 @@ function handleEvent(event: ServerEvent) {
 
 const FIRST_PAGE = 500;
 const PROJECT_PAGE = 200;
+let threadsLoadGen = 0;
+
+async function loadThreads() {
+  const generation = ++threadsLoadGen;
+  const page = await client().request("threads.list", { ...rootListParams(), limit: FIRST_PAGE });
+  if (generation !== threadsLoadGen) return;
+  const map: Record<string, ThreadSummary> = {};
+  const open = get().open;
+  for (const thread of Object.values(get().threads)) if (thread.parent && open[thread.parent.threadId]) map[thread.id] = thread;
+  for (const thread of page.threads) map[thread.id] = thread;
+  set({ threads: map, threadsLoaded: true, threadsCursor: page.nextCursor, projectCursors: {} });
+}
 
 async function loadLists() {
   const api = client();
@@ -304,12 +316,7 @@ async function loadLists() {
     api.request("settings.get", {}).catch(() => null),
   ]);
   set({ agents: agents.agents, projects: projects.projects, ...(settings ? { settings } : {}) });
-  const page = await api.request("threads.list", { ...rootListParams(), limit: FIRST_PAGE });
-  const map: Record<string, ThreadSummary> = {};
-  const open = get().open;
-  for (const thread of Object.values(get().threads)) if (thread.parent && open[thread.parent.threadId]) map[thread.id] = thread;
-  for (const thread of page.threads) map[thread.id] = thread;
-  set({ threads: map, threadsLoaded: true, threadsCursor: page.nextCursor, projectCursors: {} });
+  await loadThreads();
 }
 
 export function isCatalogStub(thread: Pick<ThreadSummary, "origin">) {
@@ -745,7 +752,7 @@ export const actions = {
     savePrefs({ filters });
     set({ filters });
     if (filters.showInternal !== previous.showInternal || filters.sources.join(",") !== previous.sources.join(",")) {
-      void loadLists().catch((error) => toast.error(errorMessage(error)));
+      void loadThreads().catch((error) => toast.error(errorMessage(error)));
     }
   },
 

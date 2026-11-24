@@ -6,7 +6,8 @@ import { usePrefs } from "~/state/prefs";
 import { useStore } from "~/state/store";
 import { useMediaQuery } from "./hooks";
 
-const INTERACTIVE = 'button, a, input, textarea, select, [role="button"], [role="menuitem"], [role="combobox"], [data-no-drag]';
+const INTERACTIVE =
+  'button, a, input, textarea, select, label, [contenteditable], [role="button"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="option"], [role="combobox"], [role="switch"], [role="tab"], [role="checkbox"], [role="radio"], [data-no-drag]';
 
 const captionClass =
   "inline-flex h-full w-[46px] items-center justify-center text-foreground/80 outline-none transition-colors duration-100 focus-visible:bg-foreground/[0.08] [&_svg]:pointer-events-none";
@@ -52,8 +53,12 @@ export function WindowControls() {
   );
 }
 
-function interactive(target: EventTarget | null) {
-  return target instanceof Element && target.closest(INTERACTIVE) !== null;
+function shouldIgnoreDrag(event: React.MouseEvent<HTMLElement>) {
+  if (event.defaultPrevented || !(event.target instanceof Element)) return true;
+  // React bubbles synthetic events out of Portals (menus, popovers, dialogs) mounted inside a
+  // header; ignore anything outside the header's own DOM subtree.
+  if (!event.currentTarget.contains(event.target)) return true;
+  return event.target.closest(INTERACTIVE) !== null;
 }
 
 type DragProps = Pick<React.HTMLAttributes<HTMLElement>, "onMouseDown" | "onDoubleClick"> & { "data-window-drag-region"?: "" };
@@ -69,11 +74,11 @@ export function useWindowDragProps(): DragProps {
   return {
     "data-window-drag-region": "",
     onMouseDown: (event) => {
-      if (event.button !== 0 || event.detail !== 1 || interactive(event.target)) return;
+      if (event.button !== 0 || event.detail !== 1 || shouldIgnoreDrag(event)) return;
       void startWindowDragging();
     },
     onDoubleClick: (event) => {
-      if (event.button !== 0 || interactive(event.target)) return;
+      if (event.button !== 0 || shouldIgnoreDrag(event)) return;
       void toggleMaximizeWindow();
     },
   };
