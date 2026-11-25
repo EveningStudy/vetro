@@ -36,7 +36,7 @@ import { relativeTime } from "~/lib/format";
 import { cn, copyText, isMac } from "~/lib/utils";
 import { RpcFailure } from "~/api/protocol";
 import { type SidebarScope, setSidebarGroupOpen, setSidebarScope, THREAD_SOURCES, usePrefs } from "~/state/prefs";
-import { actions, isCatalogStub, useIsLocalDesktop, useStore } from "~/state/store";
+import { actions, compareActive, isActiveRootThread, isCatalogStub, useIsLocalDesktop, useStore } from "~/state/store";
 import { errorMessage, toast } from "~/state/toast";
 import { AgentIcon } from "../AgentIcon";
 import { FolderBrowser } from "../FolderBrowser";
@@ -137,7 +137,6 @@ type SidebarRow =
 type SectionGroup = "older" | "missing";
 
 const ACTIVE_STATUSES = new Set<ThreadStatus>(["running", "awaiting_input", "error"]);
-const URGENCY: Partial<Record<ThreadStatus, number>> = { awaiting_input: 0, error: 1, running: 2 };
 const DAY = 86_400_000;
 
 /** Throwaway checkouts and temp folders: kept out of the main list unless something is happening there. */
@@ -882,11 +881,7 @@ export function SidebarContent() {
     const quickKey = (key: string) => !pinnedPaths.has(key) && isQuickChatPath(key, dataDir);
     const visiblePath = (key: string) => filters.showHidden || !hiddenPaths.has(key);
 
-    const attention = [...byProject.entries()]
-      .filter(([key]) => visiblePath(key))
-      .flatMap(([, list]) => list)
-      .filter((thread) => ACTIVE_STATUSES.has(thread.status))
-      .sort((a, b) => (URGENCY[a.status] ?? 9) - (URGENCY[b.status] ?? 9) || b.updatedAt - a.updatedAt);
+    const attention = all.filter((thread) => isActiveRootThread(thread, filters)).sort(compareActive);
 
     const quick = [...byProject.entries()]
       .filter(([key]) => quickKey(key) && visiblePath(key))
@@ -996,7 +991,9 @@ export function SidebarContent() {
 
     if (groups.attention.length > 0) {
       out.push({ kind: "heading", key: "h:active", heading: "active", count: groups.attention.length });
-      for (const thread of groups.attention) pushThread(thread, "a", basename(thread.cwd) || undefined);
+      for (const thread of groups.attention) {
+        pushThread(thread, "a", isQuickChatPath(thread.cwd, dataDir) ? t("sidebar.quickChats") : basename(thread.cwd) || undefined);
+      }
     }
 
     const quickSection = () => {
@@ -1130,6 +1127,7 @@ export function SidebarContent() {
     scoped,
     filters.showInternal,
     t,
+    dataDir,
     projectCursors,
     threadsCursor,
     sidebarOrder,

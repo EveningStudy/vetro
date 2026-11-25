@@ -136,8 +136,8 @@ export const Reasoning = memo(function Reasoning({ item }: { item: ItemOf<"reaso
   return (
     <WorkLogRow
       icon={<BrainIcon className="size-4" />}
-      expanded={open}
-      onToggle={() => setOpen(!open)}
+      expanded={open && !!preview}
+      onToggle={preview ? () => setOpen(!open) : undefined}
       label={
         <span className="flex min-w-0 items-baseline gap-1.5">
           <span className={cn("shrink-0 text-foreground/80", item.streaming && "live-tool-shine")}>
@@ -148,7 +148,7 @@ export const Reasoning = memo(function Reasoning({ item }: { item: ItemOf<"reaso
       }
       trailing={<Timestamp ts={item.ts} />}
     >
-      {open ? (
+      {open && preview ? (
         <WorkLogDetails className="max-h-96 overflow-auto text-sm text-muted-foreground">
           <Markdown text={item.text} />
         </WorkLogDetails>
@@ -488,13 +488,16 @@ export const TurnEnd = memo(function TurnEnd({
   answerText,
   isLast,
   onFork,
+  forkLabel,
 }: {
   item: ItemOf<"turn_end">;
   answerText?: string;
   isLast?: boolean;
   onFork?: () => void;
+  forkLabel?: string;
 }) {
   const t = useT();
+  const forkText = forkLabel ?? t("item.forkFromHere");
   const [copied, setCopied] = useState(false);
   const stopLabel = item.stopReason !== "end_turn" ? t(`item.stop.${item.stopReason}`) : null;
   const duration = item.durationMs != null ? t("item.turnEnd", { duration: formatDuration(item.durationMs) }) : null;
@@ -538,10 +541,10 @@ export const TurnEnd = memo(function TurnEnd({
             </Tip>
           ) : null}
           {onFork ? (
-            <Tip label={t("item.forkFromHere")}>
+            <Tip label={forkText}>
               <button
                 type="button"
-                aria-label={t("item.forkFromHere")}
+                aria-label={forkText}
                 className="inline-flex size-6 cursor-pointer items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
                 onClick={onFork}
               >

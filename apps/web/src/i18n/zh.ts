@@ -180,6 +180,7 @@ export const zh: Record<MessageKey, string> = {
   "signin.waiting": "等待 {agent} 完成登录…",
   "signin.check": "立即检查",
   "composer.context": "上下文 {used} / {window}",
+  "composer.contextShort": "上下文",
   "composer.moreOptions": "更多选项",
   "composer.loadOptions": "选项…",
   "composer.resetDefault": "恢复默认",

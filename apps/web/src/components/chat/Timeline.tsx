@@ -110,12 +110,14 @@ function ItemView({
   answerText,
   isLastTurn,
   onFork,
+  forkLabel,
 }: {
   item: Item;
   threadId: string;
   answerText?: string;
   isLastTurn?: boolean;
   onFork?: () => void;
+  forkLabel?: string;
 }) {
   switch (item.type) {
     case "user_message":
@@ -133,7 +135,7 @@ function ItemView({
     case "notice":
       return <NoticeRow item={item} />;
     case "turn_end":
-      return <TurnEnd item={item} answerText={answerText} isLast={isLastTurn} onFork={onFork} />;
+      return <TurnEnd item={item} answerText={answerText} isLast={isLastTurn} onFork={onFork} forkLabel={forkLabel} />;
   }
 }
 
@@ -242,21 +244,28 @@ function WorkGroup({ items, live, threadId }: { items: Item[]; live: boolean; th
 }
 
 function TimelineRows({ items, threadId, dockRequests }: { items: Item[]; threadId: string; dockRequests: boolean }) {
+  const t = useT();
   const cwd = useStore((s) => s.open[threadId]?.summary.cwd ?? null);
   const running = useStore((s) => {
     const status = s.open[threadId]?.summary.status;
     return status === "running" || status === "awaiting_input";
   });
-  const canForkAtTurn = useStore((s) => {
+  const forkCaps = useStore((s) => {
     const summary = s.threads[threadId] ?? s.open[threadId]?.summary;
-    if (!summary?.resumable || summary.status === "running" || summary.status === "awaiting_input") return false;
-    return !!s.agents.find((agent) => agent.id === summary.agentId)?.capabilities.fork.atTurn;
+    if (!summary?.resumable || summary.status === "running" || summary.status === "awaiting_input") return 0;
+    const fork = s.agents.find((agent) => agent.id === summary.agentId)?.capabilities.fork;
+    return (fork?.atTurn ? 1 : 0) | (fork?.whole ? 2 : 0);
   });
+  const canForkAtTurn = (forkCaps & 1) !== 0;
+  const canForkWhole = (forkCaps & 2) !== 0;
   const segments = useMemo(
     () =>
       segment(
         items.filter(
-          (item) => (item.type !== "agent_message" || item.streaming || item.text.trim() !== "") && !(dockRequests && isPendingRequest(item)),
+          (item) =>
+            (item.type !== "agent_message" || item.streaming || item.text.trim() !== "") &&
+            (item.type !== "reasoning" || item.streaming || item.text.trim() !== "") &&
+            !(dockRequests && isPendingRequest(item)),
         ),
         running,
       ),
@@ -286,29 +295,39 @@ function TimelineRows({ items, threadId, dockRequests }: { items: Item[]; thread
     return null;
   }, [segments]);
 
+  const forkFor = (item: Item, isLastTurn: boolean): { onFork?: () => void; forkLabel?: string } => {
+    if (item.type !== "turn_end") return {};
+    const turnId = item.turnId;
+    if (canForkAtTurn && turnId) return { onFork: () => void actions.forkThread(threadId, turnId), forkLabel: t("item.forkFromHere") };
+    if (canForkWhole && isLastTurn) return { onFork: () => void actions.forkThread(threadId), forkLabel: t("thread.fork") };
+    return {};
+  };
+
   return (
     <ThreadCwdContext value={cwd}>
-      {segments.map((current, index) =>
-        current.kind === "item" ? (
+      {segments.map((current, index) => {
+        if (current.kind !== "item") {
+          return (
+            <div key={`group:${current.id}`} className={spacing(segments[index - 1], current)}>
+              <WorkGroup items={current.items} live={current.live} threadId={threadId} />
+            </div>
+          );
+        }
+        const isLastTurn = current.item.type === "turn_end" && current.item.id === lastTurnEndId;
+        const fork = forkFor(current.item, isLastTurn);
+        return (
           <div key={current.item.id} data-item-id={current.item.id} className={spacing(segments[index - 1], current)}>
             <ItemView
               item={current.item}
               threadId={threadId}
               answerText={current.item.type === "turn_end" ? turnAnswers.get(current.item.id) : undefined}
-              isLastTurn={current.item.type === "turn_end" && current.item.id === lastTurnEndId}
-              onFork={
-                current.item.type === "turn_end" && canForkAtTurn && current.item.turnId
-                  ? () => void actions.forkThread(threadId, current.item.turnId!)
-                  : undefined
-              }
+              isLastTurn={isLastTurn}
+              onFork={fork.onFork}
+              forkLabel={fork.forkLabel}
             />
           </div>
-        ) : (
-          <div key={`group:${current.id}`} className={spacing(segments[index - 1], current)}>
-            <WorkGroup items={current.items} live={current.live} threadId={threadId} />
-          </div>
-        ),
-      )}
+        );
+      })}
     </ThreadCwdContext>
   );
 }

@@ -178,6 +178,7 @@ export const en = {
   "signin.waiting": "Waiting for {agent}…",
   "signin.check": "Check now",
   "composer.context": "Context {used} / {window}",
+  "composer.contextShort": "Context",
   "composer.moreOptions": "More options",
   "composer.loadOptions": "Options…",
   "composer.resetDefault": "Reset to default",

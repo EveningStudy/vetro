@@ -482,7 +482,7 @@ function ThreadHeader({ thread, threadId }: { thread: OpenThread | undefined; th
 
 function ThreadComposer({ thread }: { thread: OpenThread }) {
   const t = useT();
-  const summary = thread.summary;
+  const summary = useStore((s) => s.threads[thread.summary.id] ?? thread.summary);
   const agent = useStore((s) => s.agents.find((a) => a.id === summary.agentId));
   const dataDir = useStore((s) => s.app?.dataDir);
   const bypassMemoryScope = usePrefs((s) => s.bypassMemoryScope);

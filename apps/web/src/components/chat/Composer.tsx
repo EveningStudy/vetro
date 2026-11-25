@@ -247,7 +247,7 @@ export function Composer(props: ComposerProps) {
   };
 
   const { primary, extra } = useMemo(() => partitionOptions(props.options), [props.options]);
-  const showStop = props.running && !hasContent && props.onStop;
+  const showStop = !!props.running && !!props.onStop;
   const contextUsed = props.usage?.lastTurn?.contextUsed ?? props.usage?.lastTurn?.input ?? null;
   const contextWindow = props.usage?.lastTurn?.contextWindow ?? props.usage?.total?.contextWindow ?? null;
   const showContext = usePrefs((s) => s.composerShowContext);
@@ -491,37 +491,50 @@ export function Composer(props: ComposerProps) {
             }}
           />
           {!props.readOnly ? <VoiceButton disabled={sending} onTranscript={insertTranscript} /> : null}
-          {showStop ? (
+          {showStop && !hasContent ? (
             <Tip label={t("composer.stop")}>
               <button
                 type="button"
                 aria-label={t("composer.stop")}
                 onClick={props.onStop}
-                className="flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full bg-destructive/90 text-white shadow-xs shadow-destructive/24 inset-shadow-[0_1px_rgb(255_255_255/16%)] transition-colors hover:bg-destructive"
+                className="inline-flex h-8 shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-full bg-destructive/90 px-3 text-xs font-medium text-white shadow-xs shadow-destructive/24 transition-colors hover:bg-destructive"
               >
-                <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true">
-                  <rect x="2" y="2" width="8" height="8" rx="1.5" />
-                </svg>
+                {stopIcon}
+                <span>{t("composer.stop")}</span>
               </button>
             </Tip>
           ) : (
-            <Tip label={props.sendBlocked ?? (props.running ? (props.midTurnInput ? t("composer.steer") : t("composer.queue")) : t("composer.send"))}>
-              <button
-                type="button"
-                aria-label={t("composer.send")}
-                disabled={!canSend}
-                onClick={() => void submit()}
-                className="relative flex size-9 shrink-0 items-center justify-center rounded-full bg-message-action text-message-action-foreground shadow-xs shadow-message-action/24 transition-all duration-150 enabled:cursor-pointer enabled:inset-shadow-[0_1px_rgb(255_255_255/16%)] enabled:hover:scale-105 enabled:hover:bg-message-action-hover disabled:bg-foreground/12 disabled:text-muted-foreground disabled:shadow-none sm:size-8"
-              >
-                {sending ? (
-                  <Spinner className="size-3.5" />
-                ) : (
-                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-                    <path d="M7 11.5V2.5M7 2.5L3 6.5M7 2.5L11 6.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
-                )}
-              </button>
-            </Tip>
+            <div className="flex shrink-0 items-center gap-1.5">
+              {showStop ? (
+                <Tip label={t("composer.stop")}>
+                  <button
+                    type="button"
+                    aria-label={t("composer.stop")}
+                    onClick={props.onStop}
+                    className="flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full bg-destructive/90 text-white shadow-xs shadow-destructive/24 inset-shadow-[0_1px_rgb(255_255_255/16%)] transition-colors hover:bg-destructive"
+                  >
+                    {stopIcon}
+                  </button>
+                </Tip>
+              ) : null}
+              <Tip label={props.sendBlocked ?? (props.running ? (props.midTurnInput ? t("composer.steer") : t("composer.queue")) : t("composer.send"))}>
+                <button
+                  type="button"
+                  aria-label={t("composer.send")}
+                  disabled={!canSend}
+                  onClick={() => void submit()}
+                  className="relative flex size-9 shrink-0 items-center justify-center rounded-full bg-message-action text-message-action-foreground shadow-xs shadow-message-action/24 transition-all duration-150 enabled:cursor-pointer enabled:inset-shadow-[0_1px_rgb(255_255_255/16%)] enabled:hover:scale-105 enabled:hover:bg-message-action-hover disabled:bg-foreground/12 disabled:text-muted-foreground disabled:shadow-none sm:size-8"
+                >
+                  {sending ? (
+                    <Spinner className="size-3.5" />
+                  ) : (
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                      <path d="M7 11.5V2.5M7 2.5L3 6.5M7 2.5L11 6.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  )}
+                </button>
+              </Tip>
+            </div>
           )}
         </div>
       </div>
@@ -531,6 +544,7 @@ export function Composer(props: ComposerProps) {
           {contextVisible || limitsVisible ? (
             <div className="ms-auto flex min-w-0 items-center gap-1">
               {contextVisible ? <ContextMeter used={contextUsed!} window={contextWindow!} /> : null}
+              {contextVisible && limitsVisible ? <span className="mx-1 h-3 w-px shrink-0 bg-border/70" aria-hidden="true" /> : null}
               {limitsVisible ? <RateLimitBadge source={limits} /> : null}
             </div>
           ) : null}
@@ -540,6 +554,12 @@ export function Composer(props: ComposerProps) {
   );
 }
 
+const stopIcon = (
+  <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true">
+    <rect x="2" y="2" width="8" height="8" rx="1.5" />
+  </svg>
+);
+
 function ContextMeter({ used, window }: { used: number; window: number }) {
   const t = useT();
   const ratio = Math.min(1, used / window);
@@ -547,7 +567,7 @@ function ContextMeter({ used, window }: { used: number; window: number }) {
   const circumference = 2 * Math.PI * radius;
   return (
     <Tip label={t("composer.context", { used: formatTokens(used), window: formatTokens(window) })}>
-      <span className="inline-flex h-6 shrink-0 items-center gap-1.5 rounded-md px-1.5 text-xs tabular-nums text-muted-foreground">
+      <span className="inline-flex h-6 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-1.5 text-xs tabular-nums text-muted-foreground">
         <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden className="-rotate-90">
           <circle cx="8" cy="8" r={radius} fill="none" strokeWidth="2" className="stroke-foreground/12" />
           <circle
@@ -562,7 +582,9 @@ function ContextMeter({ used, window }: { used: number; window: number }) {
             className={ratio > 0.85 ? "stroke-warning" : "stroke-muted-foreground"}
           />
         </svg>
-        {Math.round(ratio * 100)}%
+        <span>
+          <span className="opacity-75">{t("composer.contextShort")}</span> {Math.round(ratio * 100)}%
+        </span>
       </span>
     </Tip>
   );

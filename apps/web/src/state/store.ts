@@ -313,6 +313,9 @@ async function loadThreads() {
   const map: Record<string, ThreadSummary> = {};
   const open = get().open;
   for (const thread of Object.values(get().threads)) if (thread.parent && open[thread.parent.threadId]) map[thread.id] = thread;
+  const inProgress = (thread: ThreadSummary) => !thread.parent && (ACTIVE.has(thread.status) || thread.live);
+  for (const thread of Object.values(get().threads)) if (inProgress(thread)) map[thread.id] = thread;
+  for (const { summary } of Object.values(open)) if (inProgress(summary)) map[summary.id] ??= summary;
   for (const thread of page.threads) if (!isExcludedCodexThread(thread)) map[thread.id] = thread;
   set({ threads: map, threadsLoaded: true, threadsCursor: page.nextCursor, projectCursors: {} });
 }
@@ -331,6 +334,22 @@ async function loadLists() {
 
 export function isCatalogStub(thread: Pick<ThreadSummary, "origin">) {
   return !!thread.origin?.startsWith("Codex desktop catalog (");
+}
+
+/** The Active list ignores agent, source, scope and hidden-folder filters so a running thread
+ * never drops out of sight. Shared by the sidebar and Alt+1..9. */
+export function isActiveRootThread(thread: ThreadSummary, filters: Pick<Filters, "showArchived" | "showInternal">) {
+  return (
+    !thread.parent &&
+    ACTIVE.has(thread.status) &&
+    !isCatalogStub(thread) &&
+    (filters.showArchived || !thread.archived) &&
+    (thread.live || !thread.internal || filters.showInternal)
+  );
+}
+
+export function compareActive(a: ThreadSummary, b: ThreadSummary) {
+  return (ACTIVE_ORDER[a.status] ?? 9) - (ACTIVE_ORDER[b.status] ?? 9) || b.updatedAt - a.updatedAt;
 }
 
 export function isExcludedCodexThread(thread: Pick<ThreadSummary, "agentId" | "origin" | "source">) {
@@ -432,7 +451,7 @@ function leavesChildDrawer(from: Route, to: Route) {
 
 const gitInflight = new Map<string, Promise<GitStatusResult | null>>();
 
-/** Root threads in sidebar order — attention (waiting, failed, running) first, then newest —
+/** Root threads in sidebar order — the Active list (same rule as the sidebar) first, then newest
  * restricted to what the sidebar would list. Backs Alt+Arrow cycling and Alt+1..9 jumps. */
 function sidebarOrder() {
   const { threads, filters, projects, settings } = get();
@@ -440,10 +459,11 @@ function sidebarOrder() {
   const hidden = new Set(projects.filter((project) => project.hidden).map((project) => normalizePath(project.path)));
   const disabled = (agentId: string) =>
     prefs.hideDisabledAgentHistory && settings?.agents[agentId]?.enabled === false && !filters.agentIds.includes(agentId);
-  return Object.values(threads)
+  const listed = Object.values(threads)
     .filter(
       (thread) =>
         !thread.parent &&
+        !ACTIVE.has(thread.status) &&
         (prefs.sidebarScope === "all" || thread.source === "vetro") &&
         (filters.showArchived || !thread.archived) &&
         (filters.agentIds.length === 0 || filters.agentIds.includes(thread.agentId)) &&
@@ -453,7 +473,15 @@ function sidebarOrder() {
         (filters.showHidden || !hidden.has(normalizePath(thread.cwd))) &&
         !disabled(thread.agentId),
     )
-    .sort((a, b) => (ACTIVE_ORDER[a.status] ?? 9) - (ACTIVE_ORDER[b.status] ?? 9) || b.updatedAt - a.updatedAt);
+    .sort((a, b) => b.updatedAt - a.updatedAt);
+  return [...activeThreads(), ...listed];
+}
+
+function activeThreads() {
+  const { threads, filters } = get();
+  return Object.values(threads)
+    .filter((thread) => isActiveRootThread(thread, filters))
+    .sort(compareActive);
 }
 
 const opening = new Map<string, Promise<void>>();
@@ -484,7 +512,7 @@ export const actions = {
 
   /** Alt+1..9: jump straight to the nth Active (awaiting_input/error/running) thread. */
   jumpToActive(index: number) {
-    const thread = sidebarOrder().filter((entry) => ACTIVE.has(entry.status))[index];
+    const thread = activeThreads()[index];
     if (thread) actions.navigate({ view: "thread", threadId: thread.id });
   },
 
