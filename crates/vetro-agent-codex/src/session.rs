@@ -166,14 +166,14 @@ impl Live {
         extra: Value,
         mode: Option<&str>,
     ) -> Result<()> {
-        let (collaboration, local_user_id) = {
+        let (collaboration, mut local_user) = {
             let mut state = self.state.lock().unwrap();
             check_open(&state)?;
             let collaboration = mode
                 .map(|mode| self.catalog.collaboration(mode, &state.selected))
                 .transpose()?;
-            let id = self.emit_local_user(&mut state, content);
-            (collaboration, id)
+            let user = self.emit_local_user(&mut state, content, None);
+            (collaboration, user)
         };
         let mut params = extra;
         params["threadId"] = json!(self.id);
@@ -182,6 +182,7 @@ impl Live {
             params["collaborationMode"] = collaboration;
         }
         let live = self.app.live(&self.id).map(|live| Arc::downgrade(&live));
+        let local_user_id = local_user.id.clone();
         let response = self
             .app
             .call_ordered("turn/start", params, move |reply| {
@@ -189,6 +190,10 @@ impl Live {
                     let turn = &reply["turn"];
                     let mut state = live.state.lock().unwrap();
                     if let Some(id) = string(turn, "id") {
+                        if !state.closed && state.pending_users.contains(&local_user.id) {
+                            local_user.turn_id = Some(id.clone());
+                            live.emit(SessionEvent::Item(local_user));
+                        }
                         if !state.closed
                             && state.active.is_none()
                             && state.last_completed.as_deref() != Some(&id)
@@ -217,16 +222,18 @@ impl Live {
         Ok(())
     }
 
-    fn emit_local_user(&self, state: &mut State, content: Vec<ContentBlock>) -> String {
+    fn emit_local_user(
+        &self,
+        state: &mut State,
+        content: Vec<ContentBlock>,
+        turn: Option<&str>,
+    ) -> ItemDraft {
         state.counter += 1;
         let id = format!("local-user:{}", state.counter);
-        state.pending_users.push_back(id.clone());
-        self.emit(SessionEvent::Item(draft(
-            &id,
-            None,
-            ItemKind::UserMessage { content },
-        )));
-        id
+        let user = draft(&id, turn, ItemKind::UserMessage { content });
+        state.pending_users.push_back(id);
+        self.emit(SessionEvent::Item(user.clone()));
+        user
     }
 
     fn emit(&self, event: SessionEvent) {
@@ -651,7 +658,7 @@ impl Session for Live {
             let local_user_id = {
                 let mut state = self.state.lock().unwrap();
                 check_open(&state)?;
-                self.emit_local_user(&mut state, content)
+                self.emit_local_user(&mut state, content, Some(&turn)).id
             };
             if let Err(error) = self
                 .app

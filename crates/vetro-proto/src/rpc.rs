@@ -68,6 +68,8 @@ pub struct RpcResponse {
 #[ts(export)]
 #[allow(clippy::large_enum_variant)]
 pub enum ServerEvent {
+    #[serde(rename = "app.resync")]
+    AppResync {},
     /// Sent only for threads this connection opened. `seq` increases by one per thread.
     #[serde(rename = "thread.event")]
     Thread {
@@ -377,6 +379,39 @@ pub struct ThreadForkParams {
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
+pub struct ThreadRollbackParams {
+    pub thread_id: String,
+    pub before_turn_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ThreadRewindFilesParams {
+    pub thread_id: String,
+    pub user_message_id: String,
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct RewindFilesResult {
+    pub can_rewind: bool,
+    pub dry_run: bool,
+    pub error: Option<String>,
+    pub files_changed: Vec<String>,
+    #[ts(type = "number | null")]
+    pub insertions: Option<u64>,
+    #[ts(type = "number | null")]
+    pub deletions: Option<u64>,
+    pub skipped_links: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub struct ThreadSetOptionParams {
     pub thread_id: String,
     pub option_id: String,
@@ -523,6 +558,68 @@ pub struct FsMkdirResult {
 #[ts(export)]
 pub struct WorkspacePathParams {
     pub cwd: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct WorkspaceFileParams {
+    pub cwd: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+#[ts(export)]
+pub enum FilePreviewContent {
+    Text {
+        text: String,
+        language: Option<String>,
+        truncated: bool,
+    },
+    Image {
+        mime_type: String,
+        base64: String,
+    },
+    Unsupported {
+        reason: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct WorkspaceFileResult {
+    pub path: String,
+    pub resolved_path: String,
+    #[ts(type = "number")]
+    pub size_bytes: u64,
+    pub content: FilePreviewContent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct WorktreeInfo {
+    pub path: String,
+    pub branch: Option<String>,
+    pub head: Option<String>,
+    pub is_main: bool,
+    pub is_current: bool,
+    pub detached: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct WorktreesResult {
+    pub is_repo: bool,
+    pub main_root: Option<String>,
+    pub worktrees: Vec<WorktreeInfo>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

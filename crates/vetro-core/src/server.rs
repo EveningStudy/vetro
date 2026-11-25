@@ -316,7 +316,7 @@ async fn websocket(mut socket: WebSocket, state: Arc<HttpState>, host: RequestHo
                                 "error": {"code": "busy", "message": "Too many concurrent requests"}
                             }))
                         } else {
-                            let opened = if request.method == "threads.open" {
+                            let opened = if matches!(request.method.as_str(), "threads.open" | "threads.rollback") {
                                 thread_id.inspect(|id| {
                                     pending_opens.insert(id.clone(), request.id);
                                 })

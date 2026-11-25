@@ -25,7 +25,8 @@ use vetro_agent_api::{
 };
 use vetro_proto::{
     rpc::{AuthenticateResult, ErrorCode},
-    AgentAuth, AgentCapabilities, AgentInfo, AgentKind, AuthMethod, AuthState, RateLimit,
+    AgentAuth, AgentCapabilities, AgentInfo, AgentKind, AuthMethod, AuthState,
+    HistoryEditCapabilities, RateLimit,
 };
 
 pub use binary::resolve_binary;
@@ -131,6 +132,7 @@ impl Agent for CodexAgent {
                     whole: true,
                     at_turn: true,
                 },
+                history_edit: self.history_edit_capabilities(),
             },
             error: None,
             rate_limits: Vec::new(),
@@ -283,17 +285,7 @@ impl Agent for CodexAgent {
         let app = self.app().await?;
         let catalog = catalog::Catalog::load(&app, cwd).await?;
         let live = Live::register(Arc::clone(&app), native_id.to_owned(), sink, catalog)?;
-        match app
-            .call(
-                "thread/resume",
-                json!({
-                    "threadId": native_id,
-                    "excludeTurns": true,
-                    "initialTurnsPage": {"limit": 1, "itemsView": "notLoaded"}
-                }),
-            )
-            .await
-        {
+        match app.resume(native_id).await {
             Ok(response) => {
                 live.hydrate(&response, 0, &BTreeMap::new());
                 Ok(live)
@@ -330,6 +322,47 @@ impl Agent for CodexAgent {
         let live = Live::register(app, id, sink, catalog)?;
         live.hydrate(&response, 0, &BTreeMap::new());
         Ok(live)
+    }
+
+    fn history_edit_capabilities(&self) -> HistoryEditCapabilities {
+        HistoryEditCapabilities {
+            rollback_conversation: true,
+            ..Default::default()
+        }
+    }
+
+    async fn rollback_conversation(
+        &self,
+        native_id: &str,
+        _cwd: Option<&Path>,
+        before_turn_id: &str,
+    ) -> Result<()> {
+        if before_turn_id.trim().is_empty() {
+            return Err(bad_request("Codex rollback requires a turn ID"));
+        }
+        let app = self.app().await?;
+        if app.live(native_id).is_some() {
+            return Err(AgentError::new(
+                ErrorCode::Busy,
+                "Detach the Codex thread before rolling it back",
+            ));
+        }
+        app.resume(native_id).await?;
+        let result = app
+            .call(
+                "thread/revert",
+                json!({"threadId": native_id, "beforeTurnId": before_turn_id}),
+            )
+            .await;
+        let _ = app
+            .call("thread/unsubscribe", json!({"threadId": native_id}))
+            .await;
+        result.map(|_| ()).map_err(|error| {
+            AgentError::new(
+                error.code,
+                format!("Codex thread/revert: {}", error.message),
+            )
+        })
     }
 
     async fn shutdown(&self) {
@@ -540,6 +573,18 @@ impl App {
         call(&self.peer, method, params).await
     }
 
+    async fn resume(&self, thread_id: &str) -> Result<Value> {
+        self.call(
+            "thread/resume",
+            json!({
+                "threadId": thread_id,
+                "excludeTurns": true,
+                "initialTurnsPage": {"limit": 1, "itemsView": "notLoaded"}
+            }),
+        )
+        .await
+    }
+
     async fn call_ordered(
         &self,
         method: &str,
@@ -648,6 +693,7 @@ impl App {
             let Some(app) = app.upgrade() else { return };
             match message {
                 Incoming::Response { id, envelope } => app.peer.complete(id, envelope),
+                Incoming::Notification { method, .. } if method == "thread/reverted" => {}
                 Incoming::Notification { method, params } => {
                     let params = params.unwrap_or_default();
                     let mut state = app.state.lock().unwrap();

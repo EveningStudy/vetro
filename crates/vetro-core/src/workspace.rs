@@ -7,15 +7,18 @@ use std::{
     time::Duration,
 };
 
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use vetro_agent_api::Result;
 use vetro_proto::rpc::{
-    GitDiffResult, GitFileChange, GitStatusResult, OpenExternalParams, OpenTarget,
+    FilePreviewContent, GitDiffResult, GitFileChange, GitStatusResult, OpenExternalParams,
+    OpenTarget, WorkspaceFileResult, WorktreeInfo, WorktreesResult,
 };
 
 use crate::{bad_request, files, internal};
 
 const TEXT_LIMIT: usize = 256 * 1024;
+const IMAGE_LIMIT: usize = 4 * 1024 * 1024;
 const GIT_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(crate) struct Repository {
@@ -48,6 +51,34 @@ impl Repository {
         }))
     }
 
+    pub(crate) async fn discover_worktrees(cwd: &Path) -> Result<Option<Self>> {
+        let repo = Self::discover(cwd).await?;
+        if repo.is_some() || !cwd.is_dir() {
+            return Ok(repo);
+        }
+        let mut bare = Self {
+            root: cwd.to_owned(),
+            config: Vec::new(),
+        };
+        let Some(output) = bare
+            .run(
+                &["rev-parse", "--is-bare-repository", "--absolute-git-dir"],
+                usize::MAX,
+            )
+            .await?
+        else {
+            return Ok(None);
+        };
+        let Some(root) = output.line().strip_prefix("true\n") else {
+            return Ok(None);
+        };
+        bare.root = files::directory(Path::new(root))?;
+        if !files::normalize(cwd).starts_with(&bare.root) {
+            return Err(bad_request("Git directory does not contain the workspace"));
+        }
+        Ok(Some(bare))
+    }
+
     pub(crate) fn root(&self) -> &Path {
         &self.root
     }
@@ -63,6 +94,7 @@ impl Repository {
             ])
             .args(&self.config)
             .args(args)
+            .env("GIT_OPTIONAL_LOCKS", "0")
             .env("GIT_NO_LAZY_FETCH", "1")
             .env("GIT_TERMINAL_PROMPT", "0")
             .env_remove("GIT_DIR")
@@ -212,7 +244,7 @@ impl Repository {
             }
             None => None,
         };
-        let new = tokio::task::spawn_blocking(move || read_file(&full_path))
+        let new = tokio::task::spawn_blocking(move || read_diff_file(&full_path))
             .await
             .map_err(internal)??;
         let mut result = GitDiffResult {
@@ -249,6 +281,14 @@ impl Repository {
         result.diff = (!diff.data.is_empty()).then(|| diff.text(&mut result.truncated));
         Ok(result)
     }
+
+    pub(crate) async fn worktrees(&self) -> Result<WorktreesResult> {
+        let output = self
+            .run(&["worktree", "list", "--porcelain", "-z"], usize::MAX)
+            .await?
+            .ok_or_else(|| internal("Could not list Git worktrees"))?;
+        Ok(parse_worktrees(&output.data, &self.root))
+    }
 }
 
 pub async fn git_status(cwd: &Path) -> Result<GitStatusResult> {
@@ -265,6 +305,330 @@ pub async fn git_diff(cwd: &Path, rel_path: &str) -> Result<GitDiffResult> {
         .ok_or_else(|| bad_request("Workspace is not inside a Git work tree"))?
         .diff(rel_path)
         .await
+}
+
+fn parse_worktrees(data: &[u8], root: &Path) -> WorktreesResult {
+    let mut result = WorktreesResult {
+        is_repo: true,
+        ..Default::default()
+    };
+    let mut fields = data.split(|byte| *byte == 0);
+    while let Some(path) = fields.find_map(|field| field.strip_prefix(b"worktree ")) {
+        let path = files::normalize(Path::new(String::from_utf8_lossy(path).as_ref()));
+        let is_main = result.main_root.is_none();
+        let mut worktree = WorktreeInfo {
+            path: path.to_string_lossy().into_owned(),
+            is_main,
+            is_current: path == root,
+            branch: None,
+            head: None,
+            detached: false,
+        };
+        if is_main {
+            result.main_root = Some(worktree.path.clone());
+        }
+        let mut bare = false;
+        for field in fields.by_ref().take_while(|field| !field.is_empty()) {
+            if let Some(head) = field.strip_prefix(b"HEAD ") {
+                worktree.head = Some(String::from_utf8_lossy(head).into_owned());
+            } else if let Some(branch) = field.strip_prefix(b"branch refs/heads/") {
+                worktree.branch = Some(String::from_utf8_lossy(branch).into_owned());
+            } else if field == b"detached" {
+                worktree.detached = true;
+            } else if field == b"bare" {
+                bare = true;
+            }
+        }
+        if !bare {
+            result.worktrees.push(worktree);
+        }
+    }
+    result
+}
+
+pub(crate) fn read_file(
+    cwd: Option<&Path>,
+    raw: &str,
+    remote: bool,
+) -> Result<WorkspaceFileResult> {
+    let relative = if remote {
+        Some(relative_path(raw)?)
+    } else {
+        None
+    };
+    let path = match &relative {
+        Some(path) => path.clone(),
+        None => expand_tilde(raw)?,
+    };
+    if !valid_preview_path(&path) {
+        return Err(bad_request("Invalid file preview path"));
+    }
+    let target = match cwd {
+        Some(cwd) => cwd.join(path),
+        None if !remote && path.is_absolute() => path,
+        None => return Err(bad_request("File preview requires a workspace directory")),
+    };
+    let canonical = fs::canonicalize(&target)
+        .map(files::display_path)
+        .map_err(|_| bad_request("File does not exist or cannot be opened"))?;
+    check_preview_target(&canonical, cwd)?;
+    if !canonical.is_file() {
+        return Err(bad_request("Expected a regular file"));
+    }
+
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY);
+    }
+    let file = options.open(&canonical).map_err(internal)?;
+    let metadata = file.metadata().map_err(internal)?;
+    if !metadata.is_file() {
+        return Err(bad_request("Expected a regular file"));
+    }
+    let resolved = files::display_path(opened_file_path(&file).map_err(internal)?);
+    check_preview_target(&resolved, cwd)?;
+
+    let extension = target
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let image = match extension.as_str() {
+        "png" => Some(("image/png", b"\x89PNG\r\n\x1a\n".as_slice())),
+        "jpg" | "jpeg" => Some(("image/jpeg", b"\xff\xd8\xff".as_slice())),
+        "webp" => Some(("image/webp", b"RIFF".as_slice())),
+        "gif" => Some(("image/gif", b"GIF".as_slice())),
+        _ => None,
+    };
+    let limit = if image.is_some() {
+        IMAGE_LIMIT
+    } else {
+        TEXT_LIMIT
+    };
+    let mut data = Vec::new();
+    file.take(limit as u64 + 1)
+        .read_to_end(&mut data)
+        .map_err(internal)?;
+    let size_bytes = metadata.len().max(data.len() as u64);
+    let content = if let Some((mime_type, magic)) = image {
+        if size_bytes > IMAGE_LIMIT as u64 {
+            unsupported("Image exceeds 4 MB preview limit")
+        } else if data.starts_with(magic)
+            && match extension.as_str() {
+                "webp" => data.get(8..12) == Some(b"WEBP"),
+                "gif" => data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a"),
+                _ => true,
+            }
+        {
+            FilePreviewContent::Image {
+                mime_type: mime_type.into(),
+                base64: STANDARD.encode(data),
+            }
+        } else {
+            unsupported("Binary file cannot be previewed")
+        }
+    } else {
+        text_preview(&data, &extension)
+    };
+    let (path, resolved_path) = match (cwd, relative) {
+        (Some(cwd), Some(relative)) => (
+            preview_relative(&relative),
+            preview_relative(resolved.strip_prefix(cwd).map_err(internal)?),
+        ),
+        _ => (raw.into(), resolved.to_string_lossy().into_owned()),
+    };
+    Ok(WorkspaceFileResult {
+        path,
+        resolved_path,
+        size_bytes,
+        content,
+    })
+}
+
+fn preview_relative(path: &Path) -> String {
+    path.iter()
+        .map(|part| part.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn valid_preview_path(path: &Path) -> bool {
+    !path.as_os_str().is_empty()
+        && !has_git_component(path)
+        && path.components().all(|part| match part {
+            Component::ParentDir => false,
+            Component::Normal(name) => valid_preview_name(&name.to_string_lossy()),
+            #[cfg(windows)]
+            Component::Prefix(prefix) => {
+                matches!(
+                    prefix.kind(),
+                    std::path::Prefix::Disk(_) | std::path::Prefix::UNC(_, _)
+                ) && !prefix.as_os_str().to_string_lossy().contains('\0')
+            }
+            _ => true,
+        })
+        && (!matches!(
+            path.components().next(),
+            Some(Component::Prefix(_)) | Some(Component::RootDir)
+        ) || path.is_absolute())
+}
+
+fn valid_preview_name(name: &str) -> bool {
+    if name.contains('\0') {
+        return false;
+    }
+    #[cfg(windows)]
+    {
+        if name.ends_with(['.', ' ']) || name.contains([':', '<', '>', '"', '|', '?', '*']) {
+            return false;
+        }
+        let stem = name
+            .split('.')
+            .next()
+            .unwrap_or(name)
+            .trim_end()
+            .to_ascii_uppercase();
+        if matches!(
+            stem.as_str(),
+            "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+        ) {
+            return false;
+        }
+        if stem
+            .strip_prefix("COM")
+            .or_else(|| stem.strip_prefix("LPT"))
+            .is_some_and(|suffix| {
+                matches!(
+                    suffix,
+                    "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+                )
+            })
+        {
+            return false;
+        }
+    }
+    true
+}
+
+fn check_preview_target(path: &Path, cwd: Option<&Path>) -> Result<()> {
+    if !path.is_absolute() || !valid_preview_path(path) {
+        return Err(bad_request("Invalid file preview path"));
+    }
+    if cwd.is_some_and(|cwd| !path.starts_with(cwd)) {
+        return Err(bad_request("Path is outside the workspace"));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn opened_file_path(file: &fs::File) -> io::Result<PathBuf> {
+    use std::{
+        ffi::OsString,
+        os::windows::{ffi::OsStringExt, io::AsRawHandle},
+    };
+    use windows_sys::Win32::Storage::FileSystem::GetFinalPathNameByHandleW;
+
+    let handle = file.as_raw_handle();
+    let len = unsafe { GetFinalPathNameByHandleW(handle, std::ptr::null_mut(), 0, 0) };
+    if len == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut path = vec![0; len as usize];
+    let count = unsafe { GetFinalPathNameByHandleW(handle, path.as_mut_ptr(), len, 0) };
+    if count == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if count >= len {
+        return Err(io::Error::other("File path changed while opening"));
+    }
+    Ok(PathBuf::from(OsString::from_wide(&path[..count as usize])))
+}
+
+#[cfg(target_os = "linux")]
+fn opened_file_path(file: &fs::File) -> io::Result<PathBuf> {
+    use std::os::fd::AsRawFd;
+
+    fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd()))
+}
+
+#[cfg(target_os = "macos")]
+fn opened_file_path(file: &fs::File) -> io::Result<PathBuf> {
+    use std::{
+        ffi::CStr,
+        os::{fd::AsRawFd, unix::ffi::OsStrExt},
+    };
+
+    let mut path = [0 as libc::c_char; libc::MAXPATHLEN as usize];
+    let result = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETPATH, path.as_mut_ptr()) };
+    if result == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    let bytes = unsafe { CStr::from_ptr(path.as_ptr()) }.to_bytes();
+    Ok(PathBuf::from(std::ffi::OsStr::from_bytes(bytes)))
+}
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+fn opened_file_path(_file: &fs::File) -> io::Result<PathBuf> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "File preview is unavailable on this platform",
+    ))
+}
+
+fn text_preview(data: &[u8], extension: &str) -> FilePreviewContent {
+    let binary = || unsupported("Binary file cannot be previewed");
+    let truncated = data.len() > TEXT_LIMIT;
+    if data
+        .iter()
+        .any(|byte| *byte < b' ' && !matches!(byte, b'\n' | b'\r' | b'\t' | 0x0c))
+    {
+        return binary();
+    }
+    let text = match std::str::from_utf8(data) {
+        Ok(text) => text,
+        Err(error) if truncated && error.error_len().is_none() => {
+            std::str::from_utf8(&data[..error.valid_up_to()]).expect("validated UTF-8 prefix")
+        }
+        Err(_) => return binary(),
+    };
+    let mut end = text.len().min(TEXT_LIMIT);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let language = match extension {
+        "rs" => Some("rust"),
+        "ts" | "tsx" | "mts" | "cts" => Some("typescript"),
+        "js" | "jsx" | "mjs" | "cjs" => Some("javascript"),
+        "json" | "jsonl" => Some("json"),
+        "md" | "markdown" => Some("markdown"),
+        "toml" => Some("toml"),
+        "yml" | "yaml" => Some("yaml"),
+        "py" => Some("python"),
+        "css" => Some("css"),
+        "html" | "htm" | "xml" | "svg" => Some("xml"),
+        "sh" | "bash" | "zsh" => Some("bash"),
+        "ps1" | "psm1" => Some("powershell"),
+        "sql" => Some("sql"),
+        "go" => Some("go"),
+        "java" => Some("java"),
+        "c" | "h" => Some("c"),
+        "cc" | "cpp" | "hpp" => Some("cpp"),
+        _ => None,
+    };
+    FilePreviewContent::Text {
+        text: text[..end].into(),
+        language: language.map(str::to_owned),
+        truncated,
+    }
+}
+
+fn unsupported(reason: &str) -> FilePreviewContent {
+    FilePreviewContent::Unsupported {
+        reason: reason.into(),
+    }
 }
 
 #[derive(Default)]
@@ -314,7 +678,7 @@ async fn capture_async(mut reader: impl AsyncRead + Unpin, limit: usize) -> io::
     }
 }
 
-fn read_file(path: &Path) -> Result<Option<Capture>> {
+fn read_diff_file(path: &Path) -> Result<Option<Capture>> {
     let metadata = match fs::metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -767,6 +1131,250 @@ mod tests {
             output.status.success(),
             "{args:?}: {}",
             String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn previews_utf8_source_images_and_unsupported_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = files::normalize(temp.path());
+        let mut source = "x".repeat(TEXT_LIMIT - 1);
+        source.push_str("🙂\n");
+        fs::write(cwd.join("source.rs"), &source).unwrap();
+        let result = read_file(Some(&cwd), "./source.rs", true).unwrap();
+        assert_eq!(result.path, "source.rs");
+        assert_eq!(result.resolved_path, "source.rs");
+        assert_eq!(result.size_bytes, source.len() as u64);
+        assert_eq!(
+            result.content,
+            FilePreviewContent::Text {
+                text: "x".repeat(TEXT_LIMIT - 1),
+                language: Some("rust".into()),
+                truncated: true,
+            }
+        );
+        let svg = "<svg><script>example()</script></svg>";
+        fs::write(cwd.join("sample.svg"), svg).unwrap();
+        assert_eq!(
+            read_file(Some(&cwd), "sample.svg", false).unwrap().content,
+            FilePreviewContent::Text {
+                text: svg.into(),
+                language: Some("xml".into()),
+                truncated: false,
+            }
+        );
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a1X8AAAAASUVORK5CYII=";
+        fs::write(cwd.join("image.png"), STANDARD.decode(png).unwrap()).unwrap();
+        assert_eq!(
+            read_file(Some(&cwd), "image.png", true).unwrap().content,
+            FilePreviewContent::Image {
+                mime_type: "image/png".into(),
+                base64: png.into()
+            }
+        );
+        for (name, data) in [
+            ("invalid.png", b"text in a PNG file".as_slice()),
+            ("binary.bin", b"text\0with NUL".as_slice()),
+            ("invalid.txt", b"invalid \xff".as_slice()),
+        ] {
+            fs::write(cwd.join(name), data).unwrap();
+            assert_eq!(
+                read_file(Some(&cwd), name, true).unwrap().content,
+                unsupported("Binary file cannot be previewed"),
+            );
+        }
+        let image = fs::OpenOptions::new()
+            .write(true)
+            .open(cwd.join("image.png"))
+            .unwrap();
+        image.set_len(IMAGE_LIMIT as u64 + 1).unwrap();
+        drop(image);
+        assert_eq!(
+            read_file(Some(&cwd), "image.png", true).unwrap().content,
+            unsupported("Image exceeds 4 MB preview limit"),
+        );
+    }
+
+    #[test]
+    fn preview_requires_an_allowed_regular_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = files::normalize(temp.path());
+        let cwd = root.join("project");
+        fs::create_dir_all(cwd.join(".git")).unwrap();
+        fs::write(cwd.join(".git/config"), "metadata").unwrap();
+        fs::write(cwd.join("sample.txt"), "workspace").unwrap();
+        let outside = root.join("outside.txt");
+        fs::write(&outside, "outside").unwrap();
+        for path in [
+            ".git/config",
+            ".GIT/config",
+            "../outside.txt",
+            "any/../sample.txt",
+            ".",
+            "missing",
+        ] {
+            for remote in [false, true] {
+                assert_eq!(
+                    read_file(Some(&cwd), path, remote).unwrap_err().code,
+                    ErrorCode::BadRequest
+                );
+            }
+        }
+        let absolute = cwd.join("sample.txt");
+        let absolute = absolute.to_str().unwrap();
+        assert_eq!(
+            read_file(Some(&cwd), absolute, true).unwrap_err().code,
+            ErrorCode::BadRequest
+        );
+        assert_eq!(
+            read_file(Some(&cwd), absolute, false)
+                .unwrap()
+                .resolved_path,
+            absolute
+        );
+        assert_eq!(
+            read_file(None, outside.to_str().unwrap(), false)
+                .unwrap()
+                .size_bytes,
+            7
+        );
+        assert_eq!(
+            read_file(None, cwd.join(".git/config").to_str().unwrap(), false)
+                .unwrap_err()
+                .code,
+            ErrorCode::BadRequest
+        );
+        assert_eq!(
+            read_file(None, "sample.txt", true).unwrap_err().code,
+            ErrorCode::BadRequest
+        );
+
+        #[cfg(windows)]
+        for path in [
+            "sample.txt:stream",
+            "NUL.txt",
+            r"\\.\NUL",
+            r"\\?\C:\file.txt",
+            "C:file.txt",
+            ".git./config",
+        ] {
+            assert_eq!(
+                read_file(Some(&cwd), path, false).unwrap_err().code,
+                ErrorCode::BadRequest
+            );
+        }
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+
+            symlink(&outside, cwd.join("escape")).unwrap();
+            symlink(cwd.join(".git/config"), cwd.join("metadata")).unwrap();
+            symlink(cwd.join("sample.txt"), cwd.join("alias")).unwrap();
+            for path in ["escape", "metadata"] {
+                assert_eq!(
+                    read_file(Some(&cwd), path, true).unwrap_err().code,
+                    ErrorCode::BadRequest
+                );
+            }
+            assert_eq!(
+                read_file(Some(&cwd), "alias", true).unwrap().resolved_path,
+                "sample.txt"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn worktree_list_identifies_main_linked_and_detached_checkouts() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(Repository::discover_worktrees(temp.path())
+            .await
+            .unwrap()
+            .is_none());
+        let main = temp.path().join("main repo");
+        fs::create_dir(&main).unwrap();
+        git(&main, &["init", "--initial-branch=vetro-main"]);
+        git(
+            &main,
+            &[
+                "-c",
+                "user.name=Vetro Test",
+                "-c",
+                "user.email=vetro-test@example.invalid",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "Initial",
+            ],
+        );
+        git(
+            &main,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "vetro-linked",
+                "../linked checkout",
+            ],
+        );
+        git(&main, &["worktree", "add", "--detach", "../detached"]);
+        let linked = files::normalize(&temp.path().join("linked checkout"));
+        fs::create_dir(linked.join("nested")).unwrap();
+        let index = fs::read(main.join(".git/index")).unwrap();
+        let worktrees = Repository::discover(&linked.join("nested"))
+            .await
+            .unwrap()
+            .unwrap()
+            .worktrees()
+            .await
+            .unwrap();
+        assert!(worktrees.is_repo);
+        assert_eq!(worktrees.worktrees.len(), 3);
+        let first = &worktrees.worktrees[0];
+        assert_eq!(worktrees.main_root.as_deref(), Some(first.path.as_str()));
+        assert_eq!(
+            files::normalize(Path::new(&first.path)),
+            files::normalize(&main)
+        );
+        assert!(first.is_main && !first.is_current && !first.detached);
+        assert_eq!(first.branch.as_deref(), Some("vetro-main"));
+        assert!(first.head.is_some());
+        let current = worktrees
+            .worktrees
+            .iter()
+            .find(|entry| entry.is_current)
+            .unwrap();
+        assert_eq!(files::normalize(Path::new(&current.path)), linked);
+        assert_eq!(current.branch.as_deref(), Some("vetro-linked"));
+        assert_eq!(current.head, first.head);
+        assert!(!current.is_main && !current.detached);
+        let detached = worktrees
+            .worktrees
+            .iter()
+            .find(|entry| entry.detached)
+            .unwrap();
+        assert_eq!(detached.branch, None);
+        assert_eq!(detached.head, first.head);
+        assert_eq!(fs::read(main.join(".git/index")).unwrap(), index);
+        assert!(!main.join(".git/index.lock").exists());
+
+        let bare = temp.path().join("bare.git");
+        fs::create_dir(&bare).unwrap();
+        git(&bare, &["init", "--bare"]);
+        let worktrees = Repository::discover_worktrees(&bare)
+            .await
+            .unwrap()
+            .unwrap()
+            .worktrees()
+            .await
+            .unwrap();
+        assert_eq!(
+            worktrees,
+            WorktreesResult {
+                is_repo: true,
+                main_root: Some(files::normalize(&bare).to_string_lossy().into_owned()),
+                worktrees: Vec::new(),
+            }
         );
     }
 

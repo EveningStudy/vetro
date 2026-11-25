@@ -400,6 +400,7 @@ impl Agent for AcpAgent {
                         whole: caps.fork,
                         at_turn: false,
                     },
+                    history_edit: self.history_edit_capabilities(),
                 };
                 info.auth.methods.clone_from(&runtime.methods);
                 if self.id != "devin"

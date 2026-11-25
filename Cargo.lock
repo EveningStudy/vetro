@@ -5292,6 +5292,7 @@ version = "0.2.0"
 dependencies = [
  "getrandom 0.3.4",
  "memchr",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",
@@ -5335,6 +5336,7 @@ dependencies = [
  "getrandom 0.3.4",
  "humantime",
  "ignore",
+ "libc",
  "mime_guess",
  "notify",
  "open",

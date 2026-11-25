@@ -10,8 +10,8 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 use vetro_agent_api::{process::SpawnSpec, Agent, SessionEvent, StartRequest};
 use vetro_agent_claude::ClaudeAgent;
 use vetro_proto::{
-    ContentBlock, ItemKind, NoticeLevel, RawDirection, RequestResolution, StopReason, ThreadSource,
-    ThreadStatus, ToolKind, ToolStatus,
+    rpc::ErrorCode, ContentBlock, ItemKind, NoticeLevel, RawDirection, RequestResolution,
+    StopReason, ThreadSource, ThreadStatus, ToolKind, ToolStatus,
 };
 
 const PROMPT: &str = "  Original prompt: \"你好\"\r\n\n  ";
@@ -42,6 +42,7 @@ fn main() {
         .iter()
         .any(|arg| matches!(arg.as_str(), "--ignored" | "--list"))
     {
+        env::remove_var("CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING");
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -88,6 +89,8 @@ async fn test() {
     );
     assert_eq!(info.version.as_deref(), Some("test-version"));
     assert!(info.capabilities.mid_turn_input);
+    assert!(info.capabilities.history_edit.rewind_files);
+    assert!(info.capabilities.history_edit.preview_rewind_files);
 
     let (sink, mut receiver) = unbounded_channel();
     let session = agent
@@ -173,6 +176,17 @@ async fn test() {
                 option_id: "deny".into(),
             },
         };
+        if step == "always" {
+            let checkpoint = prompt_id.as_deref().unwrap();
+            assert_eq!(
+                session
+                    .rewind_files(checkpoint, true)
+                    .await
+                    .unwrap_err()
+                    .code,
+                ErrorCode::Busy
+            );
+        }
         if step == "plan" {
             session.send(vec![text("fold this turn")]).await.unwrap();
         }
@@ -230,6 +244,30 @@ async fn test() {
         next(&mut receiver).await,
         SessionEvent::Status(ThreadStatus::Idle)
     );
+    assert_eq!(
+        session
+            .rewind_files("invalid", true)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::BadRequest
+    );
+    let checkpoint = prompt_id.as_deref().unwrap();
+    let preview = session.rewind_files(checkpoint, true).await.unwrap();
+    assert!(preview.can_rewind && preview.dry_run);
+    assert_eq!(preview.files_changed, ["file.rs"]);
+    assert_eq!(preview.insertions, Some(2));
+    assert_eq!(preview.deletions, Some(1));
+    assert!(preview.error.is_none() && preview.skipped_links.is_empty());
+    let applied = session.rewind_files(checkpoint, false).await.unwrap();
+    assert!(applied.can_rewind && !applied.dry_run);
+    assert_eq!(applied.files_changed, ["file.rs"]);
+    assert_eq!(applied.skipped_links, ["unsafe-link"]);
+    assert_eq!(applied.insertions, None);
+    let unavailable = session.rewind_files(ID, true).await.unwrap();
+    assert!(!unavailable.can_rewind && unavailable.dry_run);
+    assert_eq!(unavailable.error.as_deref(), Some("No checkpoint"));
+    assert!(unavailable.files_changed.is_empty());
     assert!(session
         .set_option("model", "haiku")
         .await
@@ -271,7 +309,13 @@ async fn test() {
     let mut expected = PREFIX.to_vec();
     expected.extend(["--session-id", session.native_id()]);
     assert_eq!(spawn["args"], json!(expected));
-    assert_eq!(spawn["env"], json!({"ANTHROPIC_BASE_URL": "<redacted>"}));
+    assert_eq!(
+        spawn["env"],
+        json!({
+            "ANTHROPIC_BASE_URL": "<redacted>",
+            "CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING": "<redacted>"
+        })
+    );
     let sent: Vec<Value> = log
         .iter()
         .filter(|entry| entry.direction == RawDirection::Sent)
@@ -405,7 +449,7 @@ async fn test() {
     }
     agent.shutdown().await;
     println!(
-        "fake Claude passed: no injection, streaming, permissions, interrupt, history, resume, fork"
+        "fake Claude passed: no injection, streaming, permissions, interrupt, history, resume, fork, rewind"
     );
 }
 
@@ -451,6 +495,7 @@ fn fake(args: &[String]) {
     );
     let mut first = true;
     let mut folded = None;
+    let mut checkpoint = Value::Null;
     for line in io::stdin().lock().lines() {
         let row: Value = serde_json::from_str(&line.unwrap()).unwrap();
         match row["type"].as_str().unwrap() {
@@ -485,6 +530,27 @@ fn fake(args: &[String]) {
                         json!({})
                     }
                     "interrupt" => json!({}),
+                    "rewind_files" => {
+                        assert_eq!(
+                            env::var("CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING").as_deref(),
+                            Ok("true")
+                        );
+                        let dry_run = req["dry_run"].as_bool().unwrap();
+                        let id = &req["user_message_id"];
+                        assert!(*id == checkpoint || *id == ID);
+                        assert_eq!(
+                            req,
+                            &json!({"subtype": "rewind_files", "user_message_id": id, "dry_run": dry_run})
+                        );
+                        if *id == ID {
+                            assert!(dry_run);
+                            json!({"canRewind": false, "error": "No checkpoint"})
+                        } else if dry_run {
+                            json!({"canRewind": true, "filesChanged": ["file.rs"], "insertions": 2, "deletions": 1})
+                        } else {
+                            json!({"canRewind": true, "filesChanged": ["file.rs"], "skippedLinks": ["unsafe-link"]})
+                        }
+                    }
                     _ => panic!("unexpected control request"),
                 };
                 emit(
@@ -503,6 +569,7 @@ fn fake(args: &[String]) {
             }
             "user" if first => {
                 first = false;
+                checkpoint = row["uuid"].clone();
                 assert_eq!(
                     row["message"],
                     json!({"role":"user","content":[{"type":"text","text":PROMPT}]})

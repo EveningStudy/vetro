@@ -332,10 +332,15 @@ impl Core {
                     self.progress(id, scanned, total, false);
                     return Ok((total, indexed, failed, true));
                 }
+                let _history_guard = if agent.history_edit_capabilities().rollback_conversation {
+                    Some(self.history_edits.read().await)
+                } else {
+                    None
+                };
                 if self
                     .sessions
                     .get(&thread.id)
-                    .is_some_and(|thread| thread.is_live())
+                    .is_some_and(|thread| thread.is_live() || thread.history_reload_needed())
                 {
                     scanned += 1;
                     continue;
@@ -410,6 +415,9 @@ impl Core {
         if allow_protocol || agent.id() == "claude" {
             return self.read_history_items(agent, summary).await.map(Some);
         }
+        if self.history_rolled_back(summary) {
+            return Ok(None);
+        }
         #[cfg(feature = "codex")]
         if agent.id() == "codex" {
             if summary
@@ -444,6 +452,9 @@ impl Core {
         agent: &Arc<dyn Agent>,
         summary: &ThreadSummary,
     ) -> Result<Transcript> {
+        if self.history_rolled_back(summary) {
+            return self.read_authoritative_history_items(agent, summary).await;
+        }
         if agent.id() == "codex"
             && summary
                 .origin
@@ -461,15 +472,7 @@ impl Core {
         } else {
             Ok(None)
         };
-        let read = agent.read(&summary.native_id, summary.cwd.as_deref().map(Path::new));
-        let result = if agent.id() == "codex" {
-            time::timeout(Duration::from_secs(8), read)
-                .await
-                .map_err(internal)
-                .and_then(std::convert::identity)
-        } else {
-            read.await
-        };
+        let result = self.read_authoritative_history_items(agent, summary).await;
         #[cfg(feature = "codex")]
         if agent.id() == "codex"
             && result
@@ -488,12 +491,38 @@ impl Core {
         result
     }
 
+    fn history_rolled_back(&self, summary: &ThreadSummary) -> bool {
+        self.home.read_state(|state| {
+            state
+                .threads
+                .get(&summary.id)
+                .is_some_and(|overlay| overlay.history_rolled_back)
+        })
+    }
+
+    pub(crate) async fn read_authoritative_history_items(
+        &self,
+        agent: &Arc<dyn Agent>,
+        summary: &ThreadSummary,
+    ) -> Result<Transcript> {
+        let read = agent.read(&summary.native_id, summary.cwd.as_deref().map(Path::new));
+        if agent.id() == "codex" {
+            time::timeout(Duration::from_secs(8), read)
+                .await
+                .map_err(internal)
+                .and_then(std::convert::identity)
+        } else {
+            read.await
+        }
+    }
+
     async fn live_index_worker(self: Arc<Self>) {
         let mut interval = time::interval(Duration::from_millis(500));
         interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
             for actor in self.sessions.snapshot() {
+                let _history_guard = self.history_edits.read().await;
                 let store = self.store.clone();
                 let core = self.clone();
                 match blocking(move || {

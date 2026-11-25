@@ -188,6 +188,12 @@ async fn call(
             connection.subscribe(summary.id.clone(), thread, seq);
             output(ThreadResult { thread: summary })
         }
+        "threads.rollback" => {
+            let (snapshot, thread) = core.rollback_thread(parse(params)?).await?;
+            connection.subscribe(snapshot.thread.id.clone(), thread, snapshot.seq);
+            output(snapshot)
+        }
+        "threads.rewindFiles" => output(core.rewind_thread_files(parse(params)?).await?),
         "threads.send" => {
             let params: ThreadSendParams = parse(params)?;
             core.thread(&params.thread_id)
@@ -299,6 +305,15 @@ async fn call(
             let params: GitDiffParams = parse(params)?;
             let cwd = workspace_cwd(state, client, &params.cwd)?;
             output(core.git_diff(&cwd, &params.path, client.remote()).await?)
+        }
+        "workspace.readFile" => output(
+            core.read_workspace_file(parse(params)?, client.remote())
+                .await?,
+        ),
+        "workspace.worktrees" => {
+            let params: WorkspacePathParams = parse(params)?;
+            let cwd = workspace_cwd(state, client, &params.cwd)?;
+            output(core.worktrees(&cwd, client.remote()).await?)
         }
         "workspace.openExternal" => {
             client.desktop()?;

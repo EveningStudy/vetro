@@ -13,6 +13,7 @@ use crate::{hello, http, Client};
 
 const NATIVE_ID: &str = "00c02626-cafe-4abc-baba-000010000020";
 const THREAD_ID: &str = "claude:00c02626-cafe-4abc-baba-000010000020";
+const CHECKPOINT: &str = "00c02626-cafe-4abc-baba-000010000021";
 
 pub async fn exercise() {
     let temp = tempfile::tempdir().unwrap();
@@ -26,7 +27,7 @@ pub async fn exercise() {
         format!(
             "{}\n{}\n",
             json!({
-                "type":"user", "uuid":"history", "sessionId":NATIVE_ID, "cwd":project,
+                "type":"user", "uuid":CHECKPOINT, "sessionId":NATIVE_ID, "cwd":project,
                 "entrypoint":"claude-desktop", "timestamp":"2026-11-23T00:00:00.000Z",
                 "message":{"content":"Stored Claude turn"}
             }),
@@ -70,6 +71,7 @@ pub async fn exercise() {
     assert_eq!(opened["thread"]["source"], "desktop");
     assert_eq!(opened["thread"]["resumable"], true);
     assert_eq!(opened["thread"]["live"], false);
+    assert_eq!(opened["items"][0]["id"], CHECKPOINT);
     assert_eq!(
         opened["usage"],
         json!({
@@ -80,6 +82,27 @@ pub async fn exercise() {
             "rateLimits":[]
         })
     );
+
+    let checkpoint = json!({"threadId": THREAD_ID, "userMessageId": CHECKPOINT});
+    let mut preview = checkpoint.clone();
+    preview["dryRun"] = json!(true);
+    let result = client.call("threads.rewindFiles", preview.clone()).await;
+    assert_eq!(
+        result,
+        json!({
+            "canRewind": true, "dryRun": true, "error": null, "filesChanged": ["tracked.rs"],
+            "insertions": 2, "deletions": null, "skippedLinks": []
+        })
+    );
+    assert_eq!(
+        client.call("threads.open", thread.clone()).await["thread"]["live"],
+        true
+    );
+    let result = client.call("threads.rewindFiles", checkpoint).await;
+    assert_eq!(result["canRewind"], true);
+    assert_eq!(result["dryRun"], false);
+    assert_eq!(result["skippedLinks"], json!(["escape"]));
+    client.call("threads.detach", thread.clone()).await;
 
     let options = set_option(&mut client, "effort", "low").await;
     assert_eq!(current(&options, "effort"), "low");
@@ -151,6 +174,10 @@ pub async fn exercise() {
     .await;
     let active = client.call("threads.open", thread.clone()).await;
     assert_eq!(active["thread"]["status"], "running");
+    assert_eq!(
+        client.request("threads.rewindFiles", preview).await["error"]["code"],
+        "busy"
+    );
     client.call("threads.interrupt", thread.clone()).await;
     client
         .until_event(THREAD_ID, |event| {
@@ -170,6 +197,7 @@ pub async fn exercise() {
     client.call("threads.detach", thread).await;
     stop.send(()).unwrap();
     serving.await.unwrap().unwrap();
+    println!("Claude rewind WebSocket fixture passed");
 }
 
 async fn set_option(client: &mut Client, id: &str, value: &str) -> Value {
@@ -245,6 +273,18 @@ pub fn fake() {
                 json!({"mode":request["mode"]})
             }
             "set_model" => json!({"model":request["model"]}),
+            "rewind_files" => {
+                assert!(!active);
+                assert_eq!(request["user_message_id"], CHECKPOINT);
+                match request["dry_run"].as_bool().unwrap() {
+                    true => {
+                        json!({"canRewind": true, "filesChanged": ["tracked.rs"], "insertions": 2})
+                    }
+                    false => {
+                        json!({"canRewind": true, "filesChanged": ["tracked.rs"], "skippedLinks": ["escape"]})
+                    }
+                }
+            }
             "apply_flag_settings" => {
                 assert!(!active);
                 emit(json!({"type":"control_response","response":{

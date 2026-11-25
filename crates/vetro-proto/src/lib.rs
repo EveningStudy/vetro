@@ -80,6 +80,15 @@ pub struct ForkCapabilities {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
+pub struct HistoryEditCapabilities {
+    pub rollback_conversation: bool,
+    pub rewind_files: bool,
+    pub preview_rewind_files: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub struct AgentCapabilities {
     pub image_input: bool,
     /// A prompt sent while a turn is running steers that turn instead of queueing.
@@ -90,6 +99,8 @@ pub struct AgentCapabilities {
     pub list_sessions: bool,
     #[serde(default)]
     pub fork: ForkCapabilities,
+    #[serde(default)]
+    pub history_edit: HistoryEditCapabilities,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]

@@ -184,10 +184,19 @@ impl Agent for ClaudeAgent {
                     whole: true,
                     at_turn: true,
                 },
+                history_edit: self.history_edit_capabilities(),
             },
             error: error.map(|error| error.message.clone()),
             rate_limits: Vec::new(),
             rate_limits_updated_at: None,
+        }
+    }
+
+    fn history_edit_capabilities(&self) -> vetro_proto::HistoryEditCapabilities {
+        vetro_proto::HistoryEditCapabilities {
+            rollback_conversation: false,
+            rewind_files: true,
+            preview_rewind_files: true,
         }
     }
 

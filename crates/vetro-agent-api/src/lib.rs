@@ -6,9 +6,9 @@ use std::{
 
 use tokio::sync::mpsc;
 use vetro_proto::{
-    rpc::{AuthenticateResult, ErrorCode, RpcError},
-    AgentInfo, ConfigCategory, ConfigOption, ContentBlock, ItemKind, RequestResolution,
-    SlashCommand, ThreadSource, ThreadStatus, ThreadUsage,
+    rpc::{AuthenticateResult, ErrorCode, RewindFilesResult, RpcError},
+    AgentInfo, ConfigCategory, ConfigOption, ContentBlock, HistoryEditCapabilities, ItemKind,
+    RequestResolution, SlashCommand, ThreadSource, ThreadStatus, ThreadUsage,
 };
 
 pub use async_trait::async_trait;
@@ -375,6 +375,20 @@ pub trait Agent: Send + Sync + 'static {
             "This agent does not support native session forking",
         ))
     }
+    fn history_edit_capabilities(&self) -> HistoryEditCapabilities {
+        HistoryEditCapabilities::default()
+    }
+    async fn rollback_conversation(
+        &self,
+        _native_id: &str,
+        _cwd: Option<&Path>,
+        _before_turn_id: &str,
+    ) -> Result<()> {
+        Err(AgentError::new(
+            ErrorCode::BadRequest,
+            "Agent does not support conversation rollback",
+        ))
+    }
     async fn shutdown(&self);
 }
 
@@ -391,6 +405,16 @@ pub trait Session: Send + Sync + 'static {
     async fn interrupt(&self) -> Result<()>;
     async fn set_option(&self, option_id: &str, value: &str) -> Result<Vec<ConfigOption>>;
     async fn respond(&self, request_id: &str, resolution: RequestResolution) -> Result<()>;
+    async fn rewind_files(
+        &self,
+        _user_message_id: &str,
+        _dry_run: bool,
+    ) -> Result<RewindFilesResult> {
+        Err(AgentError::new(
+            ErrorCode::BadRequest,
+            "Agent does not support file rewind",
+        ))
+    }
     async fn detach(&self);
     fn wire_log(&self) -> Arc<WireLog>;
 }

@@ -43,12 +43,16 @@ Unknown fields must be ignored by both sides. Timestamps are milliseconds since 
 | `threads.respond` | `ThreadRespondParams` | `Empty` | Answers a permission request or question. |
 | `threads.update` | `ThreadUpdateParams` | `ThreadResult` | Vetro-local title, archive and pin flags. Never modifies the agent's own store. |
 | `threads.detach` | `ThreadIdParams` | `Empty` | Releases the agent process for this thread. |
+| `threads.rollback` | `ThreadRollbackParams` | `ThreadOpenResult` | Requires a resumable, idle thread with `historyEdit.rollbackConversation` support. Excludes the specified native turn and all later turns from the conversation. Returns a fresh snapshot and subscribes the caller. Other views refresh on `app.resync`. |
+| `threads.rewindFiles` | `ThreadRewindFilesParams` | `RewindFilesResult` | Requires a resumable, idle thread and a native user-message checkpoint UUID. `dryRun: true` previews the changes. Applying restores tracked files through the agent and can report skipped links. Check `historyEdit.rewindFiles` and `historyEdit.previewRewindFiles` for support. |
 | `threads.raw` | `ThreadRawParams` | `ThreadRawResult` | Per-thread wire log. The limit preserves launch and handshake entries. |
 | `search.threads` | `SearchParams` | `SearchResult` | Literal, case-insensitive full-text phrase search over titles and user and agent messages. Supports Chinese substrings. Returns one ranked hit per unarchived thread, with a matching snippet. Snippet text is HTML-escaped and matches use `<mark>` tags. |
 | `fs.list` | `FsListParams` | `FsListResult` | Read-only folder picker. Remote clients are limited to known project roots. |
 | `fs.find` | `FsFindParams` | `FsFindResult` | Read-only file mentions. Remote clients are limited to known project roots. |
 | `workspace.gitStatus` | `WorkspacePathParams` | `GitStatusResult` | Read-only Git branch and changed-file summary (`--no-optional-locks`). Remote clients are limited to known project roots. |
 | `workspace.gitDiff` | `GitDiffParams` | `GitDiffResult` | Read-only Git diff for one changed file. Remote clients are limited to known project roots. |
+| `workspace.readFile` | `WorkspaceFileParams` | `WorkspaceFileResult` | Read-only preview of a regular file. UTF-8 source (including SVG) is capped at 256 KiB. Supported raster images are capped at 4 MiB. Remote clients supply a known workspace and relative file path and receive relative paths. On desktop, an empty `cwd` allows an absolute or `~`-expanded path. |
+| `workspace.worktrees` | `WorkspacePathParams` | `WorktreesResult` | Read-only list of registered Git worktrees. Remote clients are limited to known project roots for the requested checkout. |
 | `workspace.openExternal` | `OpenExternalParams` | `Empty` | Desktop local client only. Opens a workspace folder, terminal, or file in the user's configured external app. |
 | `app.notify` | `NotifyParams` | `Empty` | Desktop local client only. Requests a native OS desktop notification when enabled in settings. |
 | `settings.get` | `Empty` | `Settings` | |
@@ -68,6 +72,7 @@ Unknown fields must be ignored by both sides. Timestamps are milliseconds since 
 - `threads.upserted` / `threads.removed`: the thread list changed (new session, title, status, link, history refresh). Sent to every connection.
 - `agents.changed`: a single agent with a newly observed official rate-limit snapshot. The core also broadcasts the updated agent list via `agents.updated`.
 - `agents.updated`, `projects.updated`, `index.progress`, `remote.updated`, `app.navigate`.
+- `app.resync`: replace cached lists and snapshots of open threads after a history replacement or missed events.
 
 Listings and searches use the local index immediately. During a rebuild its initial results can be incomplete. `index.progress` reports a scan per agent. `done` means the scan ended, including sessions whose transcripts require sign-in. `threads.upserted` carries newly indexed summaries and changes to links. Open history threads receive item events as their native transcripts change.
 

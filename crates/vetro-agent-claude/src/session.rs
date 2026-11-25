@@ -5,6 +5,7 @@ use std::{
     time::Duration,
 };
 
+use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::{oneshot, Mutex as AsyncMutex};
 use vetro_agent_api::{
@@ -13,13 +14,28 @@ use vetro_agent_api::{
     AgentError, AgentOptions, EventSink, ItemDraft, Result, Session, SessionEvent, WireLog,
 };
 use vetro_proto::{
-    rpc::ErrorCode, ConfigCategory, ConfigChoice, ConfigOption, ContentBlock, InteractionRequest,
-    ItemKind, NoticeLevel, PermissionOption, PermissionOptionKind, Question, QuestionChoice,
-    RateLimit, RequestBody, RequestResolution, SlashCommand, StopReason, ThreadStatus, ThreadUsage,
+    rpc::{ErrorCode, RewindFilesResult},
+    ConfigCategory, ConfigChoice, ConfigOption, ContentBlock, InteractionRequest, ItemKind,
+    NoticeLevel, PermissionOption, PermissionOptionKind, Question, QuestionChoice, RateLimit,
+    RequestBody, RequestResolution, SlashCommand, StopReason, ThreadStatus, ThreadUsage,
     TokenUsage,
 };
 
-use crate::{bad_request, events::Timeline, io_error, string, uuid};
+use crate::{bad_request, events::Timeline, history, io_error, string, uuid};
+
+const DISABLE_CHECKPOINTING: &str = "CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING";
+const ENABLE_CHECKPOINTING: &str = "CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING";
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RewindReply {
+    can_rewind: bool,
+    error: Option<String>,
+    files_changed: Option<Vec<String>>,
+    insertions: Option<u64>,
+    deletions: Option<u64>,
+    skipped_links: Option<Vec<String>>,
+}
 
 pub(crate) struct ClaudeSession {
     id: String,
@@ -71,6 +87,16 @@ impl ClaudeSession {
         sink: EventSink,
     ) -> Result<Arc<Self>> {
         spec.cwd = cwd.or(spec.cwd);
+        let disable_set = spec.env.keys().any(|key| {
+            if cfg!(windows) {
+                key.eq_ignore_ascii_case(DISABLE_CHECKPOINTING)
+            } else {
+                key == DISABLE_CHECKPOINTING
+            }
+        });
+        if !disable_set && std::env::var_os(DISABLE_CHECKPOINTING).is_none() {
+            spec.env.insert(ENABLE_CHECKPOINTING.into(), "true".into());
+        }
         let extra_args = std::mem::take(&mut spec.args);
         spec.args.extend(
             [
@@ -523,6 +549,43 @@ impl Session for ClaudeSession {
             state.permissions.insert(request_id.into(), permission);
         }
         sent
+    }
+
+    async fn rewind_files(
+        &self,
+        user_message_id: &str,
+        dry_run: bool,
+    ) -> Result<RewindFilesResult> {
+        history::validate_id(user_message_id)
+            .map_err(|_| bad_request("Invalid Claude user-message UUID"))?;
+        let _writes = self.writes.lock().await;
+        if self.state.lock().unwrap().status() != ThreadStatus::Idle {
+            return Err(AgentError::new(
+                ErrorCode::Busy,
+                "Wait for the current turn to finish before rewinding files",
+            ));
+        }
+        let reply = self
+            .control(
+                json!({"subtype":"rewind_files","user_message_id":user_message_id,"dry_run":dry_run}),
+                Duration::from_secs(30),
+            )
+            .await?;
+        let reply: RewindReply = serde_json::from_value(reply).map_err(|error| {
+            AgentError::new(
+                ErrorCode::Internal,
+                format!("Invalid Claude rewind result: {error}"),
+            )
+        })?;
+        Ok(RewindFilesResult {
+            can_rewind: reply.can_rewind,
+            dry_run,
+            error: reply.error,
+            files_changed: reply.files_changed.unwrap_or_default(),
+            insertions: reply.insertions,
+            deletions: reply.deletions,
+            skipped_links: reply.skipped_links.unwrap_or_default(),
+        })
     }
 
     async fn detach(&self) {

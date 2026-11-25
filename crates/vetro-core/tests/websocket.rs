@@ -1,6 +1,9 @@
 #[cfg(feature = "claude")]
 #[path = "fixtures/claude.rs"]
 mod claude;
+#[cfg(feature = "codex")]
+#[path = "fixtures/codex.rs"]
+mod codex;
 mod fixtures;
 
 use std::{
@@ -33,6 +36,11 @@ const REMOTE_HOST: &str = "vetro.example.test:8443";
 const REMOTE_ORIGIN: &str = "https://vetro.example.test:8443";
 
 fn main() {
+    #[cfg(feature = "codex")]
+    if std::env::args().nth(1).as_deref() == Some("app-server") {
+        codex::fake();
+        return;
+    }
     #[cfg(feature = "claude")]
     if std::env::args().nth(1).as_deref() == Some("-p") {
         claude::fake();
@@ -92,6 +100,10 @@ fn main() {
             .unwrap();
             #[cfg(feature = "claude")]
             tokio::time::timeout(Duration::from_secs(30), claude::exercise())
+                .await
+                .unwrap();
+            #[cfg(feature = "codex")]
+            tokio::time::timeout(Duration::from_secs(30), codex::exercise())
                 .await
                 .unwrap();
         });
@@ -421,6 +433,15 @@ async fn exercise(path: &Path, cwd: &Path, fake_bin: &Path, marker_port: u16) {
         ("fs.list", json!({"path": path})),
         ("fs.find", json!({"cwd": path, "query": "sentinel"})),
         ("workspace.gitStatus", json!({"cwd": path})),
+        ("workspace.worktrees", json!({"cwd": path})),
+        (
+            "workspace.readFile",
+            json!({"cwd": path, "path": "file.rs"}),
+        ),
+        (
+            "workspace.readFile",
+            json!({"cwd": "", "path": cwd.join("file.rs")}),
+        ),
         (
             "workspace.gitDiff",
             json!({"cwd": path, "path": "sentinel"}),
@@ -444,6 +465,28 @@ async fn exercise(path: &Path, cwd: &Path, fake_bin: &Path, marker_port: u16) {
         );
     }
     assert!(remote.call("fs.list", json!({"path": cwd})).await["parent"].is_null());
+    assert_eq!(
+        remote
+            .call("workspace.readFile", json!({"cwd": cwd, "path": "file.rs"}))
+            .await,
+        json!({"path": "file.rs", "resolvedPath": "file.rs", "sizeBytes": 8,
+            "content": {"kind": "text", "text": "sentinel", "language": "rust", "truncated": false}})
+    );
+    assert_eq!(
+        remote
+            .request(
+                "workspace.readFile",
+                json!({"cwd": cwd, "path": cwd.join("file.rs")})
+            )
+            .await["error"]["code"],
+        "bad_request"
+    );
+    assert_eq!(
+        remote
+            .call("workspace.worktrees", json!({"cwd": cwd}))
+            .await,
+        json!({"isRepo": false, "mainRoot": null, "worktrees": []})
+    );
     assert_eq!(
         remote
             .call("agents.options", json!({"agentId": "fake", "cwd": cwd}))

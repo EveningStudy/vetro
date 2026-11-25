@@ -46,6 +46,7 @@ struct Timeline {
     children: HashMap<String, Vec<String>>,
     native_children: HashMap<String, Vec<String>>,
     index_dirty: bool,
+    history_reload_needed: bool,
 }
 
 impl Sessions {
@@ -143,6 +144,9 @@ impl Core {
 
     pub(crate) async fn thread(self: &Arc<Self>, id: &str) -> Result<Arc<Thread>> {
         if let Some(thread) = self.sessions.get(id) {
+            if thread.history_reload_needed() {
+                thread.retry_history_reload().await?;
+            }
             return Ok(thread);
         }
         let (agent_id, native_id) = split_id(id)?;
@@ -402,6 +406,10 @@ impl Thread {
         self.state.lock().unwrap().session.is_some()
     }
 
+    pub(crate) fn history_reload_needed(&self) -> bool {
+        self.state.lock().unwrap().history_reload_needed
+    }
+
     pub(crate) fn live_overlay_into(&self, summary: &mut ThreadSummary) {
         let state = self.state.lock().unwrap();
         let live = &state.summary;
@@ -437,7 +445,7 @@ impl Thread {
             return;
         };
         let mut state = self.state.lock().unwrap();
-        if state.session.is_some() || state.index_dirty {
+        if state.session.is_some() || state.index_dirty || state.history_reload_needed {
             return;
         }
         state.set_children(children);
@@ -1091,6 +1099,119 @@ impl Thread {
         self.release(false, None).await
     }
 
+    pub(crate) async fn rollback(&self, before_turn_id: &str) -> Result<ThreadOpenResult> {
+        let _operation = self.operations.lock().await;
+        let summary = self.state.lock().unwrap().editable_history()?;
+        let core = self.core();
+        core.check_agent_enabled(&summary.agent_id)?;
+        let registry = core.registry();
+        let agent = registry.get(&summary.agent_id)?;
+        if !agent.history_edit_capabilities().rollback_conversation {
+            return Err(bad_request("Agent does not support conversation rollback"));
+        }
+        let _history_guard = core.history_edits.write().await;
+        self.release(false, Some(Duration::ZERO)).await?;
+        self.state.lock().unwrap().editable_history()?;
+        core.user_agent_call_on(&registry, &summary.agent_id, || {
+            agent.rollback_conversation(
+                &summary.native_id,
+                summary.cwd.as_deref().map(Path::new),
+                before_turn_id,
+            )
+        })
+        .await?;
+        if let Err(error) = core.home.change_state(|state| {
+            state
+                .threads
+                .entry(summary.id.clone())
+                .or_default()
+                .history_rolled_back = true;
+        }) {
+            core.home.log(&format!(
+                "Could not record history rollback for {}: {error}",
+                summary.id
+            ));
+        }
+        self.reload_after_rollback(&summary).await?;
+        Ok(self.snapshot(None))
+    }
+
+    async fn retry_history_reload(&self) -> Result<()> {
+        let _operation = self.operations.lock().await;
+        let summary = {
+            let state = self.state.lock().unwrap();
+            if !state.history_reload_needed {
+                return Ok(());
+            }
+            state.summary.clone()
+        };
+        let core = self.core();
+        let _history_guard = core.history_edits.write().await;
+        self.reload_after_rollback(&summary).await
+    }
+
+    async fn reload_after_rollback(&self, summary: &ThreadSummary) -> Result<()> {
+        let core = self.core();
+        let registry = core.registry();
+        let transcript = core
+            .user_agent_call_on(&registry, &summary.agent_id, || async {
+                let agent = registry.get(&summary.agent_id)?;
+                core.read_authoritative_history_items(&agent, summary).await
+            })
+            .await;
+        let mut state = self.state.lock().unwrap();
+        if transcript.is_ok() || !state.history_reload_needed {
+            state.items.clear();
+            state.by_id.clear();
+            state.pending.clear();
+            state.native_children.clear();
+            state.usage = ThreadUsage::default();
+            state.status = ThreadStatus::Idle;
+            let error = match transcript {
+                Ok(transcript) => {
+                    for draft in transcript.items {
+                        state.item(draft);
+                    }
+                    state.merge_history_usage(transcript.usage);
+                    None
+                }
+                Err(error) => Some(error),
+            };
+            state.history_reload_needed = error.is_some();
+            state.update_status();
+            state.index_dirty = true;
+            state.summary.updated_at = state.summary.updated_at.max(now());
+            state.events.clear();
+            state.seq += 1;
+            core.thread_changed(state.summary.clone());
+            core.publish(ServerEvent::AppResync {});
+            return error.map_or(Ok(()), Err).map_err(rollback_reload_error);
+        }
+        transcript.map(|_| ()).map_err(rollback_reload_error)
+    }
+
+    pub(crate) async fn rewind_files(
+        self: &Arc<Self>,
+        user_message_id: &str,
+        dry_run: bool,
+    ) -> Result<RewindFilesResult> {
+        let _operation = self.operations.lock().await;
+        let summary = self.state.lock().unwrap().editable_history()?;
+        let core = self.core();
+        core.check_agent_enabled(&summary.agent_id)?;
+        let registry = core.registry();
+        let capabilities = registry.get(&summary.agent_id)?.history_edit_capabilities();
+        if dry_run && !capabilities.preview_rewind_files {
+            return Err(bad_request("Agent does not support file rewind previews"));
+        }
+        if !dry_run && !capabilities.rewind_files {
+            return Err(bad_request("Agent does not support file rewind"));
+        }
+        let session = self.attach(None).await?;
+        let _guard = registry.enter(&summary.agent_id, true).await?;
+        session.rewind_files(user_message_id, dry_run).await
+    }
+
     async fn release(&self, force: bool, idle: Option<Duration>) -> Result<()> {
         let core = self.core();
         let agent_id = {
@@ -1240,6 +1361,7 @@ impl Timeline {
             children: HashMap::new(),
             native_children: HashMap::new(),
             index_dirty: false,
+            history_reload_needed: false,
         }
     }
 
@@ -1256,6 +1378,22 @@ impl Timeline {
             self.status,
             ThreadStatus::Running | ThreadStatus::AwaitingInput
         ) || !self.pending.is_empty()
+    }
+
+    fn editable_history(&self) -> Result<ThreadSummary> {
+        if self.active() || !self.queue.is_empty() {
+            return Err(AgentError::new(
+                ErrorCode::Busy,
+                "Wait for the current turn and queued messages to finish before editing history",
+            ));
+        }
+        if !self.summary.resumable {
+            return Err(AgentError::new(
+                ErrorCode::NotResumable,
+                "Thread is read-only",
+            ));
+        }
+        Ok(self.summary.clone())
     }
 
     fn can_release_idle(&self, idle: Duration) -> bool {
@@ -1440,6 +1578,16 @@ fn split_id(id: &str) -> Result<(&str, &str)> {
     id.split_once(':')
         .filter(|(agent, native)| !agent.is_empty() && !native.is_empty())
         .ok_or_else(|| bad_request("Expected a thread id of the form agent:native-id"))
+}
+
+fn rollback_reload_error(error: AgentError) -> AgentError {
+    AgentError::new(
+        error.code,
+        format!(
+            "Conversation was rolled back, but history reload failed: {}",
+            error.message
+        ),
+    )
 }
 
 fn new_summary(

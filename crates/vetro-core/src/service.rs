@@ -39,6 +39,7 @@ pub struct Core {
     notify_tx: broadcast::Sender<NotifyParams>,
     pub(crate) store: Arc<Index>,
     pub(crate) sessions: Sessions,
+    pub(crate) history_edits: tokio::sync::RwLock<()>,
     pub(crate) events: broadcast::Sender<Arc<ServerEvent>>,
     detection: RwLock<Detection>,
     detection_refresh: Mutex<()>,
@@ -69,6 +70,7 @@ impl Core {
             notify_tx: broadcast::channel(64).0,
             store: Arc::new(store),
             sessions: Sessions::default(),
+            history_edits: tokio::sync::RwLock::default(),
             events: broadcast::channel(1024).0,
             detection: RwLock::default(),
             detection_refresh: Mutex::new(()),
@@ -125,6 +127,76 @@ impl Core {
             .ok_or_else(|| bad_request("Workspace is not inside a Git work tree"))?
             .diff(path)
             .await
+    }
+
+    pub(crate) async fn worktrees(&self, cwd: &Path, remote: bool) -> Result<WorktreesResult> {
+        let Some(repo) = workspace::Repository::discover_worktrees(cwd).await? else {
+            return Ok(WorktreesResult::default());
+        };
+        if remote {
+            check_project_path(repo.root(), &self.projects()?)?;
+        }
+        repo.worktrees().await
+    }
+
+    pub(crate) async fn read_workspace_file(
+        &self,
+        params: WorkspaceFileParams,
+        remote: bool,
+    ) -> Result<WorkspaceFileResult> {
+        let projects = remote.then(|| self.projects()).transpose()?;
+        tokio::task::spawn_blocking(move || {
+            let raw_cwd = params.cwd.trim();
+            let cwd = if let Some(projects) = projects {
+                let path = files::directory(Path::new(raw_cwd)).map_err(|_| {
+                    AgentError::new(
+                        ErrorCode::Unauthorized,
+                        "Path is outside known project roots",
+                    )
+                })?;
+                check_project_path(&path, &projects)?;
+                Some(path)
+            } else if raw_cwd.is_empty() {
+                None
+            } else {
+                Some(files::directory(Path::new(raw_cwd))?)
+            };
+            workspace::read_file(cwd.as_deref(), &params.path, remote)
+        })
+        .await
+        .map_err(internal)?
+    }
+
+    pub(crate) async fn rollback_thread(
+        self: &Arc<Self>,
+        params: ThreadRollbackParams,
+    ) -> Result<(ThreadOpenResult, Arc<crate::sessions::Thread>)> {
+        if params.before_turn_id.trim().is_empty() {
+            return Err(bad_request("Rollback requires a turn ID"));
+        }
+        let core = self.clone();
+        tokio::spawn(async move {
+            let thread = core.thread(&params.thread_id).await?;
+            let snapshot = thread.rollback(&params.before_turn_id).await?;
+            Ok((snapshot, thread))
+        })
+        .await
+        .map_err(internal)?
+    }
+
+    pub(crate) async fn rewind_thread_files(
+        self: &Arc<Self>,
+        params: ThreadRewindFilesParams,
+    ) -> Result<RewindFilesResult> {
+        let core = self.clone();
+        tokio::spawn(async move {
+            core.thread(&params.thread_id)
+                .await?
+                .rewind_files(&params.user_message_id, params.dry_run)
+                .await
+        })
+        .await
+        .map_err(internal)?
     }
 
     async fn remote_repository(&self, cwd: &Path) -> Result<Option<workspace::Repository>> {
