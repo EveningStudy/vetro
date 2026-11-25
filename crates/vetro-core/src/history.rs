@@ -773,6 +773,58 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "codex")]
+    #[tokio::test]
+    async fn authoritative_codex_sync_prunes_legacy_catalog_stubs() {
+        let root = tempfile::tempdir().unwrap();
+        let native = root.path().join("codex");
+        std::fs::create_dir(&native).unwrap();
+        let state = rusqlite::Connection::open(native.join("state_1.sqlite")).unwrap();
+        state
+            .execute_batch(
+                "CREATE TABLE threads(id, source); INSERT INTO threads VALUES ('local','cli');",
+            )
+            .unwrap();
+        let home = Home::open(root.path().join(".vetro"), root.path().into()).unwrap();
+        let agent = Arc::new(InventoryAgent {
+            id: "codex",
+            auth: Mutex::new(None),
+            listing: Mutex::new(Err(AgentError::new(
+                ErrorCode::AgentUnavailable,
+                "list failed",
+            ))),
+        });
+        let registry = Registry::new([agent as Arc<dyn Agent>])
+            .unwrap()
+            .watch_history("codex", vec![native]);
+        let core = Core::new(home, registry);
+
+        for (id, source, origin) in [
+            (
+                "cloud",
+                ThreadSource::Cloud,
+                "Codex desktop catalog (cloud)",
+            ),
+            (
+                "remote",
+                ThreadSource::Desktop,
+                "Codex desktop catalog (remote)",
+            ),
+        ] {
+            let mut stale = record(id);
+            stale.source = source;
+            stale.origin = Some(origin.into());
+            stale.resumable = false;
+            let thread = crate::service::summary("codex", stale);
+            core.store.mark(&thread, None, "legacy", id).unwrap();
+        }
+        assert_eq!(core.store.marks("codex").unwrap().len(), 2);
+        core.refresh_history().await;
+        let marks = core.store.marks("codex").unwrap();
+        assert_eq!(marks.len(), 1);
+        assert_eq!(marks[0].0, "codex:local");
+    }
+
     #[tokio::test]
     async fn prunes_only_after_complete_inventory_and_keeps_sessions_in_memory() {
         for id in ["kiro", "antigravity"] {

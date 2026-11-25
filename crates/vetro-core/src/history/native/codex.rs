@@ -1,8 +1,8 @@
-use std::io::Read;
+use std::{collections::HashSet, io::Read};
 
 use rusqlite::{Connection, OptionalExtension, Row};
 use serde_json::json;
-use vetro_agent_api::{codex_internal_source, ItemDraft, Transcript};
+use vetro_agent_api::{codex_internal_source, codex_web_source, ItemDraft, Transcript};
 use vetro_proto::{ContentBlock, ItemKind, ToolCall, ToolContent, ToolKind, ToolStatus};
 use vetro_store_antigravity::sqlite::open_readonly;
 
@@ -28,9 +28,10 @@ pub(super) fn inventory(root: &Path) -> Result<Inventory> {
             insert_file(&mut inventory.files, id, &parts[0], mark, archived);
         }
     }
+    let mut web_ids = HashSet::new();
     let state = database(root, "state_");
     if let Some(path) = state {
-        match read_state(&path, &mut inventory.files) {
+        match read_state(&path, &mut inventory.files, &mut web_ids) {
             Ok(()) => inventory.authoritative = true,
             Err(error) => inventory
                 .errors
@@ -54,6 +55,7 @@ pub(super) fn inventory(root: &Path) -> Result<Inventory> {
             }
         }
     }
+    inventory.files.retain(|id, _| !web_ids.contains(id));
     for file in inventory.files.values_mut() {
         if file.record.as_ref().is_none_or(|record| {
             record.resumable || record.origin.as_deref() == Some("history projection")
@@ -64,18 +66,26 @@ pub(super) fn inventory(root: &Path) -> Result<Inventory> {
     Ok(inventory)
 }
 
-fn read_state(path: &Path, files: &mut HashMap<String, NativeFile>) -> Result<()> {
+fn read_state(
+    path: &Path,
+    files: &mut HashMap<String, NativeFile>,
+    web_ids: &mut HashSet<String>,
+) -> Result<()> {
     let conn = open_readonly(path).map_err(internal)?;
     let mut stmt = conn.prepare("SELECT * FROM threads").map_err(internal)?;
     let mut rows = stmt.query([]).map_err(internal)?;
     while let Some(row) = rows.next().map_err(internal)? {
         let id: String = row.get("id").map_err(internal)?;
         let source: String = row.get("source").map_err(internal)?;
+        let src = serde_json::from_str(&source).unwrap_or(Value::String(source));
+        if codex_web_source(&src) {
+            web_ids.insert(id);
+            continue;
+        }
         let title = column(row, "name").or_else(|| column(row, "title"));
         let preview = column(row, "preview").or_else(|| column(row, "first_user_message"));
         let archived = row.get::<_, bool>("archived").unwrap_or_default();
         let rollout = column(row, "rollout_path").map(PathBuf::from);
-        let src = serde_json::from_str(&source).unwrap_or(Value::String(source));
         let origin = column(row, "originator");
         let parent = column(row, "attached_thread_parent_id").or_else(|| parent(&src));
         let record = SessionRecord {
@@ -167,10 +177,10 @@ fn read_catalog(path: &Path, files: &mut HashMap<String, NativeFile>) -> Result<
     }
     let mut stmt = conn
         .prepare(
-            "SELECT thread_id, display_title, source_created_at, source_updated_at, cwd,
-                    CASE WHEN host_id='local' THEN 'local' WHEN source_kind='chatgpt' THEN 'cloud'
-                         ELSE 'remote' END
-             FROM local_thread_catalog WHERE missing_candidate=0 ORDER BY source_updated_at DESC",
+            "SELECT thread_id, display_title, source_created_at, source_updated_at, cwd
+             FROM local_thread_catalog
+             WHERE missing_candidate=0 AND host_id='local' AND source_kind != 'chatgpt'
+             ORDER BY source_updated_at DESC",
         )
         .map_err(internal)?;
     let mut rows = stmt.query([]).map_err(internal)?;
@@ -179,7 +189,6 @@ fn read_catalog(path: &Path, files: &mut HashMap<String, NativeFile>) -> Result<
         if files.contains_key(&id) {
             continue;
         }
-        let host: String = row.get(5).map_err(internal)?;
         let title: String = row.get(1).map_err(internal)?;
         let created: f64 = row.get(2).map_err(internal)?;
         let updated: f64 = row.get(3).map_err(internal)?;
@@ -187,28 +196,12 @@ fn read_catalog(path: &Path, files: &mut HashMap<String, NativeFile>) -> Result<
         let record = SessionRecord {
             native_id: id.clone(),
             title,
-            preview: if host == "remote" {
-                raw_cwd
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .map(str::to_owned)
-            } else {
-                None
-            },
-            cwd: if host == "local" {
-                raw_cwd.map(PathBuf::from)
-            } else {
-                None
-            },
+            preview: None,
+            cwd: raw_cwd.map(PathBuf::from),
             created_at: Some((created * 1000.0) as i64),
             updated_at: (updated * 1000.0) as i64,
-            source: if host == "cloud" {
-                ThreadSource::Cloud
-            } else {
-                ThreadSource::Desktop
-            },
-            origin: Some(format!("Codex desktop catalog ({host})")),
+            source: ThreadSource::Desktop,
+            origin: Some("Codex desktop catalog (local)".into()),
             model: None,
             resumable: false,
             parent_native_id: None,
@@ -294,6 +287,9 @@ pub(super) fn rollout_record(path: &Path, id: String) -> Result<Option<SessionRe
         let payload = &row["payload"];
         match row["type"].as_str() {
             Some("session_meta") => {
+                if codex_web_source(&payload["source"]) {
+                    return Ok(None);
+                }
                 record.origin = string(payload, "originator");
                 record.source = source_kind(&payload["source"], record.origin.as_deref());
                 record.internal = codex_internal_source(&payload["source"]);
@@ -656,6 +652,59 @@ fn projected_item(raw: &Value, ts: Option<i64>, turn_id: Option<String>) -> Opti
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn imports_only_present_local_coding_catalog_rows() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("catalog.db");
+        let catalog = Connection::open(&path).unwrap();
+        catalog
+            .execute_batch(
+                "CREATE TABLE local_thread_catalog(thread_id, display_title, source_created_at,
+             source_updated_at, cwd, host_id, source_kind, missing_candidate);
+             INSERT INTO local_thread_catalog VALUES
+                ('local','Local',1.0,2.0,'/project','local','cli',0),
+                ('local-web','Web',1.0,2.0,NULL,'local','chatgpt',0),
+                ('web','Web',1.0,2.0,NULL,'chatgpt','chatgpt',0),
+                ('remote','Remote',1.0,2.0,'/private/tmp/vetro-probe','remote-control:mac','cli',0),
+                ('missing','Missing',1.0,2.0,NULL,'local','cli',1)",
+            )
+            .unwrap();
+        let mut files = HashMap::new();
+        read_catalog(&path, &mut files).unwrap();
+        assert_eq!(files.len(), 1);
+        let record = files["local"].record.as_ref().unwrap();
+        assert_eq!(record.source, ThreadSource::Desktop);
+        assert_eq!(record.cwd.as_deref(), Some(Path::new("/project")));
+        assert!(!record.resumable);
+    }
+
+    #[test]
+    fn web_state_records_cannot_be_reintroduced_by_projections() {
+        let root = tempfile::tempdir().unwrap();
+        let state = Connection::open(root.path().join("state_1.sqlite")).unwrap();
+        state
+            .execute_batch(
+                "CREATE TABLE threads(id, source);
+             INSERT INTO threads VALUES ('local','cli'), ('web','chatgpt'), ('cloud','\"cloud\"');",
+            )
+            .unwrap();
+        let history = Connection::open(root.path().join("thread_history_1.sqlite")).unwrap();
+        history
+            .execute_batch(
+                "CREATE TABLE thread_history_projection_state(thread_id, next_rollout_ordinal);
+             INSERT INTO thread_history_projection_state VALUES ('web',1), ('projected',1);
+             CREATE TABLE thread_turns(thread_id, started_at, completed_at);
+             INSERT INTO thread_turns VALUES ('web',1,2), ('projected',1,2);",
+            )
+            .unwrap();
+        let result = inventory(root.path()).unwrap();
+        assert!(result.authoritative);
+        assert!(result.errors.is_empty());
+        assert_eq!(result.files.len(), 2);
+        assert!(result.files.contains_key("local"));
+        assert!(result.files.contains_key("projected"));
+    }
 
     #[test]
     fn bad_databases_do_not_hide_records_from_healthy_sources() {

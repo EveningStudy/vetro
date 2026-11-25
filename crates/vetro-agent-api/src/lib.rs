@@ -155,6 +155,13 @@ fn codex_subagent(source: &str) -> bool {
     source.contains("subagent") || source.contains("sub_agent")
 }
 
+pub fn codex_web_source(source: &serde_json::Value) -> bool {
+    matches!(
+        source.as_str().or_else(|| source["custom"].as_str()),
+        Some("chatgpt" | "cloud")
+    )
+}
+
 pub fn codex_internal_source(source: &serde_json::Value) -> bool {
     source.as_str().map_or_else(
         || {

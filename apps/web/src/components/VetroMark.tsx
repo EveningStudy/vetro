@@ -1,10 +1,18 @@
+import { useId } from "react";
 import { cn } from "~/lib/utils";
 
 export function VetroMark({ className }: { className?: string }) {
+  const maskId = useId();
   return (
-    <svg viewBox="0 0 24 24" aria-hidden className={cn("shrink-0", className)}>
-      <rect x="3" y="3" width="18" height="18" rx="5" className="fill-foreground" />
-      <path d="M7.5 8.5 12 16l4.5-7.5" fill="none" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" className="stroke-background" />
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden className={cn("shrink-0", className)}>
+      <defs>
+        <mask id={maskId}>
+          <rect width="24" height="24" fill="white" />
+          <circle cx="14.25" cy="10.25" r="6.45" fill="black" />
+        </mask>
+      </defs>
+      <circle cx="9.75" cy="13.75" r="6.1" mask={`url(#${maskId})`} />
+      <circle cx="14.25" cy="10.25" r="5.85" fillOpacity="0.52" />
     </svg>
   );
 }

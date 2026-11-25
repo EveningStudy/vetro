@@ -30,13 +30,13 @@ import {
   XIcon,
 } from "lucide-react";
 import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import type { Project, ThreadSource, ThreadStatus, ThreadSummary } from "~/api/types";
+import type { Project, ThreadStatus, ThreadSummary } from "~/api/types";
 import { useT } from "~/i18n";
 import { relativeTime } from "~/lib/format";
 import { cn, copyText, isMac } from "~/lib/utils";
 import { RpcFailure } from "~/api/protocol";
-import { type SidebarScope, setSidebarGroupOpen, setSidebarScope, usePrefs } from "~/state/prefs";
-import { actions, isCatalogStubVisible, useIsLocalDesktop, useStore } from "~/state/store";
+import { type SidebarScope, setSidebarGroupOpen, setSidebarScope, THREAD_SOURCES, usePrefs } from "~/state/prefs";
+import { actions, isCatalogStub, useIsLocalDesktop, useStore } from "~/state/store";
 import { errorMessage, toast } from "~/state/toast";
 import { AgentIcon } from "../AgentIcon";
 import { FolderBrowser } from "../FolderBrowser";
@@ -64,7 +64,6 @@ import { Kbd } from "../ui/primitives";
 import { useHeaderChromeClass, useWindowDragProps } from "../WindowChrome";
 import { VetroMark } from "../VetroMark";
 
-const SOURCES: ThreadSource[] = ["vetro", "desktop", "cli", "exec", "ide", "cloud", "unknown"];
 const PAGE = 5;
 const QUICK_KEY = "\u0000quick";
 
@@ -799,7 +798,7 @@ function FilterMenu() {
         <MenuSeparator />
         <MenuGroupLabel>{t("sidebar.filterSources")}</MenuGroupLabel>
         <div className="grid grid-cols-2">
-          {SOURCES.map((source) => (
+          {THREAD_SOURCES.map((source) => (
             <MenuCheckboxItem
               key={source}
               checked={filters.sources.includes(source)}
@@ -865,7 +864,7 @@ export function SidebarContent() {
       (filters.agentIds.length === 0 || filters.agentIds.includes(thread.agentId)) &&
       (filters.sources.length === 0 || filters.sources.includes(thread.source)) &&
       (!thread.internal || filters.showInternal || filters.sources.includes("exec")) &&
-      isCatalogStubVisible(thread, filters) &&
+      (!isCatalogStub(thread) || filters.showInternal) &&
       !disabled(thread.agentId);
     const loaded = new Map<string, number>();
     for (const thread of all) loaded.set(normalize(thread.cwd), (loaded.get(normalize(thread.cwd)) ?? 0) + 1);

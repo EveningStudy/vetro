@@ -122,6 +122,9 @@ fn user_content(input: &Value) -> Option<ContentBlock> {
 
 pub(crate) fn record(thread: &Value) -> Option<SessionRecord> {
     let source = &thread["source"];
+    if vetro_agent_api::codex_web_source(source) {
+        return None;
+    }
     let originator = string(thread, "originator");
     let origin_key = originator
         .as_deref()

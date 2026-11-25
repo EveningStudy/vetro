@@ -303,7 +303,7 @@ async fn websocket(mut socket: WebSocket, state: Arc<HttpState>, host: RequestHo
                             break;
                         }
                         let thread_id = request.params["threadId"].as_str().map(str::to_owned);
-                        if request.method == "threads.close" {
+                        if matches!(request.method.as_str(), "threads.close" | "prefs.set") {
                             if request.method == "threads.close" {
                                 if let Some(id) = thread_id {
                                     pending_opens.remove(&id);

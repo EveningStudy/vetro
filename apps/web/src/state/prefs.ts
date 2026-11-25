@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { ThreadSource } from "~/api/types";
 import {
   type CustomTheme,
   type ThemeMode,
@@ -21,6 +22,30 @@ export type FontScale = "compact" | "default" | "large";
 export type ChatWidth = "standard" | "wide" | "full";
 export type BypassMemoryScope = "project" | "global";
 
+export interface Filters {
+  agentIds: string[];
+  sources: ThreadSource[];
+  showArchived: boolean;
+  showHidden: boolean;
+  showInternal: boolean;
+}
+
+export const THREAD_SOURCES = ["vetro", "desktop", "cli", "exec", "ide", "cloud", "unknown"] as const satisfies readonly ThreadSource[];
+
+export function sanitizeFilters(value: unknown): Filters {
+  const filters = value && typeof value === "object" ? (value as Partial<Record<keyof Filters, unknown>>) : {};
+  const sources = Array.isArray(filters.sources) ? filters.sources : [];
+  return {
+    agentIds: Array.isArray(filters.agentIds)
+      ? [...new Set(filters.agentIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0))]
+      : [],
+    sources: THREAD_SOURCES.filter((source) => sources.includes(source)),
+    showArchived: filters.showArchived === true,
+    showHidden: filters.showHidden === true,
+    showInternal: filters.showInternal === true,
+  };
+}
+
 export interface AgentOptionMemory {
   options?: Record<string, string>;
   byModel?: Record<string, Record<string, string>>;
@@ -35,7 +60,7 @@ export interface PrefsData {
   language?: LanguagePref;
   /** Explicit expand (true) or collapse (false) per project path; missing means the sidebar decides. */
   projectExpanded?: Record<string, boolean>;
-  filters?: { agentIds: string[]; sources: string[]; showArchived: boolean; showHidden: boolean; showInternal?: boolean };
+  filters?: Filters;
   /** Projects active within this many days stay in the main list; 0 keeps all of them. */
   sidebarActivityDays?: number;
   sidebarCollapsed?: boolean;
@@ -69,16 +94,18 @@ const query = new URLSearchParams(location.search);
 function readCache(): PrefsData {
   try {
     const raw = localStorage.getItem(CACHE_KEY);
-    return raw ? (JSON.parse(raw) as PrefsData) : {};
+    const parsed: unknown = raw ? JSON.parse(raw) : null;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as PrefsData) : {};
   } catch {
     return {};
   }
 }
 
 let data: PrefsData = readCache();
-let pushRemote: ((prefs: PrefsData) => void) | null = null;
+let pushRemote: ((prefs: PrefsData) => Promise<unknown>) | null = null;
 let pushTimer: ReturnType<typeof setTimeout> | null = null;
-const listeners = new Set<(prefs: PrefsData) => void>();
+let pending: PrefsData = {};
+let sending: PrefsData | null = null;
 
 function writeCache() {
   try {
@@ -92,32 +119,55 @@ export function getPrefs(): PrefsData {
   return data;
 }
 
-export function savePrefs(patch: Partial<PrefsData>) {
+export function savePrefs(patch: Partial<PrefsData>, immediate = false) {
   data = { ...data, ...patch };
+  pending = { ...pending, ...patch };
   writeCache();
+  if (immediate) {
+    flushPrefs();
+    return;
+  }
   if (!pushRemote) return;
   if (pushTimer) clearTimeout(pushTimer);
-  pushTimer = setTimeout(() => pushRemote?.(data), 300);
+  pushTimer = setTimeout(flushPrefs, 300);
+}
+
+export function flushPrefs() {
+  if (pushTimer) {
+    clearTimeout(pushTimer);
+    pushTimer = null;
+  }
+  if (!pushRemote || sending === data || Object.keys(pending).length === 0) return;
+  const snapshot = data;
+  sending = snapshot;
+  const done = () => {
+    if (sending === snapshot) sending = null;
+  };
+  void pushRemote(snapshot).then(() => {
+    if (data === snapshot) pending = {};
+    done();
+  }, done);
 }
 
 /** Called once the connection is up. Stored preferences win; if the core has none yet, the local
  * cache is uploaded so nothing the user chose is lost. */
-export function connectPrefs(remote: PrefsData | null, push: (prefs: PrefsData) => void) {
+export function connectPrefs(remote: PrefsData | null, push: (prefs: PrefsData) => Promise<unknown>) {
   pushRemote = push;
   if (remote && Object.keys(remote).length > 0) {
-    data = { ...data, ...remote };
-    writeCache();
-    for (const listener of listeners) listener(data);
-  } else if (Object.keys(data).length > 0) {
-    push(data);
+    data = { ...data, ...remote, ...pending };
+  } else {
+    pending = data;
   }
+  if (data.filters !== undefined) data = { ...data, filters: sanitizeFilters(data.filters) };
+  writeCache();
   usePrefs.setState(derived(data));
   applyTheme();
+  flushPrefs();
+  return data;
 }
 
-export function onPrefsLoaded(listener: (prefs: PrefsData) => void) {
-  listeners.add(listener);
-}
+window.addEventListener("beforeunload", flushPrefs);
+window.addEventListener("pagehide", flushPrefs);
 
 const THEMES = ["light", "dark", "system"] as const;
 const LANGUAGES = ["en", "zh", "system"] as const;
@@ -354,7 +404,7 @@ export function setSidebarCollapsed(sidebarCollapsed: boolean) {
 }
 
 export function setSidebarScope(sidebarScope: SidebarScope) {
-  savePrefs({ sidebarScope });
+  savePrefs({ sidebarScope }, true);
   usePrefs.setState({ sidebarScope });
 }
 

@@ -8,7 +8,7 @@ import { relativeTime } from "~/lib/format";
 import { cn, isMac } from "~/lib/utils";
 import { setTheme, setThemeId, usePrefs } from "~/state/prefs";
 import { BUILT_IN_THEMES, type BuiltInTheme, type CustomTheme, resolveTheme } from "~/styles/themes";
-import { actions, isCatalogStub, useHiddenFilter, useStore } from "~/state/store";
+import { actions, isCatalogStub, isExcludedCodexThread, useHiddenFilter, useStore } from "~/state/store";
 import { AgentIcon } from "./AgentIcon";
 import { ThemeSwatchDot, themeDisplayName, usePreviewMode } from "./settings/ThemeStudio";
 import { Kbd, Spinner } from "./ui/primitives";
@@ -86,7 +86,7 @@ export function CommandPalette() {
     const handle = setTimeout(() => {
       client()
         .request("search.threads", { query: q, limit: 30, includeHidden: showHidden })
-        .then((result) => setHits(result.hits))
+        .then((result) => setHits(result.hits.filter((hit) => !isExcludedCodexThread(hit.thread))))
         .catch(() => setHits([]))
         .finally(() => setSearching(false));
     }, 120);

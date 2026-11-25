@@ -242,8 +242,12 @@ fn app_server() {
                 if params["cursor"] == "next-page" {
                     json!({"data": [{"id": "child", "source": {"subagent": {"thread_spawn": {"parent_thread_id": "saved"}}}}]})
                 } else {
-                    json!({"data": [{"id": "saved", "source": "vscode", "originator": "Codex Desktop",
-                        "createdAt": 10, "updatedAt": 20, "preview": "Saved thread"}], "nextCursor": "next-page"})
+                    json!({"data": [
+                        {"id": "saved", "source": "vscode", "originator": "Codex Desktop",
+                         "createdAt": 10, "updatedAt": 20, "preview": "Saved thread"},
+                        {"id": "web", "source": "chatgpt"},
+                        {"id": "cloud", "source": {"custom": "cloud"}}
+                    ], "nextCursor": "next-page"})
                 }
             }
             "thread/turns/list" => {
@@ -535,6 +539,7 @@ async fn test_adapter() {
     }
     assert!(merged_usage);
     let first_page = agent.list(None).await.unwrap();
+    assert_eq!(first_page.sessions.len(), 1);
     assert_eq!(first_page.sessions[0].source, ThreadSource::Desktop);
     assert_eq!(first_page.sessions[0].created_at, Some(10_000));
     let second_page = agent.list(first_page.next_cursor).await.unwrap();

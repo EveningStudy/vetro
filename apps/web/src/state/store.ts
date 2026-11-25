@@ -17,14 +17,13 @@ import type {
   Settings,
   SlashCommand,
   ThreadEvent,
-  ThreadSource,
   ThreadStatus,
   ThreadSummary,
   ThreadUsage,
   VoiceStatus,
 } from "~/api/types";
 import { translate } from "~/i18n";
-import { connectPrefs, getPrefs, onPrefsLoaded, type PrefsData, resolvedLanguage, savePrefs, setSidebarCollapsed, usePrefs } from "./prefs";
+import { connectPrefs, type Filters, flushPrefs, getPrefs, type PrefsData, resolvedLanguage, sanitizeFilters, savePrefs, setSidebarCollapsed, usePrefs } from "./prefs";
 import { errorMessage, toast } from "./toast";
 
 export interface OpenThread {
@@ -53,14 +52,6 @@ export type RightDrawer =
   | { kind: "changes" }
   | { kind: "children"; parentId: string }
   | { kind: "child"; threadId: string; fromParentId?: string };
-
-export interface Filters {
-  agentIds: string[];
-  sources: ThreadSource[];
-  showArchived: boolean;
-  showHidden: boolean;
-  showInternal: boolean;
-}
 
 interface State {
   connection: ConnectionStatus;
@@ -139,7 +130,7 @@ export const useStore = create<State>(() => ({
   open: {},
   remote: null,
   route: routeFromLocation(),
-  filters: { agentIds: [], sources: [], showArchived: false, showHidden: false, showInternal: false, ...(getPrefs().filters as Partial<Filters> | undefined) },
+  filters: sanitizeFilters(getPrefs().filters),
   projectExpanded: getPrefs().projectExpanded ?? {},
   rightDrawer: initialDrawer(new URLSearchParams(location.search).get("panel")),
   paletteOpen: new URLSearchParams(location.search).get("palette") === "1",
@@ -223,6 +214,7 @@ function clearUnread(threadId: string) {
 }
 
 function mergeSummaries(threads: ThreadSummary[]) {
+  threads = threads.filter((thread) => !isExcludedCodexThread(thread));
   noticeTransitions(threads);
   const next = { ...get().threads };
   for (const thread of threads) next[thread.id] = thread;
@@ -319,7 +311,7 @@ async function loadThreads() {
   const map: Record<string, ThreadSummary> = {};
   const open = get().open;
   for (const thread of Object.values(get().threads)) if (thread.parent && open[thread.parent.threadId]) map[thread.id] = thread;
-  for (const thread of page.threads) map[thread.id] = thread;
+  for (const thread of page.threads) if (!isExcludedCodexThread(thread)) map[thread.id] = thread;
   set({ threads: map, threadsLoaded: true, threadsCursor: page.nextCursor, projectCursors: {} });
 }
 
@@ -339,8 +331,13 @@ export function isCatalogStub(thread: Pick<ThreadSummary, "origin">) {
   return !!thread.origin?.startsWith("Codex desktop catalog (");
 }
 
-export function isCatalogStubVisible(thread: Pick<ThreadSummary, "origin" | "source">, filters: Pick<Filters, "showInternal" | "sources">) {
-  return !isCatalogStub(thread) || filters.showInternal || (thread.source === "cloud" && filters.sources.includes("cloud"));
+export function isExcludedCodexThread(thread: Pick<ThreadSummary, "agentId" | "origin" | "source">) {
+  return thread.agentId === "codex" && (
+    thread.source === "cloud" ||
+    thread.origin === "chatgpt" ||
+    thread.origin === "Codex desktop catalog (cloud)" ||
+    thread.origin === "Codex desktop catalog (remote)"
+  );
 }
 
 /** Sidebar lists hold root threads only, so child sessions never eat into a page. */
@@ -362,28 +359,35 @@ async function loadChildren(threadId: string) {
     includeArchived: true,
     limit: 100,
   });
-  mergeSummaries(page.threads);
-  return page.threads;
+  const threads = page.threads.filter((thread) => !isExcludedCodexThread(thread));
+  mergeSummaries(threads);
+  return threads;
 }
+
+let prefsLoaded = false;
+let prefsLoading: Promise<void> | undefined;
 
 async function loadPrefs() {
   const api = client();
   const remote = await api
     .request("prefs.get", {})
-    .then((result) => (result.prefs && typeof result.prefs === "object" ? (result.prefs as PrefsData) : null))
+    .then(({ prefs }) => (prefs && typeof prefs === "object" && !Array.isArray(prefs) ? (prefs as PrefsData) : null))
     .catch(() => undefined);
   if (remote === undefined) return;
-  connectPrefs(remote, (prefs) => void api.request("prefs.set", { prefs: prefs as never }).catch(() => undefined));
+  const prefs = connectPrefs(remote, (prefs) => api.request("prefs.set", { prefs: prefs as never }));
+  set({ projectExpanded: prefs.projectExpanded ?? get().projectExpanded, filters: sanitizeFilters(prefs.filters) });
+  prefsLoaded = true;
 }
 
-onPrefsLoaded((prefs) => {
-  const before = get().filters.showInternal;
-  useStore.setState((state) => ({
-    projectExpanded: prefs.projectExpanded ?? state.projectExpanded,
-    filters: prefs.filters ? { ...state.filters, ...(prefs.filters as Partial<Filters>) } : state.filters,
-  }));
-  if (get().threadsLoaded && get().filters.showInternal !== before) void loadLists().catch((error) => toast.error(errorMessage(error)));
-});
+async function syncLists() {
+  if (prefsLoaded) {
+    flushPrefs();
+  } else {
+    prefsLoading ??= loadPrefs().finally(() => { prefsLoading = undefined; });
+    await prefsLoading;
+  }
+  if (get().connection === "open") await loadLists();
+}
 
 let started = false;
 
@@ -401,8 +405,7 @@ export function startSync() {
         .catch(() => undefined);
     }
     if (status !== "open") return;
-    if (!reconnected) void loadPrefs();
-    void loadLists().catch((error) => toast.error(errorMessage(error)));
+    void syncLists().catch((error) => toast.error(errorMessage(error)));
     if (reconnected) for (const id of Object.keys(get().open)) void actions.openThread(id, true);
   });
   api.start();
@@ -444,7 +447,7 @@ function sidebarOrder() {
         (filters.agentIds.length === 0 || filters.agentIds.includes(thread.agentId)) &&
         (filters.sources.length === 0 || filters.sources.includes(thread.source)) &&
         (!thread.internal || filters.showInternal || filters.sources.includes("exec")) &&
-        isCatalogStubVisible(thread, filters) &&
+        (!isCatalogStub(thread) || filters.showInternal) &&
         (filters.showHidden || !hidden.has(normalizePath(thread.cwd))) &&
         !disabled(thread.agentId),
     )
@@ -785,9 +788,9 @@ export const actions = {
   setFilters(patch: Partial<Filters>) {
     const previous = get().filters;
     const filters = { ...previous, ...patch };
-    savePrefs({ filters });
+    savePrefs({ filters }, true);
     set({ filters });
-    if (filters.showInternal !== previous.showInternal || filters.sources.join(",") !== previous.sources.join(",")) {
+    if ((prefsLoaded || get().threadsLoaded) && (filters.showInternal !== previous.showInternal || filters.sources.join(",") !== previous.sources.join(","))) {
       void loadThreads().catch((error) => toast.error(errorMessage(error)));
     }
   },

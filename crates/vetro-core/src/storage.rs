@@ -47,6 +47,9 @@ CREATE TABLE IF NOT EXISTS documents (thread TEXT NOT NULL, row_id INTEGER NOT N
 const SUMMARY: &str = "coalesce((SELECT summary FROM attached WHERE id=t.id),t.summary), l.data,
     (SELECT count(*) FROM links WHERE parent=t.id), t.internal";
 const JOIN: &str = "threads t LEFT JOIN links l ON l.child=t.id";
+const VISIBLE_HISTORY: &str = "NOT (t.agent='codex' AND (t.source='cloud'
+    OR coalesce(t.summary->>'origin','') IN
+        ('chatgpt','Codex desktop catalog (cloud)','Codex desktop catalog (remote)')))";
 
 #[derive(Default)]
 pub(crate) struct Changes {
@@ -157,16 +160,17 @@ impl Index {
     pub fn projects(&self, overlays: &str) -> Result<Vec<ProjectActivity>> {
         let conn = self.0.lock().unwrap();
         let mut stmt = conn
-            .prepare_cached(
+            .prepare_cached(&format!(
                 "WITH project_threads AS (
                 SELECT t.cwd, t.updated, l.child IS NULL AND t.internal=0
                     AND NOT coalesce(o.value->>'archived',t.archived) AS root
                 FROM threads t LEFT JOIN links l ON l.child=t.id
-                LEFT JOIN json_each(?1) o ON o.key=t.id WHERE t.cwd IS NOT NULL
+                LEFT JOIN json_each(?1) o ON o.key=t.id
+                WHERE t.cwd IS NOT NULL AND {VISIBLE_HISTORY}
             )
             SELECT cwd, count(*), max(updated), count(*) FILTER (WHERE root),
                    max(updated) FILTER (WHERE root) FROM project_threads GROUP BY cwd",
-            )
+            ))
             .map_err(internal)?;
         collect(&mut stmt, [overlays], |row| {
             Ok(ProjectActivity {
@@ -195,9 +199,9 @@ impl Index {
                AND (f.v->>'sources' IS NULL OR t.source IN (SELECT value FROM json_each(f.v,'$.sources')))
                AND (t.internal=0 OR f.v->>'include_internal' OR f.v->>'parent' IS NOT NULL
                     OR 'exec' IN (SELECT value FROM json_each(f.v,'$.sources')))
-               AND (coalesce(t.summary->>'origin','') NOT LIKE 'Codex desktop catalog (%'
-                    OR f.v->>'include_internal'
-                    OR (t.source='cloud' AND 'cloud' IN (SELECT value FROM json_each(f.v,'$.sources'))))
+               AND {VISIBLE_HISTORY}
+               AND (coalesce(t.summary->>'origin','') != 'Codex desktop catalog (local)'
+                    OR f.v->>'include_internal')
                AND (CASE WHEN f.v->>'parent' IS NOT NULL THEN l.parent=f.v->>'parent'
                     ELSE f.v->>'children' OR l.parent IS NULL END)
                AND (f.v->>'cursor' IS NULL OR t.updated < f.v->>'$.cursor[0]'
@@ -430,6 +434,7 @@ impl Index {
              LEFT JOIN json_each(?2) o ON o.key=t.id
              WHERE NOT coalesce(o.value->>'archived',t.archived)
              AND (?3 IS NULL OR t.agent=?3) AND (?4 IS NULL OR l.parent=?4)
+             AND {VISIBLE_HISTORY}
              ORDER BY best.score, t.updated DESC, t.id"
             ))
             .map_err(internal)?;
@@ -718,7 +723,7 @@ const END_START: &str = "\u{3}\u{2}";
 
 fn get(conn: &Connection, id: &str) -> Result<Option<ThreadSummary>> {
     conn.query_row(
-        &format!("SELECT {SUMMARY} FROM {JOIN} WHERE t.id=?1"),
+        &format!("SELECT {SUMMARY} FROM {JOIN} WHERE t.id=?1 AND {VISIBLE_HISTORY}"),
         [id],
         row_summary,
     )
@@ -834,15 +839,15 @@ mod tests {
     }
 
     #[test]
-    fn hides_metadata_only_codex_catalog_stubs_by_default() {
+    fn excludes_legacy_codex_web_and_remote_stubs_from_lists_and_search() {
         let root = tempfile::tempdir().unwrap();
         let index = Index::open(root.path()).unwrap();
-        let put = |id: &str, source: ThreadSource, origin: Option<&str>| {
+        let put = |agent: &str, id: &str, source: ThreadSource, origin: Option<&str>| {
             let summary = crate::service::summary(
-                "codex",
+                agent,
                 vetro_agent_api::SessionRecord {
                     native_id: id.into(),
-                    title: id.into(),
+                    title: format!("History {id}"),
                     preview: None,
                     cwd: None,
                     created_at: None,
@@ -855,18 +860,33 @@ mod tests {
                     internal: false,
                 },
             );
-            index.mark(&summary, None, id, id).unwrap();
+            index.mark(&summary, None, id, &summary.title).unwrap();
         };
-        put("local-quick", ThreadSource::Desktop, None);
+        put("codex", "local-quick", ThreadSource::Desktop, None);
+        put("antigravity", "coding-cloud", ThreadSource::Cloud, None);
         put(
+            "codex",
+            "local-catalog",
+            ThreadSource::Desktop,
+            Some("Codex desktop catalog (local)"),
+        );
+        put(
+            "codex",
             "cloud-stub",
             ThreadSource::Cloud,
             Some("Codex desktop catalog (cloud)"),
         );
         put(
+            "codex",
             "remote-stub",
             ThreadSource::Desktop,
             Some("Codex desktop catalog (remote)"),
+        );
+        put(
+            "codex",
+            "web-thread",
+            ThreadSource::Unknown,
+            Some("chatgpt"),
         );
 
         let default_ids: Vec<_> = index
@@ -875,13 +895,14 @@ mod tests {
             .into_iter()
             .map(|t| t.native_id)
             .collect();
-        assert_eq!(default_ids, vec!["local-quick"]);
+        assert_eq!(default_ids, vec!["coding-cloud", "local-quick"]);
 
         let cloud_sources = [ThreadSource::Cloud];
         let cloud_ids: Vec<_> = index
             .list(
                 &Filter {
                     sources: Some(&cloud_sources),
+                    include_internal: true,
                     ..Default::default()
                 },
                 50,
@@ -891,7 +912,7 @@ mod tests {
             .into_iter()
             .map(|t| t.native_id)
             .collect();
-        assert_eq!(cloud_ids, vec!["cloud-stub"]);
+        assert_eq!(cloud_ids, vec!["coding-cloud"]);
 
         let all_ids: Vec<_> = index
             .list(
@@ -906,7 +927,19 @@ mod tests {
             .into_iter()
             .map(|t| t.native_id)
             .collect();
-        assert_eq!(all_ids, vec!["cloud-stub", "local-quick", "remote-stub"]);
+        assert_eq!(
+            all_ids,
+            vec!["coding-cloud", "local-catalog", "local-quick"]
+        );
+
+        let mut search_ids: Vec<_> = index
+            .search("History", 50, "{}", None, None, |_| true)
+            .unwrap()
+            .into_iter()
+            .map(|hit| hit.thread.native_id)
+            .collect();
+        search_ids.sort();
+        assert_eq!(search_ids, all_ids);
     }
 
     #[test]
