@@ -49,6 +49,10 @@ Permission answers reference the original request ID. Allow-once returns the ori
 
 ## History and contract gaps
 
+Claude Code 2.1.330 supports `--resume <source-id> --fork-session --resume-session-at <assistant-uuid> --session-id <new-id>` and includes the selected transcript entry in the fork. Vetro uses the last main-thread assistant entry's UUID at each turn boundary in live sessions and history.
+
+Vetro presents Claude's injected `<task-notification>` records as informational notices and updates matching in-progress tool calls for terminal task statuses. It suppresses signature-only thinking blocks in both the live and historical timelines.
+
 The history listing scans top-level project JSONL files and skips large payload rows when it only needs metadata. It uses the CLI's title or summary records, then the first user prompt. The transcript reader reuses the live item mapping and associates subagent sidecars through their `toolUseId` or the parent tool result's `agentId`. Torn JSONL tails are skipped. The read-only native check listed 121 sessions in 4.14 seconds in the debug profile (119 `claude-desktop`, two `sdk-cli`). The largest file was 36,568,864 bytes and yielded 970 items in 0.46 seconds. The native `OK` assistant message had the same item ID in the live stream and after reading its transcript.
 
 - `ToolCall` lacks typed child items. Claude Agent calls carry their nested timeline in `output.subagentItems` and preserve the native result in `output.result`.

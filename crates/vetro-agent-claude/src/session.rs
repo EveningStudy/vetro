@@ -55,7 +55,10 @@ struct Permission {
 pub(crate) enum LaunchMode {
     New,
     Resume,
-    Fork { source_id: String },
+    Fork {
+        source_id: String,
+        at_message_id: Option<String>,
+    },
 }
 
 impl ClaudeSession {
@@ -98,10 +101,17 @@ impl ClaudeSession {
                 spec.args.push("--resume".into());
                 spec.args.push((&id).into());
             }
-            LaunchMode::Fork { source_id } => {
+            LaunchMode::Fork {
+                source_id,
+                at_message_id,
+            } => {
                 spec.args.push("--resume".into());
                 spec.args.push(source_id.into());
                 spec.args.push("--fork-session".into());
+                if let Some(message_id) = at_message_id {
+                    spec.args.push("--resume-session-at".into());
+                    spec.args.push(message_id.into());
+                }
                 spec.args.push("--session-id".into());
                 spec.args.push((&id).into());
             }
@@ -802,6 +812,7 @@ impl State {
             }
             events.push(SessionEvent::Usage(self.usage.clone()));
         }
+        let assistant_uuid = self.timeline.take_last_assistant_uuid();
         let id = string(row, "uuid")
             .or(self.timeline.turn.as_deref())
             .unwrap_or("claude");
@@ -829,15 +840,17 @@ impl State {
                 },
             )));
         }
-        events.push(SessionEvent::Item(self.timeline.draft(
-            format!("turn:{id}"),
+        let mut turn_end = self.timeline.draft(
+            format!("turn:{}", assistant_uuid.as_deref().unwrap_or(id)),
             None,
             ItemKind::TurnEnd {
                 stop_reason: reason,
                 usage: usage_this_turn,
                 duration_ms: row["duration_ms"].as_u64(),
             },
-        )));
+        );
+        turn_end.turn_id = assistant_uuid.or_else(|| self.timeline.turn.clone());
+        events.push(SessionEvent::Item(turn_end));
         self.prompts.pop_front();
         self.timeline.turn = self.prompts.front().cloned();
         events.push(SessionEvent::Status(

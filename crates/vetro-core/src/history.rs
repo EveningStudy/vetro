@@ -538,7 +538,7 @@ impl Core {
                 actor.refresh_links(&summary);
             }
             projects |= summary.cwd.is_some();
-            upserted.push(self.overlay(summary));
+            upserted.push(self.overlay_with_live(summary));
         }
         if !upserted.is_empty() {
             self.publish(ServerEvent::ThreadsUpserted { threads: upserted });
@@ -667,9 +667,12 @@ mod tests {
         StartRequest, WireLog,
     };
     use vetro_proto::{
-        rpc::{AgentOptionsParams, AuthenticateResult, ThreadStartParams},
+        rpc::{
+            AgentOptionsParams, AuthenticateResult, SearchParams, ThreadStartParams,
+            ThreadsListParams,
+        },
         AgentInfo, AuthState, ConfigOption, ContentBlock, RateLimit, RequestResolution,
-        ThreadSource, ThreadUsage,
+        ThreadSource, ThreadStatus, ThreadUsage,
     };
 
     use super::*;
@@ -789,6 +792,63 @@ mod tests {
             resumable: true,
             parent_native_id: None,
             internal: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn live_status_survives_stale_index_rows_and_history_publication() {
+        let root = tempfile::tempdir().unwrap();
+        let home = Home::open(root.path().join(".vetro"), root.path().into()).unwrap();
+        let agent = Arc::new(InventoryAgent {
+            id: "kiro",
+            auth: Mutex::new(None),
+            listing: Mutex::new(Ok(SessionPage::default())),
+            initial_usage: None,
+        });
+        let core = Core::new(home, Registry::new([agent as Arc<dyn Agent>]).unwrap());
+        let (live, _actor) = core
+            .start(ThreadStartParams {
+                agent_id: "kiro".into(),
+                cwd: root.path().to_string_lossy().into_owned(),
+                options: BTreeMap::new(),
+                content: Vec::new(),
+            })
+            .await
+            .unwrap();
+        let mut stale = summary("kiro", record("in-memory"));
+        core.store.attached(&stale, &stale.title).unwrap();
+        stale.title = "Indexed session".into();
+        let changes = core
+            .store
+            .mark(&stale, None, "new history", &stale.title)
+            .unwrap();
+        let saved = core.store.get(&live.id).unwrap().unwrap();
+        assert!(!saved.live);
+        assert_eq!(saved.status, ThreadStatus::Idle);
+        assert!(saved.updated_at < live.updated_at);
+
+        let listed = core.threads(ThreadsListParams::default()).unwrap().threads;
+        let indexed = core.indexed_thread(&live.id).unwrap().unwrap();
+        let hits = core
+            .search(SearchParams {
+                query: stale.title.clone(),
+                limit: None,
+                include_hidden: None,
+            })
+            .unwrap()
+            .hits;
+        let mut events = core.events.subscribe();
+        core.publish_history(changes);
+        let event = events.try_recv().unwrap();
+        let ServerEvent::ThreadsUpserted { threads } = &*event else {
+            panic!("Expected an upsert, got {event:?}");
+        };
+        for thread in [&listed[0], &indexed, &hits[0].thread, &threads[0]] {
+            assert_eq!(thread.id, live.id);
+            assert_eq!(thread.title, stale.title);
+            assert_eq!(thread.updated_at, live.updated_at);
+            assert_eq!(thread.status, ThreadStatus::Running);
+            assert!(thread.live);
         }
     }
 

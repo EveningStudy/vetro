@@ -1,4 +1,4 @@
-use std::{collections::HashSet, fs, path::Path, sync::Mutex};
+use std::{collections::HashSet, fs, path::Path, sync::Mutex, time::Duration};
 
 use rusqlite::{
     params, Connection, ErrorCode, OptionalExtension, Row, Transaction, TransactionBehavior,
@@ -121,6 +121,7 @@ impl Index {
         };
         let connect = || {
             let mut conn = Connection::open(&path)?;
+            conn.busy_timeout(Duration::from_secs(5))?;
             conn.execute_batch(SCHEMA)?;
             migrate_internal(&mut conn)?;
             Ok(conn)

@@ -13,7 +13,7 @@ use vetro_proto::{rpc::ErrorCode, ContentBlock, ThreadSource, ThreadUsage, Token
 
 use crate::{
     bad_request,
-    events::{timestamp, user_content, Timeline},
+    events::{injected_user, synthetic_user, timestamp, user_content, Timeline},
     io_error,
     session::{accumulate_usage, add_tokens, token_usage},
     string,
@@ -98,7 +98,10 @@ pub(crate) fn read(root: &Path, id: &str) -> Result<Transcript> {
     let file = open_optional(&path)
         .map_err(io_error)?
         .ok_or_else(not_found)?;
-    let mut transcript = HistoryTranscript::default();
+    let mut transcript = HistoryTranscript {
+        timeline: Timeline::for_history(),
+        ..HistoryTranscript::default()
+    };
     transcript.read(file, None).map_err(io_error)?;
     let sidechains = path.with_extension("").join("subagents");
     let mut agents = Vec::new();
@@ -220,21 +223,28 @@ impl HistoryTranscript {
                 Some("result") if main => self.usage.result(&row),
                 _ => {}
             }
-            for event in events.drain(..) {
-                if let SessionEvent::Item(item) = event {
-                    if let Some(position) = self.positions.get(&item.id) {
-                        self.items[*position] = item;
-                    } else {
-                        self.positions.insert(item.id.clone(), self.items.len());
-                        self.items.push(item);
-                    }
-                }
-            }
+            self.apply(&mut events);
         })?;
-        if parent.is_some() {
+        if parent.is_none() {
+            self.timeline.finish_history_turn(&mut events);
+            self.apply(&mut events);
+        } else {
             self.timeline.turn = turn_at_open;
         }
         Ok(())
+    }
+
+    fn apply(&mut self, events: &mut Vec<SessionEvent>) {
+        for event in events.drain(..) {
+            if let SessionEvent::Item(item) = event {
+                if let Some(position) = self.positions.get(&item.id) {
+                    self.items[*position] = item;
+                } else {
+                    self.positions.insert(item.id.clone(), self.items.len());
+                    self.items.push(item);
+                }
+            }
+        }
     }
 
     fn index_agent_calls(&mut self, row: &Value) {
@@ -419,17 +429,7 @@ fn record(file: File, id: &str) -> io::Result<SessionRecord> {
                         .filter(|model| !model.starts_with('<'))
                         .map(str::to_owned);
                 }
-                if record.preview.is_none()
-                    && row["type"] == "user"
-                    && ![
-                        "isSynthetic",
-                        "isMeta",
-                        "isVisibleInTranscriptOnly",
-                        "isCompactSummary",
-                    ]
-                    .iter()
-                    .any(|key| row[*key] == true)
-                {
+                if record.preview.is_none() && row["type"] == "user" && !synthetic_user(&row) {
                     record.preview = first_prompt(&row["message"]["content"]);
                 }
             }
@@ -457,18 +457,16 @@ fn record(file: File, id: &str) -> io::Result<SessionRecord> {
 }
 
 fn first_prompt(content: &Value) -> Option<String> {
-    user_content(content)
-        .into_iter()
-        .find_map(|block| match block {
-            ContentBlock::Text { text } => {
-                let text = text.trim();
-                (!text.is_empty()
-                    && !text.starts_with("<local-command-")
-                    && !text.starts_with("<task-notification>"))
-                .then(|| text.chars().take(300).collect())
-            }
-            _ => None,
-        })
+    let blocks = user_content(content);
+    if injected_user(content, &blocks).is_some() {
+        return None;
+    }
+    blocks.into_iter().find_map(|block| match block {
+        ContentBlock::Text { text } if !text.trim().is_empty() => {
+            Some(text.trim().chars().take(300).collect())
+        }
+        _ => None,
+    })
 }
 
 fn nonempty(row: &Value, key: &str) -> Option<String> {
@@ -600,6 +598,8 @@ fn trim_start(bytes: &[u8]) -> &[u8] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+    use vetro_proto::{ItemKind, NoticeLevel, StopReason, ToolStatus};
 
     fn read_fixture(rows: &str) -> Transcript {
         let root = tempfile::tempdir().unwrap();
@@ -608,6 +608,90 @@ mod tests {
         fs::create_dir(&project).unwrap();
         fs::write(project.join(format!("{id}.jsonl")), rows).unwrap();
         read(root.path(), id).unwrap()
+    }
+
+    #[test]
+    fn injected_records_keep_their_turn_and_history_ends_at_main_assistant_rows() {
+        let transcript = read_fixture(
+            r#"{"type":"user","uuid":"first","message":{"content":"Start the task"}}
+{"type":"assistant","uuid":"opened","message":{"content":[{"type":"tool_use","id":"call","name":"Agent"}]}}
+{"type":"user","uuid":"tool-result","toolUseResult":{"status":"async_launched"},"message":{"content":[{"type":"tool_result","tool_use_id":"call","content":"Started"}]}}
+{"type":"assistant","uuid":"811be3aa-d4ae-4457-b2f1-304fb4114dbd","timestamp":"2026-11-23T00:00:00.100Z","message":{"content":[{"type":"thinking","thinking":"","signature":"signed"},{"type":"text","text":"Started."}]}}
+{"type":"assistant","uuid":"child","parent_tool_use_id":"call","message":{"content":[{"type":"thinking","thinking":"  ","signature":"signed"}]}}
+{"type":"user","message":{"content":" \n<task-notification><task-id>task</task-id><tool-use-id>call</tool-use-id><status>killed</status><summary>Stopped</summary><output-file> </output-file></task-notification> "}}
+{"type":"user","uuid":"stdout","message":{"content":[{"type":"text","text":"<local-command-stdout>Command output</local-command-stdout>"}]}}
+{"type":"user","uuid":"silent","message":{"content":"<system-reminder>Remember</system-reminder>"}}
+{"type":"user","uuid":"command","message":{"content":"<local-command-caveat>Caveat</local-command-caveat>\n<command-name>/help</command-name><command-message>help</command-message><command-args></command-args>"}}
+{"type":"user","uuid":"second","message":{"content":"Keep <system-reminder>this</system-reminder> in my message."}}
+{"type":"assistant","uuid":"eabab8d4-205a-4a12-aca1-3dc3bd982055","timestamp":"2026-11-23T00:00:00.200Z","message":{"content":[{"type":"thinking","thinking":"Some thoughts"}]}}
+"#,
+        );
+        let items = transcript.items;
+        let ids: Vec<_> = items.iter().map(|item| item.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "first",
+                "call",
+                "811be3aa-d4ae-4457-b2f1-304fb4114dbd:1",
+                "claude-notice:1",
+                "stdout",
+                "turn:811be3aa-d4ae-4457-b2f1-304fb4114dbd",
+                "second",
+                "eabab8d4-205a-4a12-aca1-3dc3bd982055:0",
+                "turn:eabab8d4-205a-4a12-aca1-3dc3bd982055",
+            ]
+        );
+        assert!(matches!(&items[1].kind, ItemKind::ToolCall(call)
+            if call.status == ToolStatus::Failed
+                && call.output == Some(json!({"status":"async_launched"}))));
+        assert_eq!(items[3].turn_id.as_deref(), Some("first"));
+        assert_eq!(
+            items[3].kind,
+            ItemKind::Notice {
+                level: NoticeLevel::Info,
+                text: "Background task failed: Stopped".into(),
+                detail: Some(json!({
+                    "task-id":"task", "tool-use-id":"call", "status":"killed", "summary":"Stopped"
+                })),
+            }
+        );
+        assert_eq!(items[4].turn_id.as_deref(), Some("first"));
+        assert_eq!(
+            items[4].kind,
+            ItemKind::Notice {
+                level: NoticeLevel::Info,
+                text: "Command output".into(),
+                detail: None,
+            }
+        );
+        assert_eq!(
+            items[6].kind,
+            ItemKind::UserMessage {
+                content: vec![ContentBlock::Text {
+                    text: "Keep <system-reminder>this</system-reminder> in my message.".into(),
+                }],
+            }
+        );
+        assert!(
+            matches!(&items[7].kind, ItemKind::Reasoning { text, streaming: false }
+            if text == "Some thoughts")
+        );
+        for (index, id, ts) in [
+            (5, "811be3aa-d4ae-4457-b2f1-304fb4114dbd", 1_795_392_000_100),
+            (8, "eabab8d4-205a-4a12-aca1-3dc3bd982055", 1_795_392_000_200),
+        ] {
+            assert_eq!(items[index].turn_id.as_deref(), Some(id));
+            assert_eq!(items[index].ts, Some(ts));
+            assert_eq!(
+                items[index].kind,
+                ItemKind::TurnEnd {
+                    stop_reason: StopReason::EndTurn,
+                    usage: None,
+                    duration_ms: None,
+                }
+            );
+        }
     }
 
     #[test]

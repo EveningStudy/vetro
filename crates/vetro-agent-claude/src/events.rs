@@ -1,9 +1,13 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    borrow::Cow,
+    collections::{HashMap, HashSet},
+};
 
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use vetro_agent_api::{ItemDraft, SessionEvent};
 use vetro_proto::{
-    ContentBlock, ItemKind, NoticeLevel, ToolCall, ToolContent, ToolKind, ToolLocation, ToolStatus,
+    ContentBlock, ItemKind, NoticeLevel, StopReason, ToolCall, ToolContent, ToolKind, ToolLocation,
+    ToolStatus,
 };
 
 use crate::string;
@@ -11,6 +15,10 @@ use crate::string;
 #[derive(Default)]
 pub(crate) struct Timeline {
     pub turn: Option<String>,
+    last_assistant_uuid: Option<String>,
+    last_assistant_ts: Option<i64>,
+    historical: bool,
+    notice_sequence: usize,
     calls: HashMap<String, Call>,
     streams: HashMap<Option<String>, Stream>,
     message_indices: HashMap<String, usize>,
@@ -28,10 +36,43 @@ struct Call {
 #[derive(Default)]
 struct Stream {
     message: String,
-    blocks: HashMap<usize, ItemDraft>,
+    blocks: HashMap<usize, StreamBlock>,
+}
+
+struct StreamBlock {
+    draft: ItemDraft,
+    emitted: bool,
 }
 
 impl Timeline {
+    pub fn for_history() -> Self {
+        Self {
+            historical: true,
+            ..Self::default()
+        }
+    }
+
+    pub fn take_last_assistant_uuid(&mut self) -> Option<String> {
+        self.last_assistant_ts = None;
+        self.last_assistant_uuid.take()
+    }
+
+    pub fn finish_history_turn(&mut self, events: &mut Vec<SessionEvent>) {
+        let ts = self.last_assistant_ts;
+        if let Some(uuid) = self.take_last_assistant_uuid() {
+            events.push(SessionEvent::Item(ItemDraft {
+                id: format!("turn:{uuid}"),
+                ts,
+                turn_id: Some(uuid),
+                kind: ItemKind::TurnEnd {
+                    stop_reason: StopReason::EndTurn,
+                    usage: None,
+                    duration_ms: None,
+                },
+            }));
+        }
+    }
+
     pub fn tool_turn(&self, id: &str) -> Option<String> {
         self.calls.get(id)?.draft.turn_id.clone()
     }
@@ -41,9 +82,7 @@ impl Timeline {
     }
 
     pub fn message(&mut self, row: &Value, parent: Option<&str>, events: &mut Vec<SessionEvent>) {
-        let Some(id) = string(row, "uuid") else {
-            return;
-        };
+        let id = string(row, "uuid");
         let message = &row["message"];
         let content = &message["content"];
         let ts = timestamp(row);
@@ -53,32 +92,53 @@ impl Timeline {
                     self.complete_call(row, result, events);
                 }
             }
-            if ![
-                "isSynthetic",
-                "isMeta",
-                "isVisibleInTranscriptOnly",
-                "isCompactSummary",
-            ]
-            .iter()
-            .any(|key| row[*key] == true)
-            {
-                self.message_user(id, user_content(content), parent, ts, events);
+            if synthetic_user(row) {
+                return;
+            }
+            let blocks = user_content(content);
+            if let Some(injected) = injected_user(content, &blocks) {
+                self.injected_notice(injected, id, parent, ts, events);
+            } else if let Some(id) = id {
+                self.message_user(id, blocks, parent, ts, events);
             }
         } else if row["type"] == "assistant" {
+            let Some(id) = id else {
+                return;
+            };
+            if parent.is_none() {
+                self.last_assistant_uuid = Some(id.into());
+                self.last_assistant_ts = ts;
+            }
             let message_id = string(message, "id").unwrap_or(id);
             let mut index = row["apiBlockIndex"]
                 .as_u64()
                 .map(|index| index as usize)
                 .unwrap_or_else(|| *self.message_indices.get(message_id).unwrap_or(&0));
             for block in content.as_array().into_iter().flatten() {
+                let block_index = index;
+                index += 1;
                 let partial = self
                     .streams
                     .get_mut(&parent.map(str::to_owned))
                     .filter(|stream| stream.message == message_id)
-                    .and_then(|stream| stream.blocks.remove(&index));
-                if let Some(kind) = text_kind(block, false) {
+                    .and_then(|stream| stream.blocks.remove(&block_index))
+                    .filter(|block| block.emitted)
+                    .map(|block| block.draft);
+                if let Some(mut kind) = text_kind(block, false) {
+                    if let ItemKind::Reasoning { text, .. } = &mut kind {
+                        if text.trim().is_empty() {
+                            let Some(ItemDraft {
+                                kind: ItemKind::Reasoning { text: streamed, .. },
+                                ..
+                            }) = &partial
+                            else {
+                                continue;
+                            };
+                            text.clone_from(streamed);
+                        }
+                    }
                     let mut draft = partial.unwrap_or_else(|| {
-                        self.draft(format!("{message_id}:{index}"), ts, kind.clone())
+                        self.draft(format!("{message_id}:{block_index}"), ts, kind.clone())
                     });
                     draft.kind = kind;
                     draft.ts = ts.or(draft.ts);
@@ -86,7 +146,6 @@ impl Timeline {
                 } else if block["type"] == "tool_use" {
                     self.open_call(block, parent, ts, events);
                 }
-                index += 1;
             }
             self.message_indices
                 .entry(message_id.into())
@@ -107,6 +166,11 @@ impl Timeline {
             return;
         }
         if parent.is_none() {
+            if self.historical {
+                self.finish_history_turn(events);
+            } else {
+                self.take_last_assistant_uuid();
+            }
             self.turn = Some(id.into());
         }
         self.emit(
@@ -143,22 +207,29 @@ impl Timeline {
                 return;
             };
             let draft = self.draft(format!("{}:{index}", stream.message), None, kind);
-            self.streams
-                .get_mut(&parent_key)
-                .unwrap()
-                .blocks
-                .insert(index, draft.clone());
-            self.emit(draft, parent, events);
+            let emitted =
+                !matches!(&draft.kind, ItemKind::Reasoning { text, .. } if text.trim().is_empty());
+            self.streams.get_mut(&parent_key).unwrap().blocks.insert(
+                index,
+                StreamBlock {
+                    draft: draft.clone(),
+                    emitted,
+                },
+            );
+            if emitted {
+                self.emit(draft, parent, events);
+            }
         } else if event["type"] == "content_block_delta" {
             let delta = &event["delta"];
             let Some(delta) = (match string(delta, "type") {
                 Some("text_delta") => string(delta, "text"),
                 Some("thinking_delta") => string(delta, "thinking"),
                 _ => None,
-            }) else {
+            })
+            .filter(|delta| !delta.is_empty()) else {
                 return;
             };
-            let Some(draft) = self
+            let Some(block) = self
                 .streams
                 .get_mut(&parent_key)
                 .and_then(|stream| stream.blocks.get_mut(&index))
@@ -166,16 +237,20 @@ impl Timeline {
                 return;
             };
             if let ItemKind::AgentMessage { text, .. } | ItemKind::Reasoning { text, .. } =
-                &mut draft.kind
+                &mut block.draft.kind
             {
                 text.push_str(delta);
+                if !block.emitted && text.trim().is_empty() {
+                    return;
+                }
             }
-            if parent.is_some() {
-                let draft = draft.clone();
+            if !block.emitted || parent.is_some() {
+                block.emitted = true;
+                let draft = block.draft.clone();
                 self.emit(draft, parent, events);
             } else {
                 events.push(SessionEvent::TextDelta {
-                    item_id: draft.id.clone(),
+                    item_id: block.draft.id.clone(),
                     delta: delta.into(),
                 });
             }
@@ -184,7 +259,8 @@ impl Timeline {
 
     pub fn finish_streams(&mut self, events: &mut Vec<SessionEvent>) {
         for (parent, stream) in std::mem::take(&mut self.streams) {
-            for mut draft in stream.blocks.into_values() {
+            for block in stream.blocks.into_values().filter(|block| block.emitted) {
+                let mut draft = block.draft;
                 if let ItemKind::AgentMessage { streaming, .. }
                 | ItemKind::Reasoning { streaming, .. } = &mut draft.kind
                 {
@@ -202,6 +278,84 @@ impl Timeline {
             turn_id: self.turn.clone(),
             kind,
         }
+    }
+
+    fn injected_notice(
+        &mut self,
+        injected: InjectedUser,
+        id: Option<&str>,
+        parent: Option<&str>,
+        ts: Option<i64>,
+        events: &mut Vec<SessionEvent>,
+    ) {
+        let (text, detail) = match injected {
+            InjectedUser::Task(body) => {
+                let detail: Map<String, Value> =
+                    ["task-id", "tool-use-id", "status", "summary", "output-file"]
+                        .into_iter()
+                        .filter_map(|tag| {
+                            let (_, field) = body.split_once(&format!("<{tag}>"))?;
+                            let (field, _) = field.split_once(&format!("</{tag}>"))?;
+                            let field = field.trim();
+                            (!field.is_empty()).then(|| (tag.into(), json!(field)))
+                        })
+                        .collect();
+                let status = detail.get("status").and_then(Value::as_str);
+                let (mut text, tool_status) = match status {
+                    Some("failed" | "error" | "killed") => {
+                        ("Background task failed".into(), Some(ToolStatus::Failed))
+                    }
+                    Some("completed" | "success") => (
+                        "Background task completed".into(),
+                        Some(ToolStatus::Completed),
+                    ),
+                    Some(status) => (format!("Background task ({status})"), None),
+                    None => ("Background task".into(), None),
+                };
+                if let Some((call_id, status)) = detail
+                    .get("tool-use-id")
+                    .and_then(Value::as_str)
+                    .zip(tool_status)
+                {
+                    if let Some(call) = self.calls.get_mut(call_id) {
+                        if let ItemKind::ToolCall(tool) = &mut call.draft.kind {
+                            if tool.status == ToolStatus::InProgress {
+                                tool.status = status;
+                                self.emit_call(call_id, events);
+                            }
+                        }
+                    }
+                }
+                if let Some(summary) = detail.get("summary").and_then(Value::as_str) {
+                    if status.is_some() {
+                        text.push_str(": ");
+                        text.push_str(summary);
+                    } else {
+                        text = summary.into();
+                    }
+                }
+                (text, Some(Value::Object(detail)))
+            }
+            InjectedUser::Stdout(body) if !body.trim().is_empty() => (body, None),
+            InjectedUser::Stdout(_) | InjectedUser::Silent => return,
+        };
+        let id = id.map(str::to_owned).unwrap_or_else(|| {
+            self.notice_sequence += 1;
+            format!("claude-notice:{}", self.notice_sequence)
+        });
+        self.emit(
+            self.draft(
+                id,
+                ts,
+                ItemKind::Notice {
+                    level: NoticeLevel::Info,
+                    text,
+                    detail,
+                },
+            ),
+            parent,
+            events,
+        );
     }
 
     pub fn notice(&mut self, row: &Value, parent: Option<&str>, events: &mut Vec<SessionEvent>) {
@@ -401,6 +555,76 @@ impl Timeline {
         let (draft, parent) = (call.draft.clone(), call.parent.clone());
         self.emit(draft, parent.as_deref(), events);
     }
+}
+
+pub(crate) fn synthetic_user(row: &Value) -> bool {
+    [
+        "isSynthetic",
+        "isMeta",
+        "isVisibleInTranscriptOnly",
+        "isCompactSummary",
+    ]
+    .iter()
+    .any(|key| row[*key] == true)
+}
+
+pub(crate) enum InjectedUser {
+    Task(String),
+    Stdout(String),
+    Silent,
+}
+
+pub(crate) fn injected_user(content: &Value, blocks: &[ContentBlock]) -> Option<InjectedUser> {
+    if blocks.is_empty()
+        || content
+            .as_array()
+            .is_some_and(|blocks| blocks.iter().any(|block| block["type"] == "file"))
+    {
+        return None;
+    }
+    let text = match blocks {
+        [ContentBlock::Text { text }] => Cow::Borrowed(text.as_str()),
+        _ => Cow::Owned(
+            blocks
+                .iter()
+                .map(|block| match block {
+                    ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Option<Vec<_>>>()?
+                .join("\n"),
+        ),
+    };
+    let mut remaining = text.trim();
+    if let Some((body, "")) = xml_element(remaining, "task-notification") {
+        return Some(InjectedUser::Task(body.into()));
+    }
+    if let Some((body, "")) = xml_element(remaining, "local-command-stdout") {
+        return Some(InjectedUser::Stdout(body.into()));
+    }
+    let silent_tags = [
+        "local-command-caveat",
+        "command-name",
+        "command-message",
+        "command-args",
+        "system-reminder",
+    ];
+    loop {
+        let (_, tail) = silent_tags
+            .iter()
+            .find_map(|tag| xml_element(remaining, tag))?;
+        remaining = tail.trim_start();
+        if remaining.is_empty() {
+            return Some(InjectedUser::Silent);
+        }
+    }
+}
+
+fn xml_element<'a>(text: &'a str, tag: &str) -> Option<(&'a str, &'a str)> {
+    text.strip_prefix('<')?
+        .strip_prefix(tag)?
+        .strip_prefix('>')?
+        .split_once(&format!("</{tag}>"))
 }
 
 pub(crate) fn user_content(content: &Value) -> Vec<ContentBlock> {

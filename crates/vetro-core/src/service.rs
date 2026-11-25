@@ -706,6 +706,13 @@ impl Core {
         thread
     }
 
+    pub(crate) fn overlay_with_live(&self, mut thread: ThreadSummary) -> ThreadSummary {
+        if let Some(actor) = self.sessions.get(&thread.id) {
+            actor.live_overlay_into(&mut thread);
+        }
+        self.overlay(thread)
+    }
+
     pub(crate) fn thread_changed(&self, thread: ThreadSummary) {
         let overlaid = self.overlay(thread.clone());
         if let Err(error) = self.store.attached(&thread, &overlaid.title) {
@@ -793,7 +800,7 @@ impl Core {
         Ok(ThreadsListResult {
             threads: threads
                 .into_iter()
-                .map(|thread| self.overlay(thread))
+                .map(|thread| self.overlay_with_live(thread))
                 .collect(),
             next_cursor,
         })
@@ -842,13 +849,16 @@ impl Core {
             },
         )?;
         for hit in &mut hits {
-            hit.thread = self.overlay(hit.thread.clone());
+            hit.thread = self.overlay_with_live(hit.thread.clone());
         }
         Ok(SearchResult { hits })
     }
 
     pub fn indexed_thread(&self, id: &str) -> Result<Option<ThreadSummary>> {
-        Ok(self.store.get(id)?.map(|thread| self.overlay(thread)))
+        Ok(self
+            .store
+            .get(id)?
+            .map(|thread| self.overlay_with_live(thread)))
     }
 
     pub fn links(&self) -> Result<Vec<(String, ThreadParent)>> {

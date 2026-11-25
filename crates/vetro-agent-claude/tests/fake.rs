@@ -10,12 +10,13 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 use vetro_agent_api::{process::SpawnSpec, Agent, SessionEvent, StartRequest};
 use vetro_agent_claude::ClaudeAgent;
 use vetro_proto::{
-    ContentBlock, ItemKind, RawDirection, RequestResolution, StopReason, ThreadSource,
+    ContentBlock, ItemKind, NoticeLevel, RawDirection, RequestResolution, StopReason, ThreadSource,
     ThreadStatus, ToolKind, ToolStatus,
 };
 
 const PROMPT: &str = "  Original prompt: \"你好\"\r\n\n  ";
 const ID: &str = "00c02626-cafe-4abc-baba-000010000019";
+const ASSISTANT_ID: &str = "811be3aa-d4ae-4457-b2f1-304fb4114dbd";
 const PREFIX: &[&str] = &[
     "-p",
     "--input-format",
@@ -107,14 +108,27 @@ async fn test() {
         .await
         .unwrap();
     let mut streaming = Vec::new();
+    let mut reasoning = Vec::new();
+    let mut prompt_id = None;
     let mut final_id = None;
     let mut completed = false;
+    let mut notified = false;
     let mut resolved = false;
     for step in ["always", "questions", "plan"] {
         loop {
             match next(&mut receiver).await {
                 SessionEvent::TextDelta { item_id, delta } => streaming.push((item_id, delta)),
                 SessionEvent::Item(item) => match item.kind {
+                    ItemKind::UserMessage { content } => {
+                        if content.first() == Some(&text(PROMPT)) {
+                            prompt_id = Some(item.id);
+                        } else {
+                            assert_eq!(content, vec![text("fold this turn")]);
+                        }
+                    }
+                    ItemKind::Reasoning { text, streaming } => {
+                        reasoning.push((item.id, text, streaming));
+                    }
                     ItemKind::AgentMessage {
                         text,
                         streaming: false,
@@ -127,6 +141,15 @@ async fn test() {
                             "child text"
                         );
                         completed = true;
+                    }
+                    ItemKind::Notice {
+                        level: NoticeLevel::Info,
+                        text,
+                        ..
+                    } if text == "Background task completed: Child finished" => {
+                        assert!(prompt_id.is_some());
+                        assert_eq!(item.turn_id, prompt_id);
+                        notified = true;
                     }
                     ItemKind::Request(request)
                         if request.request_id == step && request.resolution.is_none() =>
@@ -158,7 +181,7 @@ async fn test() {
     assert_eq!(
         streaming,
         vec![
-            ("message:0".into(), "thinking".into()),
+            ("message:0".into(), "ing".into()),
             ("message:1".into(), "hello".into())
         ]
     );
@@ -167,6 +190,9 @@ async fn test() {
     loop {
         match next(&mut receiver).await {
             SessionEvent::Item(item) => match item.kind {
+                ItemKind::Reasoning { text, streaming } => {
+                    reasoning.push((item.id, text, streaming));
+                }
                 ItemKind::Request(request) if request.resolution.is_some() => resolved = true,
                 ItemKind::TurnEnd {
                     stop_reason: StopReason::EndTurn,
@@ -174,6 +200,8 @@ async fn test() {
                     usage: Some(usage),
                 } => {
                     assert_eq!(usage.input, Some(7));
+                    assert_eq!(item.turn_id.as_deref(), Some(ASSISTANT_ID));
+                    assert_eq!(item.id, format!("turn:{ASSISTANT_ID}"));
                     break;
                 }
                 _ => {}
@@ -189,8 +217,15 @@ async fn test() {
             _ => {}
         }
     }
+    assert_eq!(
+        reasoning,
+        [
+            ("message:0".into(), "think".into(), true),
+            ("message:0".into(), "thinking".into(), false),
+        ]
+    );
     assert_eq!(limits, [75.0, 0.0, 100.0, 100.0]);
-    assert!(completed && resolved);
+    assert!(completed && notified && resolved);
     assert_eq!(
         next(&mut receiver).await,
         SessionEvent::Status(ThreadStatus::Idle)
@@ -259,7 +294,7 @@ async fn test() {
         json!({"type":"user","uuid":"history-user","sessionId":ID,"cwd":original,"entrypoint":"sdk-cli","timestamp":"2026-11-23T00:00:00.100Z","message":{"content":"Initial title"}}),
         json!({"type":"summary","summary":"Generated summary"}),
         json!({"type":"custom-title","customTitle":"Own Title"}),
-        json!({"type":"assistant","uuid":"history-assistant","message":{"id":"history-api","model":"haiku","content":[{"type":"tool_use","id":"call","name":"Agent","input":{}}]}}),
+        json!({"type":"assistant","uuid":ASSISTANT_ID,"message":{"id":"history-api","model":"haiku","content":[{"type":"tool_use","id":"call","name":"Agent","input":{}}]}}),
         json!({"type":"user","uuid":"history-result","message":{"content":[{"type":"tool_result","tool_use_id":"call","content":"done"}]},"toolUseResult":{"agentId":"child"}}),
         json!({"type":"assistant","uuid":"history-inline","isSidechain":true,"agentId":"child","message":{"content":[{"type":"text","text":"inline"}]}}),
         json!({"type":"system","subtype":"compact_boundary","uuid":"compact"}),
@@ -289,7 +324,10 @@ async fn test() {
     assert_eq!(record.cwd.as_deref(), Some(original.as_path()));
     assert_eq!(record.created_at, Some(1_795_392_000_100));
     let history = agent.read(ID, None).await.unwrap();
-    assert_eq!(history.items.len(), 3);
+    assert_eq!(history.items.len(), 4);
+    let anchor = history.items.last().unwrap();
+    assert!(matches!(anchor.kind, ItemKind::TurnEnd { .. }));
+    assert_eq!(anchor.turn_id.as_deref(), Some(ASSISTANT_ID));
     let ItemKind::ToolCall(call) = &history.items[1].kind else {
         panic!("missing Agent call")
     };
@@ -340,30 +378,34 @@ async fn test() {
         .any(|option| option.id == "effort" && option.current_value == "high"));
     assert_eq!(resumed.wire_log().snapshot()[0], log[0]);
     assert!(info.capabilities.fork.whole);
-    assert!(!info.capabilities.fork.at_turn);
+    assert!(info.capabilities.fork.at_turn);
     let (sink, _events) = unbounded_channel();
     assert!(agent
         .fork(ID, Some(temp.path()), Some("turn-1"), sink)
         .await
         .is_err());
-    let (sink, _events) = unbounded_channel();
-    let forked = agent.fork(ID, Some(temp.path()), None, sink).await.unwrap();
-    assert_ne!(forked.native_id(), ID);
-    let log = forked.wire_log().snapshot();
-    let spawn: Value = serde_json::from_str(&log[0].text).unwrap();
-    let mut expected = PREFIX.to_vec();
-    expected.extend([
-        "--resume",
-        ID,
-        "--fork-session",
-        "--session-id",
-        forked.native_id(),
-    ]);
-    assert_eq!(spawn["args"], json!(expected));
-    assert_eq!(spawn["cwd"], json!(original));
+    for turn_id in [None, anchor.turn_id.as_deref()] {
+        let (sink, _events) = unbounded_channel();
+        let forked = agent
+            .fork(ID, Some(temp.path()), turn_id, sink)
+            .await
+            .unwrap();
+        assert_ne!(forked.native_id(), ID);
+        let log = forked.wire_log().snapshot();
+        let spawn: Value = serde_json::from_str(&log[0].text).unwrap();
+        let mut expected = PREFIX.to_vec();
+        expected.extend(["--resume", ID, "--fork-session"]);
+        if let Some(turn_id) = turn_id {
+            expected.extend(["--resume-session-at", turn_id]);
+        }
+        expected.extend(["--session-id", forked.native_id()]);
+        assert_eq!(spawn["args"], json!(expected));
+        assert_eq!(spawn["cwd"], json!(original));
+        forked.detach().await;
+    }
     agent.shutdown().await;
     println!(
-        "fake Claude passed: no injection, streaming, permissions, interrupt, history, resume"
+        "fake Claude passed: no injection, streaming, permissions, interrupt, history, resume, fork"
     );
 }
 
@@ -391,7 +433,21 @@ fn fake(args: &[String]) {
         extra.is_empty()
             || extra == ["--effort", "low"]
             || extra == ["--no-session-persistence"]
-            || (extra.len() == 3 && extra[0] == "--fork-session" && extra[1] == "--session-id")
+            || matches!(
+                extra
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+                    .as_slice(),
+                ["--fork-session", "--session-id", _]
+                    | [
+                        "--fork-session",
+                        "--resume-session-at",
+                        ASSISTANT_ID,
+                        "--session-id",
+                        _
+                    ]
+            )
     );
     let mut first = true;
     let mut folded = None;
@@ -457,12 +513,15 @@ fn fake(args: &[String]) {
                     json!({"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}),
                 );
                 stream(
-                    json!({"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"thinking"}}),
+                    json!({"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"think"}}),
+                );
+                stream(
+                    json!({"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"ing"}}),
                 );
                 assistant(
                     "thought",
                     None,
-                    json!({"type":"thinking","thinking":"thinking"}),
+                    json!({"type":"thinking","thinking":"  ","signature":"signed"}),
                 );
                 stream(
                     json!({"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}),
@@ -471,10 +530,27 @@ fn fake(args: &[String]) {
                     json!({"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"hello"}}),
                 );
                 assistant("answer", None, json!({"type":"text","text":"hello"}));
+                stream(
+                    json!({"type":"content_block_start","index":2,"content_block":{"type":"thinking","thinking":""}}),
+                );
+                stream(
+                    json!({"type":"content_block_delta","index":2,"delta":{"type":"thinking_delta","thinking":""}}),
+                );
+                stream(
+                    json!({"type":"content_block_delta","index":2,"delta":{"type":"signature_delta","signature":"signed"}}),
+                );
+                assistant(
+                    "signature-only",
+                    None,
+                    json!({"type":"thinking","thinking":"","signature":"signed"}),
+                );
                 assistant(
                     "agent",
                     None,
                     json!({"type":"tool_use","name":"Agent","id":"call","input":{"description":"Child"}}),
+                );
+                stream(
+                    json!({"type":"content_block_start","index":4,"content_block":{"type":"thinking","thinking":""}}),
                 );
                 assistant(
                     "child",
@@ -482,8 +558,11 @@ fn fake(args: &[String]) {
                     json!({"type":"text","text":"child text"}),
                 );
                 emit(
-                    json!({"type":"user","uuid":"output","message":{"content":[{"type":"tool_result","tool_use_id":"call","content":"done"}]}}),
+                    json!({"type":"user","uuid":"output","tool_use_result":{"status":"async_launched"},"message":{"content":[{"type":"tool_result","tool_use_id":"call","content":"done"}]}}),
                 );
+                emit(json!({"type":"user","message":{"role":"user","content":
+                    "<task-notification><task-id>child</task-id><tool-use-id>call</tool-use-id><status>completed</status><summary>Child finished</summary></task-notification>"
+                }}));
                 permission(
                     "always",
                     "Bash",
@@ -526,6 +605,8 @@ fn fake(args: &[String]) {
                         let mut replay = folded.take().unwrap();
                         replay["isReplay"] = json!(true);
                         emit(replay);
+                        emit(json!({"type":"assistant","uuid":ASSISTANT_ID,
+                            "message":{"id":"folded-message","content":[{"type":"text","text":"Folded."}]}}));
                         for (status, utilization) in [
                             ("allowed_warning", Some(0.75)),
                             ("allowed", Some(-0.2)),

@@ -402,6 +402,19 @@ impl Thread {
         self.state.lock().unwrap().session.is_some()
     }
 
+    pub(crate) fn live_overlay_into(&self, summary: &mut ThreadSummary) {
+        let state = self.state.lock().unwrap();
+        let live = &state.summary;
+        if state.session.is_some() || live.status != ThreadStatus::Idle {
+            summary.live = live.live;
+            summary.status = live.status;
+            if live.model.is_some() {
+                summary.model.clone_from(&live.model);
+            }
+            summary.updated_at = summary.updated_at.max(live.updated_at);
+        }
+    }
+
     pub(crate) fn take_projection(&self) -> Option<(ThreadSummary, Projection)> {
         let mut state = self.state.lock().unwrap();
         if !std::mem::take(&mut state.index_dirty) {

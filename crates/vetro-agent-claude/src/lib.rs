@@ -182,7 +182,7 @@ impl Agent for ClaudeAgent {
                 list_sessions: true,
                 fork: vetro_proto::ForkCapabilities {
                     whole: true,
-                    at_turn: false,
+                    at_turn: true,
                 },
             },
             error: error.map(|error| error.message.clone()),
@@ -289,12 +289,10 @@ impl Agent for ClaudeAgent {
         turn_id: Option<&str>,
         sink: EventSink,
     ) -> Result<Arc<dyn Session>> {
-        if turn_id.is_some() {
-            return Err(bad_request(
-                "Claude Code only supports forking the whole thread",
-            ));
-        }
         history::validate_id(native_id)?;
+        let at_message_id = turn_id
+            .map(|id| history::validate_id(id).map(|()| id.to_owned()))
+            .transpose()?;
         let root = self.projects.clone();
         let id = native_id.to_owned();
         let stored = disk(move || history::original_cwd(&root, &id)).await?;
@@ -312,6 +310,7 @@ impl Agent for ClaudeAgent {
                 Some(cwd),
                 LaunchMode::Fork {
                     source_id: native_id.to_owned(),
+                    at_message_id,
                 },
                 BTreeMap::new(),
                 sink,
