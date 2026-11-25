@@ -1181,17 +1181,19 @@ export function SidebarContent() {
           onToggleChildren={toggleChildren}
         />
         <footer className="flex shrink-0 items-center justify-between gap-2 px-2 pt-1 pb-[calc(0.5rem+env(safe-area-inset-bottom))]">
-          <button
-            type="button"
-            onClick={() => actions.navigate({ view: "settings", section: "general" })}
-            className={cn(
-              "inline-flex h-8 cursor-pointer select-none items-center gap-2 rounded-(--control-radius) px-(--sidebar-row-content-inset) text-sm font-medium text-sidebar-muted-foreground/80 outline-none transition-colors hover:bg-sidebar-row-hover hover:text-sidebar-foreground active:bg-sidebar-row-active focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
-              route.view === "settings" && "bg-sidebar-row-active text-sidebar-foreground",
-            )}
-          >
-            <SettingsIcon className="size-4 shrink-0" />
-            <span>{t("sidebar.settings")}</span>
-          </button>
+          <Tip label={t("sidebar.settings")}>
+            <button
+              type="button"
+              aria-label={t("sidebar.settings")}
+              onClick={() => actions.navigate({ view: "settings", section: "general" })}
+              className={cn(
+                "inline-flex size-8 shrink-0 cursor-pointer select-none items-center justify-center rounded-(--control-radius) text-sidebar-muted-foreground/80 outline-none transition-colors hover:bg-sidebar-row-hover hover:text-sidebar-foreground active:bg-sidebar-row-active focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                route.view === "settings" && "bg-sidebar-row-active text-sidebar-foreground",
+              )}
+            >
+              <SettingsIcon className="size-4 shrink-0" />
+            </button>
+          </Tip>
           {connection !== "open" ? (
             <Tip label={t("conn.lost")}>
               <span className="me-1 inline-flex items-center">
