@@ -29,6 +29,7 @@ struct Dispatch {
 }
 
 pub(crate) struct Connection {
+    pub agent_id: String,
     process: Process,
     next_id: AtomicU64,
     dead: AtomicBool,
@@ -44,10 +45,12 @@ impl Connection {
     pub fn spawn(
         spec: SpawnSpec,
         previous_method: Option<Arc<Mutex<Option<String>>>>,
+        agent_id: String,
     ) -> Result<Arc<Self>> {
         let (process, stdout) = Process::spawn(spec, Arc::new(WireLog::default().multiplexed()))
             .map_err(|error| AgentError::new(ErrorCode::AgentUnavailable, error.to_string()))?;
         let connection = Arc::new(Self {
+            agent_id,
             process,
             next_id: AtomicU64::new(1),
             dead: AtomicBool::new(false),

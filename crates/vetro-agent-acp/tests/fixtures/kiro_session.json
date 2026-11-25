@@ -1,0 +1,8 @@
+{
+  "id": "sess_fixture",
+  "createdAt": "2026-11-25T12:00:00.250Z",
+  "lastModifiedAt": "2026-11-25T12:00:06.000Z",
+  "workspacePaths": ["/fixture"],
+  "title": "Fixture",
+  "_meta": {"kiro": {"settings": {}, "nonInteractive": true}}
+}

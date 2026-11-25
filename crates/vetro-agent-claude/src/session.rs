@@ -386,7 +386,8 @@ impl ClaudeSession {
                         )));
                     }
                 }
-                _ => {}
+                Some("auth_status" | "keep_alive") => {}
+                kind => vetro_agent_api::drift::report("claude", "stream row", kind),
             }
             for event in events {
                 self.emit(event);
@@ -961,6 +962,14 @@ impl State {
         }
         if changed {
             events.push(SessionEvent::Usage(self.usage.clone()));
+        } else {
+            let shape = match rate.get("unifiedWindows") {
+                Some(windows) if windows.is_object() => "unifiedWindows",
+                Some(_) => "invalid-unifiedWindows",
+                None if rate.is_object() => "legacy",
+                None => "missing-rate-limit-info",
+            };
+            vetro_agent_api::drift::report("claude", "rate_limit_event", Some(shape));
         }
     }
 }
@@ -1152,13 +1161,7 @@ mod tests {
 
     #[test]
     fn rate_limit_reads_every_unified_window() {
-        let row = serde_json::json!({"type":"rate_limit_event","rate_limit_info":{
-        "status":"allowed","resetsAt":1795615800,"rateLimitType":"five_hour",
-        "overageStatus":"rejected","isUsingOverage":false,
-        "unifiedWindows":{
-            "five_hour":{"utilization":0.18,"resetsAt":1795615800,"status":"allowed"},
-            "seven_day":{"utilization":0.74,"resetsAt":1795698000,"status":"allowed"}
-        }}});
+        let row = serde_json::from_str(include_str!("../tests/fixtures/rate_limit.json")).unwrap();
         let mut state = State::default();
         let mut events = Vec::new();
         state.rate_limit(&row, &mut events);
@@ -1178,9 +1181,35 @@ mod tests {
         assert_eq!(
             limits,
             [
-                ("five_hour", 18, Some(1_795_615_800_000)),
-                ("seven_day", 74, Some(1_795_698_000_000))
+                ("five_hour", 18, Some(1_800_000_000_000)),
+                ("seven_day", 74, Some(1_800_604_800_000))
             ]
         );
+    }
+
+    #[test]
+    fn unusable_rate_reports_each_window_shape_once() {
+        let mut state = State::default();
+        let mut events = Vec::new();
+        for _ in 0..2 {
+            for info in [
+                serde_json::json!({"unifiedWindows":{"five_hour":{"utilization":"0.3"}}}),
+                serde_json::json!({"unifiedWindows":[]}),
+            ] {
+                state.rate_limit(&serde_json::json!({"rate_limit_info":info}), &mut events);
+            }
+        }
+        assert!(events.is_empty());
+        let diagnostics = vetro_agent_api::drift::drain();
+        for shape in ["unifiedWindows", "invalid-unifiedWindows"] {
+            let expected = format!("Native format drift: claude rate_limit_event ({shape})");
+            assert_eq!(
+                diagnostics
+                    .iter()
+                    .filter(|entry| **entry == expected)
+                    .count(),
+                1
+            );
+        }
     }
 }

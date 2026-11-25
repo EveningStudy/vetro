@@ -263,6 +263,7 @@ impl Core {
             self.registry()
                 .release_idle(|id| self.sessions.has_live(id), idle)
                 .await;
+            self.log_native_drift();
         }
     }
 
@@ -274,6 +275,13 @@ impl Core {
         }
         while tasks.join_next().await.is_some() {}
         self.registry().shutdown().await;
+        self.log_native_drift();
+    }
+
+    pub(crate) fn log_native_drift(&self) {
+        for message in vetro_agent_api::drift::drain() {
+            self.home.log(&message);
+        }
     }
 
     pub(crate) fn broadcast(&self, event: Arc<ServerEvent>) {

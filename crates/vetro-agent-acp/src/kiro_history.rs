@@ -30,25 +30,26 @@ fn session_id(id: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || b"-_".contains(&byte))
 }
 
-pub(crate) async fn fill_created_at(spec: &SpawnSpec, sessions: &mut [SessionRecord]) {
+pub(crate) async fn enrich_inventory(spec: &SpawnSpec, sessions: &mut [SessionRecord]) {
     let Some(root) = sessions_root(spec) else {
         return;
     };
     let ids: Vec<_> = sessions
         .iter()
-        .filter(|record| record.created_at.is_none() && session_id(&record.native_id))
+        .filter(|record| session_id(&record.native_id))
         .map(|record| record.native_id.clone())
         .collect();
     if ids.is_empty() {
         return;
     }
-    let created = tokio::task::spawn_blocking(move || created_at(root, ids))
+    let metadata = tokio::task::spawn_blocking(move || session_metadata(root, ids))
         .await
         .unwrap_or_default();
     for record in sessions {
-        record.created_at = record
-            .created_at
-            .or_else(|| created.get(&record.native_id).copied());
+        if let Some(native) = metadata.get(&record.native_id) {
+            record.created_at = record.created_at.or(native.created_at);
+            record.internal |= native.non_interactive;
+        }
     }
 }
 
@@ -70,7 +71,13 @@ fn session_file(folder: &Path, id: &str, name: &str) -> Option<PathBuf> {
     path.symlink_metadata().ok()?.is_file().then_some(path)
 }
 
-fn created_at(root: PathBuf, ids: Vec<String>) -> HashMap<String, i64> {
+#[derive(PartialEq, Eq)]
+struct SessionMetadata {
+    created_at: Option<i64>,
+    non_interactive: bool,
+}
+
+fn session_metadata(root: PathBuf, ids: Vec<String>) -> HashMap<String, SessionMetadata> {
     let folders: Vec<_> = workspace_folders(&root).collect();
     ids.into_iter()
         .filter_map(|id| {
@@ -81,12 +88,15 @@ fn created_at(root: PathBuf, ids: Vec<String>) -> HashMap<String, i64> {
                 if value["id"].as_str() != Some(&id) {
                     return None;
                 }
-                mapping::timestamp(&value["createdAt"])
+                Some(SessionMetadata {
+                    created_at: mapping::timestamp(&value["createdAt"]),
+                    non_interactive: value["_meta"]["kiro"]["nonInteractive"] == true,
+                })
             });
-            let timestamp = matches.next()?;
+            let metadata = matches.next()?;
             matches
-                .all(|other| other == timestamp)
-                .then_some((id, timestamp))
+                .all(|other| other == metadata)
+                .then_some((id, metadata))
         })
         .collect()
 }
@@ -129,7 +139,10 @@ fn read_turns(reader: impl BufRead) -> Option<Vec<NativeTurn>> {
         if line.trim().is_empty() {
             continue;
         }
-        let event: Value = serde_json::from_str(&line).ok()?;
+        let Ok(event) = serde_json::from_str::<Value>(&line) else {
+            vetro_agent_api::drift::report("kiro", "messages.jsonl", Some("invalid-json"));
+            return None;
+        };
         let payload = &event["payload"];
         match payload["type"].as_str() {
             Some("user") => {
@@ -168,7 +181,10 @@ fn read_turns(reader: impl BufRead) -> Option<Vec<NativeTurn>> {
                         Some("max_tokens") => StopReason::MaxTokens,
                         Some("refusal") => StopReason::Refusal,
                         Some("error") => StopReason::Error,
-                        _ => continue,
+                        reason => {
+                            vetro_agent_api::drift::report("kiro", "turn_end stopReason", reason);
+                            continue;
+                        }
                     };
                     turn.ended = Some((reason, mapping::timestamp(&event["timestamp"])));
                 }

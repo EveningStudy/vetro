@@ -530,10 +530,21 @@ impl<'a> Matcher<'a> {
         }
     }
 
+    #[cfg(test)]
     pub fn consider(&mut self, parent: String, call: &Call) {
+        self.consider_with_workspace_reads(parent, call, true);
+    }
+
+    pub fn consider_with_workspace_reads(
+        &mut self,
+        parent: String,
+        call: &Call,
+        workspace_reads: bool,
+    ) {
         let prompt = self.prompt.as_deref();
         let direct = score(self.child, self.hint, prompt, None, &parent, call);
-        let matched = if direct.is_none_or(|(rank, _)| rank < 2)
+        let matched = if workspace_reads
+            && direct.is_none_or(|(rank, _)| rank < 2)
             && !call.targets.is_empty()
             && prompt.is_some()
             && eligible(self.child)
@@ -1063,20 +1074,31 @@ mod tests {
             child_thread_ids: Vec::new(),
         })];
         let index = crate::storage::Index::temporary();
-        for existing in [&desktop, &older_exec] {
+        index
+            .index(&older_exec, None, &Projection::default(), &older_exec.title)
+            .unwrap();
+        for source in [
+            ThreadSource::Desktop,
+            ThreadSource::Ide,
+            ThreadSource::Cloud,
+        ] {
+            desktop.source = source;
             index
-                .index(existing, None, &Projection::default(), &existing.title)
+                .index(&desktop, None, &Projection::default(), &desktop.title)
                 .unwrap();
-        }
-        for time in [None, Some(225)] {
-            let projection =
-                Projection::from_items(&parent, items.iter().map(|kind| (kind, time, None)), None);
-            assert_eq!(projection.calls[0].start, time);
-            index
-                .index(&parent, None, &projection, &parent.title)
-                .unwrap();
-            assert!(index.get(&desktop.id).unwrap().unwrap().parent.is_none());
-            assert!(index.get(&older_exec.id).unwrap().unwrap().parent.is_none());
+            for time in [None, Some(225)] {
+                let projection = Projection::from_items(
+                    &parent,
+                    items.iter().map(|kind| (kind, time, None)),
+                    None,
+                );
+                assert_eq!(projection.calls[0].start, time);
+                index
+                    .index(&parent, None, &projection, &parent.title)
+                    .unwrap();
+                assert!(index.get(&desktop.id).unwrap().unwrap().parent.is_none());
+                assert!(index.get(&older_exec.id).unwrap().unwrap().parent.is_none());
+            }
         }
     }
 

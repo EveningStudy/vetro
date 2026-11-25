@@ -134,6 +134,7 @@ fn read_session(db: &Connection, id: &str) -> rusqlite::Result<Option<Transcript
         let node_id: i64 = row.get(0)?;
         let message = row.get_ref(2)?.as_str()?;
         let Ok(message) = serde_json::from_str::<Value>(message) else {
+            vetro_agent_api::drift::report("devin", "SQLite chat_message", Some("invalid-json"));
             continue;
         };
         let seconds: i64 = row.get(1)?;
@@ -245,7 +246,8 @@ fn read_session(db: &Connection, id: &str) -> rusqlite::Result<Option<Transcript
                     }
                 }
             }
-            _ => {}
+            Some("user" | "system" | "developer") => {}
+            role => vetro_agent_api::drift::report("devin", "SQLite chat_message role", role),
         }
         if let Some(active) = &turn {
             for item in &mut transcript.items[first..] {
@@ -326,6 +328,42 @@ fn draft(id: String, ts: Option<i64>, kind: ItemKind) -> ItemDraft {
         turn_id: None,
         kind,
     }
+}
+
+#[test]
+fn sqlite_background_launch_and_receipt_keep_the_linker_evidence() {
+    let db = Connection::open_in_memory().unwrap();
+    db.execute_batch(include_str!("../tests/fixtures/devin_background.sql"))
+        .unwrap();
+    let history = read_session(&db, "fixture-parent").unwrap().unwrap();
+    let calls: Vec<_> = history
+        .items
+        .iter()
+        .filter_map(|item| match &item.kind {
+            ItemKind::ToolCall(tool) => Some(tool),
+            _ => None,
+        })
+        .collect();
+    let [launch, receipt] = calls.as_slice() else {
+        panic!("expected launch and receipt")
+    };
+    assert_eq!(launch.kind, vetro_proto::ToolKind::Execute);
+    assert_eq!(launch.input.as_ref().unwrap()["workdir"], "/fixture");
+    assert!(
+        matches!(&launch.content[..], [ToolContent::Text { text }] if text.ends_with("fixture-shell"))
+    );
+    assert_eq!(receipt.input.as_ref().unwrap()["shell_id"], "fixture-shell");
+    assert!(
+        matches!(&receipt.content[..], [ToolContent::Text { text }] if text.starts_with("session_id=sess_fixture_child"))
+    );
+    assert!(matches!(
+        &history.items.last().unwrap().kind,
+        ItemKind::TurnEnd {
+            duration_ms: Some(4000),
+            usage: None,
+            ..
+        }
+    ));
 }
 
 fn user_content(message: &Value) -> Vec<ContentBlock> {

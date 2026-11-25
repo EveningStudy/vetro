@@ -1,0 +1,5 @@
+{"type":"user","uuid":"fixture-user","parentUuid":null,"timestamp":"2026-04-13T09:00:00.000Z","sessionId":"10000000-0000-4000-8000-000000000001","cwd":"/fixture","entrypoint":"claude-desktop","isSidechain":false,"message":{"role":"user","content":"Name a fruit."}}
+{"type":"assistant","uuid":"fixture-reasoning","parentUuid":"fixture-user","timestamp":"2026-04-13T09:00:01.000Z","sessionId":"10000000-0000-4000-8000-000000000001","cwd":"/fixture","entrypoint":"claude-desktop","message":{"role":"assistant","id":"fixture-message","model":"fixture-model","content":[{"type":"thinking","thinking":""}]}}
+{"type":"assistant","uuid":"fixture-assistant","parentUuid":"fixture-reasoning","timestamp":"2026-04-13T09:00:02.500Z","sessionId":"10000000-0000-4000-8000-000000000001","cwd":"/fixture","entrypoint":"claude-desktop","message":{"role":"assistant","id":"fixture-message","model":"fixture-model","content":[{"type":"text","text":"Pear."}]}}
+{"type":"tools-used","tools":["Bash"],"sessionId":"10000000-0000-4000-8000-000000000001"}
+{"type":"derived-from","v":1,"sessions":[],"sessionId":"10000000-0000-4000-8000-000000000001"}

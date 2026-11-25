@@ -189,8 +189,12 @@ pub(crate) fn transcript(thread: &Value) -> Transcript {
 }
 
 pub(crate) fn item(raw: &Value, turn_id: Option<&str>, streaming: bool) -> Option<ItemDraft> {
-    let id = raw["id"].as_str()?;
-    let kind = match raw["type"].as_str()? {
+    let item_type = raw["type"].as_str()?;
+    let Some(id) = raw["id"].as_str() else {
+        vetro_agent_api::drift::report("codex", "item without id", Some(item_type));
+        return None;
+    };
+    let kind = match item_type {
         "userMessage" => ItemKind::UserMessage {
             content: array(&raw["content"])
                 .iter()
@@ -211,7 +215,13 @@ pub(crate) fn item(raw: &Value, turn_id: Option<&str>, streaming: bool) -> Optio
         "hookPrompt" => notice(NoticeLevel::Info, "Codex hook prompt", raw),
         "contextCompaction" => notice(NoticeLevel::Info, "Codex compacted the context", raw),
         "enteredReviewMode" | "exitedReviewMode" => notice(NoticeLevel::Info, "Codex review", raw),
-        item_type => ItemKind::ToolCall(tool(item_type, id, raw, streaming)?),
+        item_type => match tool(item_type, id, raw, streaming) {
+            Some(tool) => ItemKind::ToolCall(tool),
+            None => {
+                vetro_agent_api::drift::report("codex", "app-server item", Some(item_type));
+                return None;
+            }
+        },
     };
     Some(ItemDraft {
         id: id.into(),
@@ -541,6 +551,12 @@ pub(crate) fn rate_limits(buckets: &BTreeMap<String, Value>) -> Vec<RateLimit> {
             let label = bucket["limitName"].as_str().unwrap_or(id);
             ["primary", "secondary"].into_iter().filter_map(move |key| {
                 let window = &bucket[key];
+                let Some(used_percent) = window["usedPercent"].as_f64() else {
+                    if !window.is_null() {
+                        vetro_agent_api::drift::report("codex", "rate limit window", Some(key));
+                    }
+                    return None;
+                };
                 let duration = match window["windowDurationMins"].as_u64() {
                     Some(mins) if mins % 1440 == 0 => format!("{}d", mins / 1440),
                     Some(mins) if mins % 60 == 0 => format!("{}h", mins / 60),
@@ -549,7 +565,7 @@ pub(crate) fn rate_limits(buckets: &BTreeMap<String, Value>) -> Vec<RateLimit> {
                 };
                 Some(RateLimit {
                     label: format!("{label} ({duration})"),
-                    used_percent: window["usedPercent"].as_f64()?.clamp(0.0, 100.0),
+                    used_percent: used_percent.clamp(0.0, 100.0),
                     resets_at: millis(&window["resetsAt"]),
                 })
             })

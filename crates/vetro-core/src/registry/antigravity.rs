@@ -14,14 +14,14 @@ use vetro_store_antigravity::Store;
 
 use crate::{bad_request, internal};
 
-pub(super) struct Antigravity {
+pub(crate) struct Antigravity {
     acp: AcpAgent,
     roots: [PathBuf; 2],
     acp_records: Mutex<Vec<SessionRecord>>,
 }
 
 impl Antigravity {
-    pub(super) fn new(acp: AcpAgent, home: PathBuf) -> Self {
+    pub(crate) fn new(acp: AcpAgent, home: PathBuf) -> Self {
         let gemini = home.join(".gemini");
         Self {
             acp,

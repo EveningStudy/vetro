@@ -315,6 +315,15 @@ impl Builder {
         let meta = p.msg(5).unwrap_or(Msg(&[]));
         let ts = meta.msg(1).and_then(timestamp_ms);
         let error = error.filter(|e| !e.is_empty()).map(Msg);
+        let required_body = match step_type {
+            STEP_USER_INPUT => Some((19, "user-input")),
+            STEP_PLANNER => Some((20, "planner")),
+            STEP_SYSTEM_MESSAGE => Some((114, "system-message")),
+            _ => None,
+        };
+        if let Some((_, shape)) = required_body.filter(|(field, _)| p.msg(*field).is_none()) {
+            vetro_agent_api::drift::report("antigravity", "step without body", Some(shape));
+        }
         match step_type {
             STEP_USER_INPUT => self.user_input(idx, ts, p.msg(19).unwrap_or(Msg(&[]))),
             STEP_PLANNER => self.planner(idx, ts, status, p.msg(20).unwrap_or(Msg(&[])), meta),

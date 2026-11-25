@@ -19,7 +19,7 @@ use vetro_proto::{
 const WARM_IDLE: Duration = Duration::from_secs(60);
 
 #[cfg(feature = "antigravity-store")]
-mod antigravity;
+pub(crate) mod antigravity;
 #[cfg(any(feature = "claude", feature = "acp"))]
 mod detection;
 

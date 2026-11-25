@@ -271,12 +271,22 @@ impl AcpSession {
         }
         let update = value["sessionUpdate"].as_str();
         match update {
-            Some("user_message_chunk") => state.message(Role::User, value),
-            Some("agent_message_chunk") => state.message(Role::Agent, value),
-            Some("agent_thought_chunk") => state.message(Role::Thought, value),
+            Some("user_message_chunk") => {
+                state.message(Role::User, value, &self.connection.agent_id)
+            }
+            Some("agent_message_chunk") => {
+                state.message(Role::Agent, value, &self.connection.agent_id)
+            }
+            Some("agent_thought_chunk") => {
+                state.message(Role::Thought, value, &self.connection.agent_id)
+            }
             Some("tool_call" | "tool_call_update") => {
                 state.flush_user();
-                state.tool(value, update == Some("tool_call"));
+                state.tool(
+                    value,
+                    update == Some("tool_call"),
+                    &self.connection.agent_id,
+                );
             }
             Some("plan") => {
                 state.flush_user();
@@ -321,7 +331,11 @@ impl AcpSession {
                 }
             }
             Some("usage_update") => state.update_usage(value),
-            _ => {}
+            _ => vetro_agent_api::drift::report(
+                &self.connection.agent_id,
+                "ACP sessionUpdate",
+                update,
+            ),
         }
     }
 
@@ -725,8 +739,13 @@ impl State {
         }
     }
 
-    fn message(&mut self, role: Role, value: &Value) {
+    fn message(&mut self, role: Role, value: &Value, agent: &str) {
         let Some(block) = mapping::content(&value["content"]) else {
+            vetro_agent_api::drift::report(
+                agent,
+                "ACP message content",
+                value["content"]["type"].as_str(),
+            );
             return;
         };
         if role == Role::User {
@@ -852,8 +871,13 @@ impl State {
         }
     }
 
-    fn tool(&mut self, value: &Value, announced: bool) {
+    fn tool(&mut self, value: &Value, announced: bool, agent: &str) {
         let Some(call_id) = string(value, "toolCallId") else {
+            vetro_agent_api::drift::report(
+                agent,
+                "ACP tool without id",
+                value["sessionUpdate"].as_str(),
+            );
             return;
         };
         let id = format!("tool:{call_id}");

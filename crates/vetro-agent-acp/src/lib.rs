@@ -117,7 +117,7 @@ impl AcpAgent {
         if spec.cwd.is_none() {
             spec.cwd = cwd.map(Path::to_owned);
         }
-        let connection = Connection::spawn(spec, self.previous_method.clone())?;
+        let connection = Connection::spawn(spec, self.previous_method.clone(), self.id.clone())?;
         let initial = connection
             .call(
                 "initialize",
@@ -266,7 +266,7 @@ impl AcpAgent {
             })
             .collect::<Vec<_>>();
         if self.id == "kiro" {
-            kiro_history::fill_created_at(&self.spec, &mut sessions).await;
+            kiro_history::enrich_inventory(&self.spec, &mut sessions).await;
         }
         for record in &sessions {
             if let Some(cwd) = &record.cwd {

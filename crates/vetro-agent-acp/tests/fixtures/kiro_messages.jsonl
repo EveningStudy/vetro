@@ -1,0 +1,4 @@
+{"id":"fixture-user","timestamp":"2026-11-25T12:00:00.500Z","payload":{"type":"user","content":"old prompt","documents":[],"images":[],"_meta":{"kiro":{"userMessageTag":"prompt-1"}}}}
+{"id":"fixture-start","timestamp":"2026-11-25T12:00:01Z","payload":{"type":"turn_start","turnId":"native","executionId":"fixture-execution","userMessageTag":"prompt-1","boundarySource":"native"}}
+{"id":"fixture-usage","timestamp":"2026-11-25T12:00:06Z","payload":{"type":"usage_summary","turnId":"native","executionId":"fixture-execution","elapsedTime":4242,"requestIds":[],"promptTurnSummaries":[],"status":"completed"}}
+{"id":"fixture-end","timestamp":"2026-11-25T12:00:06Z","payload":{"type":"turn_end","turnId":"native","executionId":"fixture-execution","stopReason":"end_turn","boundarySource":"native"}}

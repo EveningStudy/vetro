@@ -156,7 +156,7 @@ pub fn open_readonly(path: &Path) -> rusqlite::Result<Connection> {
     }
     let wal = sibling(path, "-wal");
     if !wal.try_exists().unwrap_or(true) {
-        let immutable = open("immutable=1");
+        let immutable = open("mode=ro&immutable=1");
         if !wal.try_exists().unwrap_or(true) {
             return immutable;
         }

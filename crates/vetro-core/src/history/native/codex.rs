@@ -4,7 +4,8 @@ use rusqlite::{Connection, OptionalExtension, Row};
 use serde_json::json;
 use vetro_agent_api::{codex_internal_source, codex_web_source, ItemDraft, Transcript};
 use vetro_proto::{
-    ContentBlock, ItemKind, ThreadUsage, TokenUsage, ToolCall, ToolContent, ToolKind, ToolStatus,
+    ContentBlock, ItemKind, StopReason, ThreadUsage, TokenUsage, ToolCall, ToolContent, ToolKind,
+    ToolStatus,
 };
 use vetro_store_antigravity::sqlite::open_readonly;
 
@@ -365,7 +366,11 @@ pub(in crate::history) fn fallback(root: &Path, id: &str) -> Result<Option<Trans
         .any(|path| path.extension().is_some_and(|ext| ext == "zst"));
     let rollout = if compressed {
         let transcript = read_rollouts(&parts, id, true)?;
-        if !transcript.items.is_empty() {
+        if transcript
+            .items
+            .iter()
+            .any(|item| !matches!(item.kind, ItemKind::TurnEnd { .. }))
+        {
             return Ok(Some(transcript));
         }
         Some(transcript)
@@ -427,6 +432,7 @@ fn read_rollouts(parts: &[PathBuf], id: &str, include_items: bool) -> Result<Tra
     let mut items: Vec<ItemDraft> = Vec::new();
     let mut positions = HashMap::new();
     let mut usage = ThreadUsage::default();
+    let mut turn_usage = None;
     for path in parts {
         let part = path
             .file_name()
@@ -436,6 +442,7 @@ fn read_rollouts(parts: &[PathBuf], id: &str, include_items: bool) -> Result<Tra
             let payload = &row["payload"];
             if row["type"] == "event_msg" && payload["type"] == "token_count" {
                 if let Some(snapshot) = rollout_usage(&payload["info"]) {
+                    turn_usage.clone_from(&snapshot.last_turn);
                     usage = snapshot;
                 }
                 continue;
@@ -445,6 +452,29 @@ fn read_rollouts(parts: &[PathBuf], id: &str, include_items: bool) -> Result<Tra
             }
             let ts = timestamp(&row["timestamp"]);
             let kind = match payload["type"].as_str() {
+                Some("task_started") if row["type"] == "event_msg" => {
+                    turn_usage = None;
+                    continue;
+                }
+                Some("task_complete") if row["type"] == "event_msg" => {
+                    if let Some(turn) = payload["turn_id"].as_str() {
+                        let item = ItemDraft::turn_end(
+                            turn,
+                            StopReason::EndTurn,
+                            ts,
+                            payload["duration_ms"].as_u64(),
+                            turn_usage.take(),
+                        );
+                        upsert_rollout_item(&mut items, &mut positions, item);
+                    } else {
+                        vetro_agent_api::drift::report(
+                            "codex",
+                            "rollout task_complete",
+                            Some("missing-turn-id"),
+                        );
+                    }
+                    continue;
+                }
                 Some("item_started" | "item_completed") if row["type"] == "event_msg" => {
                     if let Some(item) = rollout_item(payload, ts) {
                         upsert_rollout_item(&mut items, &mut positions, item);
@@ -536,9 +566,13 @@ fn rollout_usage(info: &Value) -> Option<ThreadUsage> {
 
 fn rollout_item(event: &Value, ts: Option<i64>) -> Option<ItemDraft> {
     let item = &event["item"];
-    let native_id = string(item, "id")?;
+    let item_type = item["type"].as_str();
+    let Some(native_id) = string(item, "id") else {
+        vetro_agent_api::drift::report("codex", "rollout item without id", item_type);
+        return None;
+    };
     let done = event["type"] == "item_completed";
-    let mapped = match item["type"].as_str()? {
+    let mapped = match item_type? {
         "UserMessage" if done => json!({
             "id": native_id, "type": "userMessage", "content": item["content"],
         }),
@@ -552,7 +586,11 @@ fn rollout_item(event: &Value, ts: Option<i64>) -> Option<ItemDraft> {
             "status": if done { item["status"].as_str().unwrap_or("completed") } else { "inProgress" },
             "completedAtMs": if done { ts } else { None },
         }),
-        _ => return None,
+        "UserMessage" | "AgentMessage" => return None,
+        other => {
+            vetro_agent_api::drift::report("codex", "rollout item", Some(other));
+            return None;
+        }
     };
     projected_item(&mapped, ts, string(event, "turn_id"))
 }
@@ -909,5 +947,58 @@ mod tests {
         let projected = fallback(root.path(), id).unwrap().unwrap();
         assert_eq!(projected.items[0].id, "projected");
         assert_eq!(projected.usage, transcript.usage);
+    }
+
+    #[test]
+    fn native_exec_state_and_rollout_preserve_explicit_completion_metadata() {
+        let root = tempfile::tempdir().unwrap();
+        let id = "20000000-0000-4000-8000-000000000002";
+        let state = Connection::open(root.path().join("state_5.sqlite")).unwrap();
+        state
+            .execute_batch(include_str!("../../../tests/fixtures/codex_state.sql"))
+            .unwrap();
+        drop(state);
+        let sessions = root.path().join("sessions");
+        fs::create_dir(&sessions).unwrap();
+        fs::write(
+            sessions.join(format!("rollout-2027-01-15T08-00-00-{id}.jsonl")),
+            include_str!("../../../tests/fixtures/codex_rollout.jsonl"),
+        )
+        .unwrap();
+
+        let inventory = inventory(root.path()).unwrap();
+        assert!(inventory.authoritative && inventory.errors.is_empty());
+        assert_eq!(inventory.files.len(), 1);
+        let record = inventory.files[id].record.as_ref().unwrap();
+        assert_eq!(record.source, ThreadSource::Exec);
+        assert!(record.internal);
+        assert_eq!(record.updated_at, 1_800_000_003_456);
+        let transcript = fallback(root.path(), id).unwrap().unwrap();
+        let [user, answer, first, second] = transcript.items.as_slice() else {
+            panic!("expected the two native completion events");
+        };
+        assert_eq!(first.turn_id, user.turn_id);
+        assert_eq!(first.turn_id, answer.turn_id);
+        assert!(matches!(&answer.kind, ItemKind::AgentMessage { text, .. } if text == "Plum."));
+        assert!(matches!(
+            &first.kind,
+            ItemKind::TurnEnd {
+                stop_reason: StopReason::EndTurn,
+                duration_ms: Some(3222),
+                usage: Some(TokenUsage {
+                    input: Some(12),
+                    output: Some(3),
+                    ..
+                }),
+            }
+        ));
+        assert!(matches!(
+            &second.kind,
+            ItemKind::TurnEnd {
+                duration_ms: None,
+                usage: None,
+                ..
+            }
+        ));
     }
 }

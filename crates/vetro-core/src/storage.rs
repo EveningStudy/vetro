@@ -69,7 +69,7 @@ pub(crate) struct Filter<'a> {
     pub cursor: Option<(i64, String)>,
 }
 
-pub(crate) struct Index(Mutex<Connection>);
+pub(crate) struct Index(Mutex<Connection>, bool);
 
 pub(crate) struct ProjectActivity {
     pub path: String,
@@ -84,7 +84,12 @@ impl Index {
         let conn = Connection::open_in_memory().expect("open temporary index");
         conn.execute_batch(SCHEMA)
             .expect("initialize temporary index");
-        Self(Mutex::new(conn))
+        Self(Mutex::new(conn), true)
+    }
+
+    #[cfg(test)]
+    pub fn suppress_workspace_reads(&mut self) {
+        self.1 = false;
     }
 
     pub fn open(root: &Path) -> Result<Self> {
@@ -151,7 +156,7 @@ impl Index {
             }
             other => other.map_err(internal)?,
         };
-        Ok(Self(Mutex::new(conn)))
+        Ok(Self(Mutex::new(conn), true))
     }
 
     pub fn get(&self, id: &str) -> Result<Option<ThreadSummary>> {
@@ -342,7 +347,7 @@ impl Index {
         }
         set_title(&tx, &thread.id, title)?;
         for id in affected {
-            relink(&tx, &id, &mut published).map_err(internal)?;
+            relink(&tx, &id, &mut published, self.1).map_err(internal)?;
         }
         let mut upserted = Vec::new();
         for id in published {
@@ -390,7 +395,7 @@ impl Index {
             changes.removed.push(id);
         }
         for id in affected {
-            relink(&tx, &id, &mut published).map_err(internal)?;
+            relink(&tx, &id, &mut published, self.1).map_err(internal)?;
         }
         for id in published {
             changes.upserted.extend(get(&tx, &id)?);
@@ -539,7 +544,7 @@ fn migrate_internal(conn: &mut Connection) -> rusqlite::Result<()> {
         tx.execute("DELETE FROM links", [])?;
         let mut changed = HashSet::new();
         for child in children {
-            relink(&tx, &child, &mut changed)?;
+            relink(&tx, &child, &mut changed, true)?;
         }
         tx.pragma_update(None, "user_version", 3)?;
     }
@@ -559,7 +564,7 @@ fn migrate_internal(conn: &mut Connection) -> rusqlite::Result<()> {
         )?;
         let mut changed = HashSet::new();
         for child in existing_children {
-            relink(&tx, &child, &mut changed)?;
+            relink(&tx, &child, &mut changed, true)?;
         }
         tx.pragma_update(None, "user_version", 4)?;
     }
@@ -626,7 +631,12 @@ fn dependents(conn: &Connection, id: &str) -> Result<Vec<String>> {
     })
 }
 
-fn relink(tx: &Transaction<'_>, id: &str, changed: &mut HashSet<String>) -> rusqlite::Result<()> {
+fn relink(
+    tx: &Transaction<'_>,
+    id: &str,
+    changed: &mut HashSet<String>,
+    workspace_reads: bool,
+) -> rusqlite::Result<()> {
     let Some((summary, hint, prompt)) = tx
         .query_row(
             "SELECT t.summary,h.id,t.prompt,t.internal FROM threads t
@@ -676,7 +686,7 @@ fn relink(tx: &Transaction<'_>, id: &str, changed: &mut HashSet<String>) -> rusq
         let mut best = links::Matcher::new(&summary, hint.as_deref(), prompt.as_deref());
         for call in calls {
             let (parent, call) = call?;
-            best.consider(parent, &call);
+            best.consider_with_workspace_reads(parent, &call, workspace_reads);
         }
         best.finish()
     } else {

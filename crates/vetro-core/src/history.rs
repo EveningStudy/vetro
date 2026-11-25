@@ -20,6 +20,14 @@ use crate::{
 
 mod native;
 
+#[cfg(all(
+    test,
+    feature = "claude",
+    feature = "codex",
+    feature = "antigravity-store"
+))]
+mod corpus;
+
 pub(crate) type Mark = (String, Option<String>, Option<String>);
 
 struct Entry {
@@ -128,6 +136,7 @@ impl Core {
             jobs.spawn(async move { core.sync_agent(&registry, &agent, None).await });
         }
         while jobs.join_next().await.is_some() {}
+        self.log_native_drift();
     }
 
     async fn sync_agent(

@@ -178,6 +178,16 @@ async fn exercise(path: &Path, cwd: &Path, fake_bin: &Path, marker_port: u16) {
             .watch_history("fake", vec![path.join(".claude")])
     };
     let core = Core::new(home, registry());
+    for _ in 0..2 {
+        vetro_agent_api::drift::report("fake", "record", Some("unmapped_fixture"));
+        core.refresh_history().await;
+    }
+    let log = fs::read_to_string(path.join(".vetro/logs/core.log")).unwrap();
+    assert_eq!(
+        log.matches("Native format drift: fake record (unmapped_fixture)")
+            .count(),
+        1
+    );
     core.refresh_history().await;
     assert_eq!(fake.reads.load(Ordering::Relaxed), 2);
     core.refresh_history().await;

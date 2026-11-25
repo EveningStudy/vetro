@@ -514,6 +514,51 @@ fn rich_steps() -> Vec<StepRow> {
 }
 
 #[test]
+fn desktop_native_step_envelope_keeps_user_and_planner_content() {
+    let tmp = TempDir::new("native-step-envelope");
+    let path = tmp.0.join("conversations/adef-10.db");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let prompt = Enc::new()
+        .str(2, "Name a fruit.")
+        .msg(3, Enc::new().str(1, "Name a fruit."));
+    let answer = Enc::new()
+        .str(1, "Peach.")
+        .str(3, "Choose a fruit.")
+        .str(8, "Peach.");
+    let completed = Enc::new().msg(1, Enc::new().uint(1, 3).ts(2, T0 + 2400));
+    let planner_meta = meta(T0 + 1000).msg(26, completed);
+    drop(create_conversation(
+        &path,
+        None,
+        &[
+            (1, 14, 3, step(14, 3, meta(T0), 19, prompt), None),
+            (2, 15, 3, step(15, 3, planner_meta, 20, answer), None),
+        ],
+    ));
+    let transcript = Store::open(&tmp.0).read("adef-10").unwrap();
+    let [user, thought, answer, end] = transcript.items.as_slice() else {
+        panic!("expected user input, planner thought, answer, and completion");
+    };
+    assert!(
+        matches!(&user.kind, ItemKind::UserMessage { content } if content == &[ContentBlock::Text { text: "Name a fruit.".into() }])
+    );
+    assert!(
+        matches!(&thought.kind, ItemKind::Reasoning { text, streaming: false } if text == "Choose a fruit.")
+    );
+    assert!(
+        matches!(&answer.kind, ItemKind::AgentMessage { text, streaming: false } if text == "Peach.")
+    );
+    assert!(matches!(
+        &end.kind,
+        ItemKind::TurnEnd {
+            duration_ms: Some(2400),
+            usage: None,
+            ..
+        }
+    ));
+}
+
+#[test]
 fn reads_every_step_kind() {
     let tmp = TempDir::new("read");
     let root = tmp.0.join("antigravity");

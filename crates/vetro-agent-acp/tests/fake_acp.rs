@@ -252,19 +252,23 @@ fn fake(scenario: &str) {
                 assert_eq!(params["sessionId"], session);
                 assert_eq!(params["mcpServers"], json!([]));
                 if message["method"] == "session/load" {
-                    chunk(&params["sessionId"], "user_message_chunk", "old prompt");
-                    if scenario == "devin" {
-                        interleaved_devin_chunks(&params["sessionId"]);
-                    } else {
-                        chunk(&params["sessionId"], "agent_message_chunk", "old ");
-                        chunk(&params["sessionId"], "agent_message_chunk", "answer");
-                        if scenario == "replay-boundaries" {
-                            chunk(&params["sessionId"], "user_message_chunk", "second prompt");
-                            chunk(&params["sessionId"], "agent_message_chunk", "partial");
+                    if scenario == "replay-boundaries" {
+                        for line in include_str!("fixtures/acp_replay.jsonl").lines() {
+                            output(serde_json::from_str(line).unwrap());
+                        }
+                        for _ in 0..2 {
                             update(
                                 &params["sessionId"],
-                                json!({"sessionUpdate":"tool_call","toolCallId":"pending","status":"in_progress"}),
+                                json!({"sessionUpdate":"fixture_future_update","content":{"text":"excluded from diagnostics"}}),
                             );
+                        }
+                    } else {
+                        chunk(&params["sessionId"], "user_message_chunk", "old prompt");
+                        if scenario == "devin" {
+                            interleaved_devin_chunks(&params["sessionId"]);
+                        } else {
+                            chunk(&params["sessionId"], "agent_message_chunk", "old ");
+                            chunk(&params["sessionId"], "agent_message_chunk", "answer");
                         }
                     }
                     output(json!({"id":id,"result":{"configOptions":config}}));
@@ -665,6 +669,14 @@ async fn acp_replay_boundaries() {
     assert_eq!(tool.turn_id, second.turn_id);
     assert_eq!(partial.turn_id, second.turn_id);
     assert_eq!(end.ts, None);
+    assert_eq!(
+        vetro_agent_api::drift::drain()
+            .into_iter()
+            .filter(|line| line
+                == "Native format drift: custom ACP sessionUpdate (fixture_future_update)")
+            .count(),
+        1
+    );
     assert!(matches!(
         end.kind,
         ItemKind::TurnEnd {
@@ -682,23 +694,13 @@ async fn kiro_native_history_metadata() {
     std::fs::create_dir_all(&session).unwrap();
     std::fs::write(
         session.join("session.json"),
-        json!({"id":"sess_fixture","createdAt":"2026-11-25T12:00:00.250Z"}).to_string(),
+        include_str!("fixtures/kiro_session.json"),
     )
     .unwrap();
-    let events = [
-        json!({"timestamp":"2026-11-25T12:00:00.500Z","payload":{
-            "type":"user","content":"old prompt","_meta":{"kiro":{"userMessageTag":"prompt-1"}}
-        }}),
-        json!({"timestamp":"2026-11-25T12:00:01Z","payload":{
-            "type":"turn_start","turnId":"native","userMessageTag":"prompt-1"
-        }}),
-        json!({"timestamp":"2026-11-25T12:00:06Z","payload":{
-            "type":"usage_summary","turnId":"native","elapsedTime":4242
-        }}),
-        json!({"timestamp":"2026-11-25T12:00:06Z","payload":{
-            "type":"turn_end","turnId":"native","stopReason":"end_turn"
-        }}),
-    ];
+    let events: Vec<Value> = include_str!("fixtures/kiro_messages.jsonl")
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
     let log = session.join("messages.jsonl");
     let write_log = |events: &[Value]| {
         let text = events
@@ -718,6 +720,7 @@ async fn kiro_native_history_metadata() {
     let agent = AcpAgent::new("kiro", "Kiro", spec);
     let listing = agent.list(None).await.unwrap();
     assert_eq!(listing.sessions[0].created_at, Some(1_795_608_000_250));
+    assert!(listing.sessions[0].internal);
     let transcript = agent.read("sess_fixture", None).await.unwrap();
     let [user, answer, end] = transcript.items.as_slice() else {
         panic!("expected native-backed terminal footer");

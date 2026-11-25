@@ -174,6 +174,32 @@ impl HistoryTranscript {
             if !has_type(line, |kind| {
                 matches!(kind, b"assistant" | b"user" | b"system" | b"result")
             }) {
+                if !has_type(line, |kind| {
+                    matches!(
+                        kind,
+                        b"file-history-snapshot"
+                            | b"queue-operation"
+                            | b"progress"
+                            | b"summary"
+                            | b"custom-title"
+                            | b"ai-title"
+                            | b"last-prompt"
+                            | b"tools-used"
+                            | b"derived-from"
+                            | b"relocated"
+                            | b"session-instructions"
+                            | b"agent-name"
+                            | b"agent-color"
+                    )
+                }) {
+                    if let Ok(row) = serde_json::from_slice::<Value>(line) {
+                        vetro_agent_api::drift::report(
+                            "claude",
+                            "history row",
+                            string(&row, "type"),
+                        );
+                    }
+                }
                 return;
             }
             let Ok(row) = serde_json::from_slice::<Value>(line) else {
@@ -752,29 +778,28 @@ mod tests {
     #[test]
     fn activity_time_ignores_untimestamped_metadata_appended_later() {
         let root = tempfile::tempdir().unwrap();
-        let id = "01a07c95-7d45-7983-a759-ad414c92947e";
-        let path = root.path().join(format!("{id}.jsonl"));
+        let id = "10000000-0000-4000-8000-000000000001";
+        let project = root.path().join("fixture");
+        fs::create_dir(&project).unwrap();
+        let path = project.join(format!("{id}.jsonl"));
         fs::write(
             &path,
-            concat!(
-                r#"{"type":"user","cwd":"/p","timestamp":"2026-11-16T14:50:00.000Z","message":{"role":"user","content":"hi"}}"#,
-                "
-",
-                r#"{"type":"assistant","timestamp":"2026-11-16T14:56:50.519Z","message":{"model":"m","content":[]}}"#,
-                "
-",
-                r#"{"type":"tools-used","tools":["Bash"],"sessionId":"x"}"#,
-                "
-",
-                r#"{"type":"derived-from","v":1,"sessions":[]}"#,
-                "
-",
-            ),
+            include_str!("../tests/fixtures/desktop_history.jsonl"),
         )
         .unwrap();
         let record = record(File::open(&path).unwrap(), id).unwrap();
-        assert_eq!(record.updated_at, 1_794_841_010_519);
-        assert_eq!(record.created_at, Some(1_794_840_600_000));
+        let start = 1_776_070_800_000;
+        assert_eq!(record.updated_at, start + 2_500);
+        assert_eq!(record.created_at, Some(start));
+        assert_eq!(record.source, ThreadSource::Desktop);
+        let transcript = read(root.path(), id).unwrap();
+        assert!(!transcript
+            .items
+            .iter()
+            .any(|item| matches!(&item.kind, ItemKind::Reasoning { .. })));
+        assert!(transcript.items.iter().any(
+            |item| matches!(&item.kind, ItemKind::AgentMessage { text, .. } if text == "Pear.")
+        ));
     }
 
     #[test]

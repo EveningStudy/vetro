@@ -681,8 +681,10 @@ fn fake(args: &[String]) {
                             ("rejected", None),
                         ] {
                             emit(json!({"type":"rate_limit_event","rate_limit_info":{
-                                "status":status,"rateLimitType":"five_hour",
-                                "utilization":utilization,"resetsAt":1795392000
+                                "status":status,"rateLimitType":"five_hour","resetsAt":1795392000,
+                                "unifiedWindows":{"five_hour":{
+                                    "status":status,"utilization":utilization,"resetsAt":1795392000
+                                }}
                             }}));
                         }
                         emit(

@@ -15,6 +15,7 @@ pub use async_trait::async_trait;
 pub use wirelog::WireLog;
 
 pub mod detection;
+pub mod drift;
 pub mod jsonrpc;
 pub mod process;
 pub mod wirelog;
