@@ -10,7 +10,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, OnceLock, Weak},
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use serde_json::{json, Value};
@@ -25,7 +25,7 @@ use vetro_agent_api::{
 };
 use vetro_proto::{
     rpc::{AuthenticateResult, ErrorCode},
-    AgentAuth, AgentCapabilities, AgentInfo, AgentKind, AuthMethod, AuthState,
+    AgentAuth, AgentCapabilities, AgentInfo, AgentKind, AuthMethod, AuthState, RateLimit,
 };
 
 pub use binary::resolve_binary;
@@ -133,14 +133,21 @@ impl Agent for CodexAgent {
                 },
             },
             error: None,
+            rate_limits: Vec::new(),
+            rate_limits_updated_at: None,
         };
         match self.app().await {
             Ok(app) => {
                 info.version = app.version.get().cloned();
-                let (account, config) = tokio::join!(
+                let (account, config, limits) = tokio::join!(
                     app.call("account/read", json!({ "refreshToken": false })),
                     app.call("config/read", json!({})),
+                    app.refresh_limits(),
                 );
+                if let Some((limits, observed_at)) = limits {
+                    info.rate_limits = limits;
+                    info.rate_limits_updated_at = Some(observed_at);
+                }
                 let config = config.ok();
                 info.auth = account_info(account.as_ref().ok(), config.as_ref());
                 match account {
@@ -597,36 +604,34 @@ impl App {
             .unwrap_or_default()
     }
 
-    async fn refresh_limits(&self) {
+    async fn refresh_limits(&self) -> Option<(Vec<RateLimit>, i64)> {
         let revision = self.state.lock().unwrap().limits_revision;
-        if let Ok(response) = self.call("account/rateLimits/read", json!({})).await {
-            let mut state = self.state.lock().unwrap();
-            if state.closed || state.limits_revision != revision {
-                return;
+        let mut response = self.call("account/rateLimits/read", json!({})).await.ok()?;
+        let response = response.as_object_mut()?;
+        let buckets = match response.remove("rateLimitsByLimitId") {
+            Some(Value::Object(buckets)) if !buckets.is_empty() => buckets.into_iter().collect(),
+            _ => {
+                let bucket = response.remove("rateLimits")?;
+                [(mapping::limit_id(&bucket), bucket)].into()
             }
-            if let Some(buckets) = response["rateLimitsByLimitId"]
-                .as_object()
-                .filter(|buckets| !buckets.is_empty())
-            {
-                state.limits = buckets
-                    .iter()
-                    .map(|(id, value)| (id.clone(), value.clone()))
-                    .collect();
-            } else if response["rateLimits"].is_object() {
-                state.limits = [(
-                    mapping::limit_id(&response["rateLimits"]),
-                    response["rateLimits"].clone(),
-                )]
-                .into();
-            }
-            Self::publish_limits(&state);
+        };
+        let limits = mapping::rate_limits(&buckets);
+        let mut state = self.state.lock().unwrap();
+        if limits.is_empty() || state.closed || state.limits_revision != revision {
+            return None;
         }
+        let observed_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+        state.limits = buckets;
+        Self::publish_limits(&state, &limits);
+        Some((limits, observed_at))
     }
 
-    fn publish_limits(state: &AppState) {
-        let limits = mapping::rate_limits(&state.limits);
+    fn publish_limits(state: &AppState, limits: &[RateLimit]) {
         for live in state.threads.values().filter_map(Weak::upgrade) {
-            live.limits(&limits);
+            live.limits(limits);
         }
     }
 
@@ -659,13 +664,15 @@ impl App {
                                 bucket[key] = value.clone();
                             }
                         }
-                        Self::publish_limits(&state);
+                        Self::publish_limits(&state, &mapping::rate_limits(&state.limits));
                     } else if method == "account/updated" {
                         state.limits_revision += 1;
                         state.limits.clear();
-                        Self::publish_limits(&state);
+                        Self::publish_limits(&state, &[]);
                         let app = Arc::clone(&app);
-                        tokio::spawn(async move { app.refresh_limits().await });
+                        tokio::spawn(async move {
+                            let _ = app.refresh_limits().await;
+                        });
                     } else if let Some(id) = params["threadId"].as_str() {
                         if let Some(live) = state.threads.get(id).and_then(Weak::upgrade) {
                             live.notification(&method, &params);

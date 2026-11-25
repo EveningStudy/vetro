@@ -856,7 +856,7 @@ impl State {
         };
         let Some(used_percent) = rate["utilization"]
             .as_f64()
-            .map(|fraction| fraction * 100.0)
+            .map(|fraction| fraction.clamp(0.0, 1.0) * 100.0)
             .or_else(|| (rate["status"] == "rejected").then_some(100.0))
         else {
             return;

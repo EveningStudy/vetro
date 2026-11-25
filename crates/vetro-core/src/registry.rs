@@ -482,5 +482,7 @@ pub(crate) fn disabled_info(id: &str) -> AgentInfo {
         },
         capabilities: AgentCapabilities::default(),
         error: None,
+        rate_limits: Vec::new(),
+        rate_limits_updated_at: None,
     }
 }

@@ -649,12 +649,13 @@ mod tests {
 
     use serde_json::json;
     use vetro_agent_api::{
-        async_trait, AgentError, AgentOptions, EventSink, Session, SessionPage, StartRequest,
-        WireLog,
+        async_trait, AgentError, AgentOptions, EventSink, Session, SessionEvent, SessionPage,
+        StartRequest, WireLog,
     };
     use vetro_proto::{
         rpc::{AgentOptionsParams, AuthenticateResult, ThreadStartParams},
-        AgentInfo, AuthState, ConfigOption, ContentBlock, RequestResolution, ThreadSource,
+        AgentInfo, AuthState, ConfigOption, ContentBlock, RateLimit, RequestResolution,
+        ThreadSource, ThreadUsage,
     };
 
     use super::*;
@@ -664,6 +665,7 @@ mod tests {
         id: &'static str,
         auth: Mutex<Option<AuthState>>,
         listing: Mutex<Result<SessionPage>>,
+        initial_usage: Option<ThreadUsage>,
     }
 
     #[async_trait]
@@ -707,7 +709,10 @@ mod tests {
             Ok(Transcript::default())
         }
 
-        async fn start(&self, _: StartRequest, _: EventSink) -> Result<Arc<dyn Session>> {
+        async fn start(&self, _: StartRequest, sink: EventSink) -> Result<Arc<dyn Session>> {
+            if let Some(usage) = &self.initial_usage {
+                sink.send(SessionEvent::Usage(usage.clone())).unwrap();
+            }
             Ok(Arc::new(LiveSession))
         }
 
@@ -789,6 +794,7 @@ mod tests {
         let agent = Arc::new(InventoryAgent {
             id: "codex",
             auth: Mutex::new(None),
+            initial_usage: None,
             listing: Mutex::new(Err(AgentError::new(
                 ErrorCode::AgentUnavailable,
                 "list failed",
@@ -833,6 +839,7 @@ mod tests {
             let agent = Arc::new(InventoryAgent {
                 id,
                 auth: Mutex::new(None),
+                initial_usage: None,
                 listing: Mutex::new(Ok(SessionPage {
                     sessions: ["deleted", "in-memory", "remaining"].map(record).to_vec(),
                     ..Default::default()
@@ -896,6 +903,7 @@ mod tests {
         let agent = Arc::new(InventoryAgent {
             id: "devin",
             auth: Mutex::new(Some(AuthState::Ok)),
+            initial_usage: None,
             listing: Mutex::new(Ok(SessionPage::default())),
         });
         let registry = Registry::new([agent.clone() as Arc<dyn Agent>]).unwrap();
@@ -912,12 +920,117 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn session_usage_persists_and_broadcasts_agent_rate_limits() {
+        use vetro_proto::rpc::ServerEvent;
+
+        let root = tempfile::tempdir().unwrap();
+        let app_dir = root.path().join(".vetro");
+        let home = Home::open(app_dir.clone(), root.path().into()).unwrap();
+        let limits = vec![RateLimit {
+            label: "five_hour".into(),
+            used_percent: 42.0,
+            resets_at: Some(1_795_392_000_000),
+        }];
+        let agent = Arc::new(InventoryAgent {
+            id: "claude",
+            auth: Mutex::new(None),
+            listing: Mutex::new(Ok(SessionPage::default())),
+            initial_usage: Some(ThreadUsage {
+                rate_limits: limits.clone(),
+                ..Default::default()
+            }),
+        });
+        let core = Core::new(
+            home,
+            Registry::new([agent.clone() as Arc<dyn Agent>]).unwrap(),
+        );
+        assert!(core
+            .agent_info("claude")
+            .await
+            .unwrap()
+            .rate_limits
+            .is_empty());
+
+        let mut events = core.events.subscribe();
+        let (_, _thread) = core
+            .start(ThreadStartParams {
+                agent_id: "claude".into(),
+                cwd: root.path().to_string_lossy().into_owned(),
+                options: BTreeMap::new(),
+                content: Vec::new(),
+            })
+            .await
+            .unwrap();
+        let updated = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let ServerEvent::AgentChanged { agent } = &*events.recv().await.unwrap() {
+                    break agent.clone();
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(updated.id, "claude");
+        assert_eq!(updated.rate_limits, limits);
+        assert!(updated.rate_limits_updated_at.is_some_and(|ts| ts > 0));
+        assert_eq!(core.agent_info("claude").await.unwrap(), updated);
+        assert!(matches!(
+            &*events.try_recv().unwrap(),
+            ServerEvent::AgentsUpdated { agents } if agents == std::slice::from_ref(&updated)
+        ));
+        core.shutdown().await;
+        drop(core);
+
+        let home = Home::open(app_dir, root.path().into()).unwrap();
+        let reloaded = Core::new(home, Registry::new([agent as Arc<dyn Agent>]).unwrap());
+        assert_eq!(reloaded.agent_info("claude").await.unwrap(), updated);
+    }
+
+    #[tokio::test]
+    async fn empty_rate_limit_probe_keeps_the_persisted_snapshot() {
+        let root = tempfile::tempdir().unwrap();
+        let app_dir = root.path().join(".vetro");
+        let home = Home::open(app_dir.clone(), root.path().into()).unwrap();
+        let agent = Arc::new(InventoryAgent {
+            id: "codex",
+            auth: Mutex::new(None),
+            listing: Mutex::new(Ok(SessionPage::default())),
+            initial_usage: None,
+        });
+        let core = Core::new(
+            home,
+            Registry::new([agent.clone() as Arc<dyn Agent>]).unwrap(),
+        );
+        core.record_agent_rate_limits(
+            "codex",
+            vec![RateLimit {
+                label: "codex (5h)".into(),
+                used_percent: 25.0,
+                resets_at: None,
+            }],
+        );
+        let mut events = core.events.subscribe();
+        let before_refresh = core.agent_info("codex").await.unwrap();
+        assert_eq!(before_refresh.rate_limits[0].used_percent, 25.0);
+        assert!(matches!(
+            &*events.try_recv().unwrap(),
+            vetro_proto::rpc::ServerEvent::AgentChanged { agent } if agent == &before_refresh
+        ));
+        let state_path = app_dir.join("state.json");
+        let before = std::fs::read(&state_path).unwrap();
+        assert!(agent.info().await.rate_limits.is_empty());
+        assert_eq!(core.agents(true).await, [before_refresh]);
+        assert_eq!(std::fs::read(state_path).unwrap(), before);
+    }
+
+    #[tokio::test]
     async fn old_state_options_are_normalized_in_agent_options_and_thread_open() {
         let root = tempfile::tempdir().unwrap();
         let home = Home::open(root.path().join(".vetro"), root.path().into()).unwrap();
         let agent = Arc::new(InventoryAgent {
             id: "kiro",
             auth: Mutex::new(None),
+            initial_usage: None,
             listing: Mutex::new(Ok(SessionPage {
                 sessions: vec![record("cached")],
                 ..Default::default()

@@ -82,6 +82,8 @@ pub enum ServerEvent {
     ThreadsRemoved { thread_ids: Vec<String> },
     #[serde(rename = "agents.updated")]
     AgentsUpdated { agents: Vec<AgentInfo> },
+    #[serde(rename = "agents.changed")]
+    AgentChanged { agent: AgentInfo },
     #[serde(rename = "projects.updated")]
     ProjectsUpdated { projects: Vec<Project> },
     /// Background history indexing progress for one agent.

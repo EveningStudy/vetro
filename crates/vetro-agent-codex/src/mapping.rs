@@ -546,7 +546,7 @@ pub(crate) fn rate_limits(buckets: &BTreeMap<String, Value>) -> Vec<RateLimit> {
                 };
                 Some(RateLimit {
                     label: format!("{label} ({duration})"),
-                    used_percent: window["usedPercent"].as_f64()?,
+                    used_percent: window["usedPercent"].as_f64()?.clamp(0.0, 100.0),
                     resets_at: millis(&window["resetsAt"]),
                 })
             })

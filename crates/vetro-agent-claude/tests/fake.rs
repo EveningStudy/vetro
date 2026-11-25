@@ -163,7 +163,7 @@ async fn test() {
         ]
     );
     assert_eq!(final_id.as_deref(), Some("message:1"));
-    let mut limit = false;
+    let mut limits = Vec::new();
     loop {
         match next(&mut receiver).await {
             SessionEvent::Item(item) => match item.kind {
@@ -178,14 +178,19 @@ async fn test() {
                 }
                 _ => {}
             },
-            SessionEvent::Usage(usage) if !usage.rate_limits.is_empty() => {
-                assert_eq!(usage.rate_limits[0].used_percent, 75.0);
-                limit = true;
+            SessionEvent::Usage(usage)
+                if usage.last_turn.is_none() && !usage.rate_limits.is_empty() =>
+            {
+                let limit = &usage.rate_limits[0];
+                assert_eq!(limit.label, "five_hour");
+                assert_eq!(limit.resets_at, Some(1_795_392_000_000));
+                limits.push(limit.used_percent);
             }
             _ => {}
         }
     }
-    assert!(completed && limit && resolved);
+    assert_eq!(limits, [75.0, 0.0, 100.0, 100.0]);
+    assert!(completed && resolved);
     assert_eq!(
         next(&mut receiver).await,
         SessionEvent::Status(ThreadStatus::Idle)
@@ -521,9 +526,17 @@ fn fake(args: &[String]) {
                         let mut replay = folded.take().unwrap();
                         replay["isReplay"] = json!(true);
                         emit(replay);
-                        emit(
-                            json!({"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","rateLimitType":"five_hour","utilization":0.75,"resetsAt":1795392000}}),
-                        );
+                        for (status, utilization) in [
+                            ("allowed_warning", Some(0.75)),
+                            ("allowed", Some(-0.2)),
+                            ("allowed_warning", Some(1.2)),
+                            ("rejected", None),
+                        ] {
+                            emit(json!({"type":"rate_limit_event","rate_limit_info":{
+                                "status":status,"rateLimitType":"five_hour",
+                                "utilization":utilization,"resetsAt":1795392000
+                            }}));
+                        }
                         emit(
                             json!({"type":"result","uuid":"result","subtype":"success","duration_ms":123,"usage":{"input_tokens":2,"cache_creation_input_tokens":1,"cache_read_input_tokens":4,"output_tokens":4}}),
                         );

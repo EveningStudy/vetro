@@ -613,6 +613,12 @@ impl Thread {
                 Some(ThreadEvent::Commands { commands })
             }
             SessionEvent::Usage(usage) => {
+                if !usage.rate_limits.is_empty() {
+                    core.record_agent_rate_limits(
+                        &state.summary.agent_id,
+                        usage.rate_limits.clone(),
+                    );
+                }
                 state.usage = usage;
                 None
             }

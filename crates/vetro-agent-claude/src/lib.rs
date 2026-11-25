@@ -186,6 +186,8 @@ impl Agent for ClaudeAgent {
                 },
             },
             error: error.map(|error| error.message.clone()),
+            rate_limits: Vec::new(),
+            rate_limits_updated_at: None,
         }
     }
 

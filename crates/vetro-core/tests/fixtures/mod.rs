@@ -56,6 +56,8 @@ impl Agent for Fake {
                 ..Default::default()
             },
             error: None,
+            rate_limits: Vec::new(),
+            rate_limits_updated_at: None,
         }
     }
 

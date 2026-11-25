@@ -9,11 +9,11 @@ use std::{
 
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
-use vetro_agent_api::{Agent, SessionEvent, StartRequest};
+use vetro_agent_api::{process::SpawnSpec, Agent, SessionEvent, StartRequest};
 use vetro_agent_codex::CodexAgent;
 use vetro_proto::{
-    AuthState, ContentBlock, ItemKind, RequestBody, RequestResolution, StopReason, ThreadSource,
-    ThreadStatus, ToolContent, ToolKind, ToolStatus,
+    AuthState, ContentBlock, ItemKind, RateLimit, RequestBody, RequestResolution, StopReason,
+    ThreadSource, ThreadStatus, ToolContent, ToolKind, ToolStatus,
 };
 
 fn main() {
@@ -29,12 +29,14 @@ fn main() {
 }
 
 fn app_server() {
+    let scenario = env::args().nth(2);
     let mut output = io::stdout().lock();
     let mut send = |message: Value| {
         writeln!(output, "{message}").unwrap();
         output.flush().unwrap();
     };
     let mut started = 0;
+    let mut limit_reads = 0;
     let mut initialized = false;
     let mut cwd = Value::Null;
     for line in io::stdin().lock().lines() {
@@ -84,6 +86,33 @@ fn app_server() {
                     "verificationUrl": "https://example.test/device"})
             }
             "account/rateLimits/read" => {
+                limit_reads += 1;
+                match scenario.as_deref() {
+                    Some("rate-limits-error") if limit_reads > 1 => {
+                        send(json!({"id": message["id"], "error": {
+                            "code": -32601, "message": "Rate limits unavailable"
+                        }}));
+                        continue;
+                    }
+                    Some("rate-limits-empty") if limit_reads > 1 => {
+                        send(json!({"id": message["id"], "result": {
+                            "rateLimits": {}, "rateLimitsByLimitId": {}
+                        }}));
+                        continue;
+                    }
+                    Some("rate-limits-refresh") if limit_reads > 1 => {
+                        send(
+                            json!({"id": message["id"], "result": {"rateLimitsByLimitId": {
+                                "main": {
+                                    "primary": {"usedPercent": -3, "windowDurationMins": 300},
+                                    "secondary": {"usedPercent": 102, "windowDurationMins": 10080}
+                                }
+                            }}}),
+                        );
+                        continue;
+                    }
+                    _ => {}
+                }
                 json!({"rateLimits": {"limitId": "main", "limitName": "Main",
                 "primary": {"usedPercent": 7, "windowDurationMins": 300, "resetsAt": 60}}})
             }
@@ -331,6 +360,7 @@ fn text(text: &str) -> ContentBlock {
 }
 
 async fn test_adapter() {
+    test_info_rate_limits().await;
     let agent = CodexAgent::new(Some(env::current_exe().unwrap()));
     let info = agent.info().await;
     assert_eq!(info.version.as_deref(), Some("0.169.0"));
@@ -521,6 +551,8 @@ async fn test_adapter() {
         match recv(&mut events).await {
             SessionEvent::Usage(usage) if usage.rate_limits.len() == 2 => {
                 assert_eq!(usage.last_turn.unwrap().input, Some(10));
+                assert_eq!(usage.rate_limits[0].used_percent, 7.0);
+                assert_eq!(usage.rate_limits[1].used_percent, 32.0);
                 merged_usage = true;
             }
             SessionEvent::Item(item) => {
@@ -578,6 +610,47 @@ async fn test_adapter() {
     assert!(agent.info().await.error.is_none());
     agent.shutdown().await;
     println!("Codex app-server fixture passed");
+}
+
+async fn test_info_rate_limits() {
+    for scenario in [
+        "rate-limits-error",
+        "rate-limits-empty",
+        "rate-limits-refresh",
+    ] {
+        let mut spec = SpawnSpec::new(env::current_exe().unwrap());
+        spec.args.push(scenario.into());
+        let agent = CodexAgent::from_spec(Some(spec));
+        let first = agent.info().await;
+        assert_eq!(
+            first.rate_limits,
+            [RateLimit {
+                label: "Main (5h)".into(),
+                used_percent: 7.0,
+                resets_at: Some(60_000),
+            }]
+        );
+        assert!(first.rate_limits_updated_at.is_some_and(|ts| ts > 0));
+
+        let refreshed = agent.info().await;
+        assert_eq!(refreshed.auth.state, AuthState::Ok);
+        assert_eq!(refreshed.error, None);
+        if scenario == "rate-limits-refresh" {
+            assert_eq!(
+                refreshed
+                    .rate_limits
+                    .iter()
+                    .map(|limit| limit.used_percent)
+                    .collect::<Vec<_>>(),
+                [0.0, 100.0]
+            );
+            assert!(refreshed.rate_limits_updated_at >= first.rate_limits_updated_at);
+        } else {
+            assert!(refreshed.rate_limits.is_empty());
+            assert_eq!(refreshed.rate_limits_updated_at, None);
+        }
+        agent.shutdown().await;
+    }
 }
 
 async fn recv(events: &mut mpsc::UnboundedReceiver<SessionEvent>) -> SessionEvent {

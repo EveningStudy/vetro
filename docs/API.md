@@ -25,7 +25,7 @@ Unknown fields must be ignored by both sides. Timestamps are milliseconds since 
 |---|---|---|---|
 | `app.hello` | `HelloParams` | `AppInfo` | First call on every connection. |
 | `agents.list` | `Empty` | `AgentsResult` | Cached detection. |
-| `agents.refresh` | `Empty` | `AgentsResult` | Re-detect binaries, versions and auth state. |
+| `agents.refresh` | `Empty` | `AgentsResult` | Re-detect binaries, versions and auth state, and refresh official rate limits where available. |
 | `agents.authenticate` | `AuthenticateParams` | `AuthenticateResult` | Runs the agent's own sign-in method. The result carries a URL and code when the flow continues in a browser elsewhere. |
 | `agents.options` | `AgentOptionsParams` | `AgentOptionsResult` | Options and slash commands for a new thread, from Vetro's versioned cache of what the agent reported earlier. It never creates a native session by itself: when nothing is cached and the agent only reports options from a session, the result has `needsSession: true`, and a session is created only when the call carries `prepare: true` from an explicit user action; that session is then used for the thread the user starts next in that folder. |
 | `projects.list` | `Empty` | `ProjectsResult` | Includes hidden projects. Missing directories sort last. |
@@ -66,6 +66,7 @@ Unknown fields must be ignored by both sides. Timestamps are milliseconds since 
 
 - `thread.event`: for opened threads only; `seq` increases by one per thread. `ThreadEvent` is `item_added`, `item_updated`, `text_delta`, `summary`, `options`, `commands` or `usage`.
 - `threads.upserted` / `threads.removed`: the thread list changed (new session, title, status, link, history refresh). Sent to every connection.
+- `agents.changed`: a single agent with a newly observed official rate-limit snapshot. The core also broadcasts the updated agent list via `agents.updated`.
 - `agents.updated`, `projects.updated`, `index.progress`, `remote.updated`, `app.navigate`.
 
 Listings and searches use the local index immediately. During a rebuild its initial results can be incomplete. `index.progress` reports a scan per agent. `done` means the scan ended, including sessions whose transcripts require sign-in. `threads.upserted` carries newly indexed summaries and changes to links. Open history threads receive item events as their native transcripts change.

@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     future::Future,
     path::Path,
     sync::{
@@ -16,8 +16,8 @@ use vetro_proto::{rpc::*, *};
 
 use crate::{
     bad_request, files,
-    home::Home,
-    internal, not_found, page_limit,
+    home::{AgentState, Home},
+    internal, not_found, now, page_limit,
     registry::Registry,
     sessions::Sessions,
     storage::{Filter, Index},
@@ -40,12 +40,18 @@ pub struct Core {
     pub(crate) store: Arc<Index>,
     pub(crate) sessions: Sessions,
     pub(crate) events: broadcast::Sender<Arc<ServerEvent>>,
-    detection: RwLock<Option<Vec<AgentInfo>>>,
+    detection: RwLock<Detection>,
     detection_refresh: Mutex<()>,
     pub(crate) history_requested: Notify,
     pub(crate) project_refresh_requested: AtomicBool,
     shutting_down: AtomicBool,
     voice: VoiceManager,
+}
+
+#[derive(Default)]
+struct Detection {
+    agents: Option<Vec<AgentInfo>>,
+    pending_rate_limits: BTreeSet<String>,
 }
 
 impl Core {
@@ -64,7 +70,7 @@ impl Core {
             store: Arc::new(store),
             sessions: Sessions::default(),
             events: broadcast::channel(1024).0,
-            detection: RwLock::new(None),
+            detection: RwLock::default(),
             detection_refresh: Mutex::new(()),
             history_requested: Notify::new(),
             project_refresh_requested: AtomicBool::new(false),
@@ -225,17 +231,23 @@ impl Core {
 
     pub async fn agents(&self, refresh: bool) -> Vec<AgentInfo> {
         if !refresh {
-            if let Some(agents) = self.detection.read().unwrap().as_ref() {
+            if let Some(agents) = self.detection.read().unwrap().agents.as_ref() {
                 return self.current_auth(agents.clone());
             }
         }
         let _refresh = self.detection_refresh.lock().await;
         if !refresh {
-            if let Some(agents) = self.detection.read().unwrap().as_ref() {
+            if let Some(agents) = self.detection.read().unwrap().agents.as_ref() {
                 return self.current_auth(agents.clone());
             }
         }
-        let previous = self.detection.read().unwrap().clone().unwrap_or_default();
+        let previous = self
+            .detection
+            .read()
+            .unwrap()
+            .agents
+            .clone()
+            .unwrap_or_default();
         let mut tasks = tokio::task::JoinSet::new();
         let mut agents = Vec::new();
         let registry = self.registry();
@@ -248,6 +260,8 @@ impl Core {
                     .unwrap_or_else(|| crate::registry::disabled_info(agent.id()));
                 agents.push(AgentInfo {
                     error: Some("Disabled in settings".into()),
+                    rate_limits: Vec::new(),
+                    rate_limits_updated_at: None,
                     ..info
                 });
                 continue;
@@ -268,12 +282,87 @@ impl Core {
             }
         }
         agents.sort_by(|left, right| left.id.cmp(&right.id));
-        let agents = self.current_auth(agents);
-        *self.detection.write().unwrap() = Some(agents.clone());
+        let mut agents = self.current_auth(agents);
+        let mut detection = self.detection.write().unwrap();
+        for info in &mut agents {
+            self.merge_agent_rate_limits(info);
+            if detection.pending_rate_limits.remove(&info.id) {
+                self.publish(ServerEvent::AgentChanged {
+                    agent: info.clone(),
+                });
+            }
+        }
+        detection.agents = Some(agents.clone());
         self.publish(ServerEvent::AgentsUpdated {
             agents: agents.clone(),
         });
         agents
+    }
+
+    fn merge_agent_rate_limits(&self, info: &mut AgentInfo) {
+        let cached = self
+            .home
+            .read_state(|state| state.agents.get(&info.id).cloned())
+            .unwrap_or_default();
+        let observed_at = info.rate_limits_updated_at.unwrap_or_else(now);
+        if !info.rate_limits.is_empty()
+            && Some(observed_at) >= cached.rate_limits_updated_at
+            && self.save_agent_rate_limits(&info.id, &info.rate_limits, observed_at)
+        {
+            info.rate_limits_updated_at = Some(observed_at);
+        } else {
+            info.rate_limits = cached.rate_limits;
+            info.rate_limits_updated_at = cached.rate_limits_updated_at;
+        }
+    }
+
+    pub(crate) fn record_agent_rate_limits(&self, agent_id: &str, limits: Vec<RateLimit>) {
+        if limits.is_empty() {
+            return;
+        }
+        let mut detection = self.detection.write().unwrap();
+        let observed_at = now();
+        if !self.save_agent_rate_limits(agent_id, &limits, observed_at) {
+            return;
+        }
+        if let Some(agents) = detection.agents.as_mut() {
+            if let Some(agent) = agents.iter_mut().find(|agent| agent.id == agent_id) {
+                agent.rate_limits = limits;
+                agent.rate_limits_updated_at = Some(observed_at);
+                self.publish(ServerEvent::AgentChanged {
+                    agent: agent.clone(),
+                });
+                self.publish(ServerEvent::AgentsUpdated {
+                    agents: agents.clone(),
+                });
+                return;
+            }
+        }
+        detection.pending_rate_limits.insert(agent_id.into());
+    }
+
+    fn save_agent_rate_limits(
+        &self,
+        agent_id: &str,
+        limits: &[RateLimit],
+        observed_at: i64,
+    ) -> bool {
+        let result = self.home.change_state(|state| {
+            state.agents.insert(
+                agent_id.into(),
+                AgentState {
+                    rate_limits: limits.to_vec(),
+                    rate_limits_updated_at: Some(observed_at),
+                },
+            );
+        });
+        if let Err(error) = result {
+            self.home.log(&format!(
+                "Could not save rate limits for {agent_id}: {error}"
+            ));
+            return false;
+        }
+        true
     }
 
     fn current_auth(&self, mut agents: Vec<AgentInfo>) -> Vec<AgentInfo> {
@@ -336,7 +425,9 @@ impl Core {
 
     fn update_cached_auth(&self, id: &str, state: AuthState) {
         let mut cache = self.detection.write().unwrap();
-        let Some(agents) = cache.as_mut() else { return };
+        let Some(agents) = cache.agents.as_mut() else {
+            return;
+        };
         if let Some(agent) = agents.iter_mut().find(|agent| agent.id == id) {
             if agent.auth.state == state {
                 return;
@@ -497,6 +588,7 @@ impl Core {
     pub(crate) fn cached_thread_options(&self, summary: &ThreadSummary) -> AgentOptionsResult {
         let detection = self.detection.read().unwrap();
         let info = detection
+            .agents
             .as_ref()
             .and_then(|agents| agents.iter().find(|info| info.id == summary.agent_id));
         self.home.read_state(|state| {
@@ -587,7 +679,7 @@ impl Core {
         if let Some((next, retired)) = replacement {
             retired.retire();
             *self.registry.write().unwrap() = Arc::new(next);
-            *self.detection.write().unwrap() = None;
+            *self.detection.write().unwrap() = Detection::default();
             self.registry_changed.send_replace(());
             self.home.change_state(|state| state.options.clear())?;
             tokio::spawn(async move { retired.shutdown().await });

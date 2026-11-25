@@ -12,7 +12,7 @@ use subtle::ConstantTimeEq;
 use vetro_agent_api::Result;
 use vetro_proto::{
     rpc::{AgentOptionsResult, RemoteDevice, Settings},
-    RawEntry,
+    RateLimit, RawEntry,
 };
 
 use crate::{internal, now};
@@ -35,6 +35,17 @@ pub(crate) struct State {
     pub projects: BTreeMap<String, ProjectOverlay>,
     pub options: BTreeMap<String, AgentOptionsResult>,
     pub prefs: BTreeMap<String, serde_json::Value>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub agents: BTreeMap<String, AgentState>,
+}
+
+#[derive(Clone, Default, Deserialize, Serialize)]
+#[serde(default, rename_all = "camelCase")]
+pub(crate) struct AgentState {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub rate_limits: Vec<RateLimit>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rate_limits_updated_at: Option<i64>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]

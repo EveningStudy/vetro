@@ -92,7 +92,7 @@ impl Live {
         let app = Arc::downgrade(&app);
         tokio::spawn(async move {
             if let Some(app) = app.upgrade() {
-                app.refresh_limits().await;
+                let _ = app.refresh_limits().await;
             }
         });
         Ok(live)

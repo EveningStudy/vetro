@@ -92,7 +92,7 @@ pub struct AgentCapabilities {
     pub fork: ForkCapabilities,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct AgentInfo {
@@ -108,6 +108,14 @@ pub struct AgentInfo {
     pub capabilities: AgentCapabilities,
     /// Why the agent is unusable right now, if it is.
     pub error: Option<String>,
+    /// Most recent official rate-limit windows reported by this agent (e.g. 5h / weekly).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional = nullable)]
+    pub rate_limits: Vec<RateLimit>,
+    /// Unix timestamp (ms) when `rate_limits` were last observed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number | null")]
+    pub rate_limits_updated_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]

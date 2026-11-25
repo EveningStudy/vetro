@@ -2,6 +2,7 @@
 import type { AgentAuth } from "./AgentAuth";
 import type { AgentCapabilities } from "./AgentCapabilities";
 import type { AgentKind } from "./AgentKind";
+import type { RateLimit } from "./RateLimit";
 
 export type AgentInfo = { 
 /**
@@ -15,4 +16,12 @@ path: string | null, version: string | null, auth: AgentAuth, capabilities: Agen
 /**
  * Why the agent is unusable right now, if it is.
  */
-error: string | null, };
+error: string | null, 
+/**
+ * Most recent official rate-limit windows reported by this agent (e.g. 5h / weekly).
+ */
+rateLimits?: Array<RateLimit>, 
+/**
+ * Unix timestamp (ms) when `rate_limits` were last observed.
+ */
+rateLimitsUpdatedAt?: number | null, };

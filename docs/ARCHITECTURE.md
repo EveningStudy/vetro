@@ -25,7 +25,7 @@ The desktop app and `vetro serve` are the same core. The Tauri shell only create
 Everything Vetro writes is under `~/.vetro` (`VETRO_HOME` overrides):
 
 - `config.json`: `Settings` from `vetro-proto`.
-- `state.json`: local bootstrap token, session token hashes, paired devices, per-device preferences, thread and project overlays, cached agent options.
+- `state.json`: local bootstrap token, session token hashes, paired devices, per-device preferences, thread and project overlays, cached agent options and official rate-limit snapshots.
 - `index.db`: thread index and full-text search. Disposable; rebuilt from the agents' stores.
 - `raw/<thread-id>.jsonl`: wire log of each session attached in Vetro (rotated, size-capped).
 - `logs/`: Vetro's own logs.
