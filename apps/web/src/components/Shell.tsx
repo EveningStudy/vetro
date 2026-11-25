@@ -5,7 +5,7 @@ import { useT } from "~/i18n";
 import { cn, isMac } from "~/lib/utils";
 import { usePrefs } from "~/state/prefs";
 import { actions, useStore } from "~/state/store";
-import { dismiss, useToasts } from "~/state/toast";
+import { dismiss, toast, useToasts } from "~/state/toast";
 import { CommandPalette } from "./CommandPalette";
 import { EmptyState } from "./EmptyState";
 import { SettingsView } from "./settings/SettingsView";
@@ -13,7 +13,7 @@ import { NewThread } from "./chat/NewThread";
 import { ThreadView } from "./chat/ThreadView";
 import { SidebarContent, isQuickChatPath, isScratchOrTempPath } from "./sidebar/Sidebar";
 import { Button } from "./ui/button";
-import { Tip } from "./ui/overlay";
+import { Dialog, DialogDescription, DialogPopup, DialogTitle, Tip } from "./ui/overlay";
 import { WindowControls } from "./WindowChrome";
 
 /** Whether page headers need to show on desktop to hold the expand-sidebar button. */
@@ -73,6 +73,36 @@ function ConnectionBanner() {
         {loaded ? t("conn.lost") : t("conn.connecting")}
       </div>
     </div>
+  );
+}
+
+function DetachConfirm() {
+  const t = useT();
+  const prompt = useStore((s) => s.detachPrompt);
+  if (!prompt) return null;
+  const release = () => {
+    actions.dismissDetachPrompt();
+    void actions.detach(prompt.threadId, true).then((done) => done && toast.info(t("thread.detached")));
+  };
+  return (
+    <Dialog open onOpenChange={(open) => !open && actions.dismissDetachPrompt()}>
+      <DialogPopup className="max-w-md">
+        <div className="flex flex-col gap-4 p-5">
+          <div className="flex flex-col gap-1.5 pe-8">
+            <DialogTitle>{t("thread.detachBackgroundTitle")}</DialogTitle>
+            <DialogDescription>{t("thread.detachBackgroundBody")}</DialogDescription>
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" onClick={() => actions.dismissDetachPrompt()}>
+              {t("common.cancel")}
+            </Button>
+            <Button variant="destructive" onClick={release}>
+              {t("thread.detachBackgroundConfirm")}
+            </Button>
+          </div>
+        </div>
+      </DialogPopup>
+    </Dialog>
   );
 }
 
@@ -188,6 +218,7 @@ export function Shell() {
       <WindowControls />
       <ConnectionBanner />
       <Toasts />
+      <DetachConfirm />
     </div>
   );
 }

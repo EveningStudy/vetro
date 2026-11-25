@@ -8,7 +8,7 @@ import { Button } from "../ui/button";
 import { Dialog, DialogDescription, DialogPopup, DialogTitle } from "../ui/overlay";
 import { Spinner } from "../ui/primitives";
 import { ThreadCwdContext } from "./threadContext";
-import { AgentMessage, NoticeRow, PlanCard, Reasoning, RequestItem, ToolCallRow, TurnEnd, UserMessage } from "./Items";
+import { AgentMessage, AnswerFooter, NoticeRow, PlanCard, Reasoning, RequestItem, ToolCallRow, TurnEnd, UserMessage } from "./Items";
 import { diffStats } from "./ToolDetails";
 import { WorkLogRow } from "./WorkLog";
 
@@ -84,6 +84,50 @@ function segment(items: Item[], running: boolean): Segment[] {
     break;
   }
   return segments;
+}
+
+function isUnsettled(item: Item) {
+  return (
+    ((item.type === "agent_message" || item.type === "reasoning") && item.streaming) ||
+    (item.type === "tool_call" && (item.status === "in_progress" || item.status === "pending")) ||
+    isPendingRequest(item)
+  );
+}
+
+/**
+ * Answer text per turn. A real `turn_end` owns its answer; a turn that the native history
+ * closed without one gets a copy-only footer on its last settled answer.
+ */
+function answersByTurn(items: Item[], running: boolean) {
+  const ends = new Map<string, string>();
+  const fallbacks = new Map<string, string>();
+  let texts: string[] = [];
+  let lastAnswer: string | null = null;
+  let unsettled = false;
+  const close = (final: boolean) => {
+    if (lastAnswer && texts.length && !unsettled && !(final && running)) fallbacks.set(lastAnswer, texts.join("\n\n"));
+    texts = [];
+    lastAnswer = null;
+    unsettled = false;
+  };
+  for (const item of items) {
+    if (item.type === "user_message") {
+      close(false);
+    } else if (item.type === "turn_end") {
+      ends.set(item.id, texts.join("\n\n"));
+      texts = [];
+      lastAnswer = null;
+      unsettled = false;
+    } else {
+      if (isUnsettled(item)) unsettled = true;
+      if (item.type === "agent_message" && !item.streaming && item.text.trim()) {
+        texts.push(item.text);
+        lastAnswer = item.id;
+      }
+    }
+  }
+  close(true);
+  return { ends, fallbacks };
 }
 
 function first(segment: Segment) {
@@ -287,21 +331,7 @@ function TimelineRows({ items, threadId, dockRequests }: { items: Item[]; thread
       ),
     [items, running, dockRequests],
   );
-  const turnAnswers = useMemo(() => {
-    const map = new Map<string, string>();
-    let buffer: string[] = [];
-    for (const item of items) {
-      if (item.type === "user_message") {
-        buffer = [];
-      } else if (item.type === "agent_message") {
-        if (item.text.trim()) buffer.push(item.text);
-      } else if (item.type === "turn_end") {
-        map.set(item.id, buffer.join("\n\n"));
-        buffer = [];
-      }
-    }
-    return map;
-  }, [items]);
+  const answers = useMemo(() => answersByTurn(items, running), [items, running]);
 
   const lastTurnEndId = useMemo(() => {
     for (let index = segments.length - 1; index >= 0; index -= 1) {
@@ -339,13 +369,18 @@ function TimelineRows({ items, threadId, dockRequests }: { items: Item[]; thread
             <ItemView
               item={item}
               threadId={threadId}
-              answerText={item.type === "turn_end" ? turnAnswers.get(item.id) : undefined}
+              answerText={item.type === "turn_end" ? answers.ends.get(item.id) : undefined}
               isLastTurn={isLastTurn}
               onFork={fork.onFork}
               forkLabel={fork.forkLabel}
               onRollback={isUser && canRollback && turnId ? () => setHistoryEdit({ kind: "rollback", turnId }) : undefined}
               onRewindFiles={isUser && canRewind ? () => setHistoryEdit({ kind: "rewind", userMessageId: item.id }) : undefined}
             />
+            {item.type === "agent_message" && answers.fallbacks.has(item.id) ? (
+              <div className="mt-1.5">
+                <AnswerFooter answerText={answers.fallbacks.get(item.id)!} />
+              </div>
+            ) : null}
           </div>
         );
       })}

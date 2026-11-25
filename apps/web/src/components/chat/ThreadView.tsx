@@ -473,7 +473,7 @@ function ThreadHeader({ thread, threadId }: { thread: OpenThread | undefined; th
             ) : null}
             <MenuItem
               disabled={!summary.live}
-              onClick={() => void actions.detach(threadId).then(() => toast.info(t("thread.detached")))}
+              onClick={() => void actions.detach(threadId).then((done) => done && toast.info(t("thread.detached")))}
             >
               <UnplugIcon />
               {t("thread.detach")}

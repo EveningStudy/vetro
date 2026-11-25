@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { authApi, client } from "~/api/client";
-import type { ConnectionStatus } from "~/api/protocol";
+import { type ConnectionStatus, RpcFailure } from "~/api/protocol";
 import type {
   AgentInfo,
   AppInfo,
@@ -61,6 +61,8 @@ export type RightDrawer =
 
 interface State {
   connection: ConnectionStatus;
+  /** A release request the server refused because the thread still has background processes. */
+  detachPrompt: { threadId: string; message: string } | null;
   app: AppInfo | null;
   agents: AgentInfo[];
   projects: Project[];
@@ -129,6 +131,7 @@ function initialDrawer(panel: string | null): RightDrawer | null {
 
 export const useStore = create<State>(() => ({
   connection: "connecting",
+  detachPrompt: null,
   app: null,
   agents: [],
   projects: [],
@@ -819,8 +822,22 @@ export const actions = {
       .catch((error) => toast.error(errorMessage(error)));
   },
 
-  async detach(threadId: string) {
-    await client().request("threads.detach", { threadId }).catch((error) => toast.error(errorMessage(error)));
+  async detach(threadId: string, force = false): Promise<boolean> {
+    try {
+      await client().request("threads.detach", force ? { threadId, force } : { threadId });
+      return true;
+    } catch (error) {
+      if (!force && error instanceof RpcFailure && error.code === "background_work") {
+        useStore.setState({ detachPrompt: { threadId, message: error.message } });
+      } else {
+        toast.error(errorMessage(error));
+      }
+      return false;
+    }
+  },
+
+  dismissDetachPrompt() {
+    useStore.setState({ detachPrompt: null });
   },
 
   async addProject(path: string) {

@@ -247,7 +247,7 @@ function ThreadMenuItems({ thread }: { thread: ThreadSummary }) {
         {t("thread.rawLog")}
       </MenuItem>
       {thread.live ? (
-        <MenuItem onClick={() => void actions.detach(thread.id).then(() => toast.info(t("thread.detached")))}>
+        <MenuItem onClick={() => void actions.detach(thread.id).then((done) => done && toast.info(t("thread.detached")))}>
           <UnplugIcon />
           {t("thread.detach")}
         </MenuItem>

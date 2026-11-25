@@ -517,6 +517,39 @@ export const NoticeRow = memo(function NoticeRow({ item }: { item: ItemOf<"notic
   );
 });
 
+function CopyAnswerButton({ answerText }: { answerText: string }) {
+  const t = useT();
+  const [copied, setCopied] = useState(false);
+  return (
+    <Tip label={copied ? t("common.copied") : t("item.copyAnswer")}>
+      <button
+        type="button"
+        aria-label={t("item.copyAnswer")}
+        className="inline-flex size-6 cursor-pointer items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+        onClick={() => {
+          void copyText(answerText).then(() => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1200);
+          });
+        }}
+      >
+        {copied ? <CheckIcon className="size-3.5 text-success" /> : <CopyIcon className="size-3.5" />}
+      </button>
+    </Tip>
+  );
+}
+
+/** Copy for an answer whose native history recorded no turn end. */
+export const AnswerFooter = memo(function AnswerFooter({ answerText }: { answerText: string }) {
+  return (
+    <div className="group/turn-footer flex items-center gap-2 px-0.5 pt-0.5 text-[11px] text-muted-foreground/75">
+      <div className="flex items-center gap-0.5 opacity-60 transition-opacity hover:opacity-100 focus-within:opacity-100 group-hover/turn-footer:opacity-100 pointer-coarse:opacity-100">
+        <CopyAnswerButton answerText={answerText} />
+      </div>
+    </div>
+  );
+});
+
 export const TurnEnd = memo(function TurnEnd({
   item,
   answerText,
@@ -532,7 +565,6 @@ export const TurnEnd = memo(function TurnEnd({
 }) {
   const t = useT();
   const forkText = forkLabel ?? t("item.forkFromHere");
-  const [copied, setCopied] = useState(false);
   const stopLabel = item.stopReason !== "end_turn" ? t(`item.stop.${item.stopReason}`) : null;
   const duration = item.durationMs != null ? t("item.turnEnd", { duration: formatDuration(item.durationMs) }) : null;
   const tokens =
@@ -557,23 +589,7 @@ export const TurnEnd = memo(function TurnEnd({
             isLast ? "opacity-75" : "opacity-60",
           )}
         >
-          {hasCopy ? (
-            <Tip label={copied ? t("common.copied") : t("item.copyAnswer")}>
-              <button
-                type="button"
-                aria-label={t("item.copyAnswer")}
-                className="inline-flex size-6 cursor-pointer items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
-                onClick={() => {
-                  void copyText(answerText!).then(() => {
-                    setCopied(true);
-                    setTimeout(() => setCopied(false), 1200);
-                  });
-                }}
-              >
-                {copied ? <CheckIcon className="size-3.5 text-success" /> : <CopyIcon className="size-3.5" />}
-              </button>
-            </Tip>
-          ) : null}
+          {hasCopy ? <CopyAnswerButton answerText={answerText!} /> : null}
           {onFork ? (
             <Tip label={forkText}>
               <button

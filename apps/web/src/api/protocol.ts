@@ -34,6 +34,7 @@ import type { ServerEvent } from "./bindings/ServerEvent";
 import type { Settings } from "./bindings/Settings";
 import type { SettingsUpdateParams } from "./bindings/SettingsUpdateParams";
 import type { ThreadForkParams } from "./bindings/ThreadForkParams";
+import type { ThreadDetachParams } from "./bindings/ThreadDetachParams";
 import type { ThreadIdParams } from "./bindings/ThreadIdParams";
 import type { ThreadItemsParams } from "./bindings/ThreadItemsParams";
 import type { ThreadItemsResult } from "./bindings/ThreadItemsResult";
@@ -85,7 +86,7 @@ export interface Methods {
   "threads.setOption": [ThreadSetOptionParams, OptionsResult];
   "threads.respond": [ThreadRespondParams, Empty];
   "threads.update": [ThreadUpdateParams, ThreadResult];
-  "threads.detach": [ThreadIdParams, Empty];
+  "threads.detach": [ThreadDetachParams, Empty];
   "threads.raw": [ThreadRawParams, ThreadRawResult];
   "threads.rollback": [ThreadRollbackParams, ThreadOpenResult];
   "threads.rewindFiles": [ThreadRewindFilesParams, RewindFilesResult];
