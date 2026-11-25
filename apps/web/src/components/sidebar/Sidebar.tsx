@@ -89,7 +89,7 @@ function SidebarAction({
       onClick={onClick}
       className={cn(
         rowBase,
-        "h-8 px-(--sidebar-row-content-inset) text-sm text-sidebar-foreground/90 hover:bg-sidebar-row-hover",
+        "h-8 rounded-(--control-radius) px-(--sidebar-row-content-inset) text-sm text-sidebar-foreground/90 hover:bg-sidebar-row-hover active:bg-sidebar-row-active",
         active && "bg-sidebar-row-active text-sidebar-foreground light:ring-1 light:ring-inset light:ring-sidebar-border/70",
       )}
     >
@@ -298,7 +298,7 @@ const ThreadRow = memo(function ThreadRow({
         title={context ? `${thread.title} · ${thread.cwd ?? context}` : undefined}
         className={cn(
           rowBase,
-          parentId ? "h-9 ps-4 pe-2.5" : "h-9 ps-3 pe-2.5",
+          parentId ? "h-9 ps-4 pe-2.5" : "h-9 px-2.5",
           active
             ? "bg-sidebar-row-active text-sidebar-foreground light:ring-1 light:ring-inset light:ring-sidebar-border/70"
             : "text-sidebar-foreground hover:bg-sidebar-row-hover data-popup-open:bg-sidebar-row-hover",
@@ -308,7 +308,7 @@ const ThreadRow = memo(function ThreadRow({
         <span
           className={cn(
             "flex shrink-0 items-center transition-[opacity,filter]",
-            !active && !busy && !unread && "opacity-60 grayscale group-hover/sidebar-row:opacity-100 group-hover/sidebar-row:grayscale-0",
+            !active && !busy && !unread && "opacity-40 grayscale group-focus-within/sidebar-row:opacity-100 group-focus-within/sidebar-row:grayscale-0 group-hover/sidebar-row:opacity-100 group-hover/sidebar-row:grayscale-0",
           )}
         >
           <AgentIcon agentId={thread.agentId} className="size-4" />
@@ -1138,14 +1138,14 @@ export function SidebarContent() {
       <div className="flex h-full min-h-0 flex-col">
         <div {...drag} className={cn("flex h-(--workspace-topbar-height) shrink-0 items-center gap-1 ps-4 pe-2", chromeClass)}>
           <VetroMark className="size-4.5" />
-          <span className="ms-1 flex-1 truncate font-semibold text-sm tracking-tight">{t("app.name")}</span>
+          <span className="ms-1 flex-1 truncate font-medium text-sm tracking-tight">{t("app.name")}</span>
           <Tip label={`${t("sidebar.collapse")} · ${isMac ? "⌘B" : "Ctrl B"}`}>
             <Button size="icon-xs" variant="ghost-muted" aria-label={t("sidebar.collapse")} className="max-md:hidden" onClick={actions.toggleSidebar}>
               <PanelLeftCloseIcon />
             </Button>
           </Tip>
         </div>
-        <div className="flex shrink-0 flex-col gap-px px-2 pb-2">
+        <div className="flex shrink-0 flex-col gap-1 px-2 pb-2">
           <SidebarAction
             icon={SquarePenIcon}
             label={t("sidebar.newThread")}
@@ -1180,16 +1180,16 @@ export function SidebarContent() {
           onToggleGroup={toggleGroup}
           onToggleChildren={toggleChildren}
         />
-        <footer className="flex shrink-0 items-center justify-between gap-2 border-t border-sidebar-border/70 px-2.5 pt-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))]">
+        <footer className="flex shrink-0 items-center justify-between gap-2 px-2 pt-1 pb-[calc(0.5rem+env(safe-area-inset-bottom))]">
           <button
             type="button"
             onClick={() => actions.navigate({ view: "settings", section: "general" })}
             className={cn(
-              "inline-flex h-7 cursor-pointer select-none items-center gap-2 rounded-md px-2 text-xs text-sidebar-muted-foreground outline-none transition-colors hover:bg-sidebar-row-hover hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+              "inline-flex h-8 cursor-pointer select-none items-center gap-2 rounded-(--control-radius) px-(--sidebar-row-content-inset) text-sm font-medium text-sidebar-muted-foreground/80 outline-none transition-colors hover:bg-sidebar-row-hover hover:text-sidebar-foreground active:bg-sidebar-row-active focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
               route.view === "settings" && "bg-sidebar-row-active text-sidebar-foreground",
             )}
           >
-            <SettingsIcon className="size-3.5 shrink-0" />
+            <SettingsIcon className="size-4 shrink-0" />
             <span>{t("sidebar.settings")}</span>
           </button>
           {connection !== "open" ? (
