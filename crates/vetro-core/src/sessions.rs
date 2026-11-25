@@ -463,16 +463,8 @@ impl Thread {
         let usage_before = state.usage.clone();
         state.status = summary.status;
         state.summary = summary;
-        for mut draft in transcript.items {
-            state.decorate(&mut draft.kind);
-            let unchanged = state.by_id.get(&draft.id).is_some_and(|index| {
-                let item = &state.items[*index];
-                item.kind == draft.kind && item.ts == draft.ts && item.turn_id == draft.turn_id
-            });
-            if !unchanged {
-                let event = state.item(draft);
-                state.emit(&core, event);
-            }
+        for event in state.merge_history(transcript.items) {
+            state.emit(&core, event);
         }
         state.merge_history_usage(transcript.usage);
         if state.usage != usage_before {
@@ -1482,6 +1474,37 @@ impl Timeline {
         }
     }
 
+    fn merge_history(&mut self, drafts: Vec<ItemDraft>) -> Vec<ThreadEvent> {
+        let history_ids: HashSet<String> = drafts.iter().map(|draft| draft.id.clone()).collect();
+        let mut claimed: HashSet<String> = HashSet::new();
+        let mut events = Vec::new();
+        for mut draft in drafts {
+            if !self.by_id.contains_key(&draft.id) {
+                if let ItemKind::UserMessage { content } = &draft.kind {
+                    let existing = self.items.iter().find(|item| {
+                        !history_ids.contains(&item.id)
+                            && !claimed.contains(&item.id)
+                            && matches!(&item.kind, ItemKind::UserMessage { content: c } if c == content)
+                            && (item.turn_id.is_none() || item.turn_id == draft.turn_id)
+                    });
+                    if let Some(existing) = existing {
+                        claimed.insert(existing.id.clone());
+                        draft.id = existing.id.clone();
+                    }
+                }
+            }
+            self.decorate(&mut draft.kind);
+            let unchanged = self.by_id.get(&draft.id).is_some_and(|index| {
+                let item = &self.items[*index];
+                item.kind == draft.kind && item.ts == draft.ts && item.turn_id == draft.turn_id
+            });
+            if !unchanged {
+                events.push(self.item(draft));
+            }
+        }
+        events
+    }
+
     fn item(&mut self, mut draft: ItemDraft) -> ThreadEvent {
         if let ItemKind::ToolCall(call) = &draft.kind {
             if !call.child_thread_ids.is_empty() {
@@ -1674,4 +1697,57 @@ fn new_summary(
     };
     summary.internal = crate::storage::classified(&summary);
     summary
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn user(id: &str, turn_id: Option<&str>, text: &str) -> ItemDraft {
+        ItemDraft {
+            id: id.into(),
+            ts: None,
+            turn_id: turn_id.map(Into::into),
+            kind: ItemKind::UserMessage {
+                content: vec![ContentBlock::Text { text: text.into() }],
+            },
+        }
+    }
+
+    fn user_count(state: &Timeline) -> usize {
+        state
+            .items
+            .iter()
+            .filter(|item| matches!(item.kind, ItemKind::UserMessage { .. }))
+            .count()
+    }
+
+    #[test]
+    fn history_user_message_reuses_live_local_id() {
+        let mut state = Timeline::new(new_summary("codex", "t1", "t1".into(), None));
+        state.item(user("local-user:1", None, "question"));
+        state.item(user("local-user:2", None, "second"));
+        let events = state.merge_history(vec![
+            user("native-1", Some("turn-1"), "question"),
+            user("native-2", Some("turn-2"), "second"),
+        ]);
+        assert_eq!(user_count(&state), 2);
+        assert_eq!(events.len(), 2);
+        assert!(events
+            .iter()
+            .all(|event| matches!(event, ThreadEvent::ItemUpdated { .. })));
+        assert_eq!(state.items[0].id, "local-user:1");
+        assert_eq!(state.items[0].turn_id.as_deref(), Some("turn-1"));
+    }
+
+    #[test]
+    fn identical_history_user_messages_are_each_matched_once() {
+        let mut state = Timeline::new(new_summary("codex", "t1", "t1".into(), None));
+        state.item(user("local-user:1", None, "again"));
+        state.merge_history(vec![
+            user("native-1", Some("turn-1"), "again"),
+            user("native-2", Some("turn-2"), "again"),
+        ]);
+        assert_eq!(user_count(&state), 2);
+    }
 }
