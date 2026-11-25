@@ -6,7 +6,9 @@ use std::{
 };
 
 use tokio::sync::{mpsc, Mutex as AsyncMutex};
-use vetro_agent_api::{AgentError, ItemDraft, Result, Session, SessionEvent, StartRequest};
+use vetro_agent_api::{
+    AgentError, ItemDraft, Result, Session, SessionEvent, StartRequest, Transcript,
+};
 use vetro_proto::{rpc::*, *};
 
 use crate::{bad_request, internal, links::Projection, not_found, now, page_limit, Core};
@@ -163,12 +165,13 @@ impl Core {
         state.options = cached.options;
         state.commands = cached.commands;
         state.set_children(self.store.children(id)?);
-        if unknown {
+        if unknown && !matches!(agent_id, "claude" | "codex") {
             state.summary.resumable = self.agent_info(agent_id).await?.capabilities.resume;
         }
         for draft in transcript.items {
             state.item(draft);
         }
+        state.merge_history_usage(transcript.usage);
         state.update_status();
         let candidate = Arc::new(Thread::new(self, state));
         Ok(self.sessions.insert(candidate))
@@ -415,7 +418,7 @@ impl Thread {
         Some((state.summary.clone(), projection))
     }
 
-    pub(crate) fn refresh_history(&self, mut summary: ThreadSummary, items: Vec<ItemDraft>) {
+    pub(crate) fn refresh_history(&self, mut summary: ThreadSummary, transcript: Transcript) {
         let core = self.core();
         let Ok(children) = core.store.children(&summary.id) else {
             return;
@@ -429,9 +432,10 @@ impl Thread {
             summary.created_at = state.summary.created_at;
         }
         let old = state.summary.clone();
+        let usage_before = state.usage.clone();
         state.status = summary.status;
         state.summary = summary;
-        for mut draft in items {
+        for mut draft in transcript.items {
             state.decorate(&mut draft.kind);
             let unchanged = state.by_id.get(&draft.id).is_some_and(|index| {
                 let item = &state.items[*index];
@@ -441,6 +445,11 @@ impl Thread {
                 let event = state.item(draft);
                 state.emit(&core, event);
             }
+        }
+        state.merge_history_usage(transcript.usage);
+        if state.usage != usage_before {
+            let usage = state.usage.clone();
+            state.emit(&core, ThreadEvent::Usage { usage });
         }
         state.update_status();
         if state.summary != old {
@@ -1256,6 +1265,15 @@ impl Timeline {
                 .get(&call.call_id)
                 .cloned()
                 .unwrap_or_default();
+        }
+    }
+
+    fn merge_history_usage(&mut self, usage: ThreadUsage) {
+        if usage.last_turn.is_some() {
+            self.usage.last_turn = usage.last_turn;
+        }
+        if usage.total.is_some() {
+            self.usage.total = usage.total;
         }
     }
 

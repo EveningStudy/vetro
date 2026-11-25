@@ -1025,7 +1025,7 @@ fn option(
     }
 }
 
-fn token_usage(value: &Value) -> TokenUsage {
+pub(crate) fn token_usage(value: &Value) -> TokenUsage {
     let input = value["input_tokens"].as_u64();
     let created = value["cache_creation_input_tokens"].as_u64();
     let cached = value["cache_read_input_tokens"].as_u64();
@@ -1037,7 +1037,7 @@ fn token_usage(value: &Value) -> TokenUsage {
     }
 }
 
-fn accumulate_usage(total: &TokenUsage, additional: &TokenUsage) -> TokenUsage {
+pub(crate) fn accumulate_usage(total: &TokenUsage, additional: &TokenUsage) -> TokenUsage {
     TokenUsage {
         input: add_tokens(total.input, additional.input),
         cached_input: add_tokens(total.cached_input, additional.cached_input),
@@ -1047,7 +1047,7 @@ fn accumulate_usage(total: &TokenUsage, additional: &TokenUsage) -> TokenUsage {
     }
 }
 
-fn add_tokens(left: Option<u64>, right: Option<u64>) -> Option<u64> {
+pub(crate) fn add_tokens(left: Option<u64>, right: Option<u64>) -> Option<u64> {
     match (left, right) {
         (Some(left), Some(right)) => Some(left.saturating_add(right)),
         _ => left.or(right),

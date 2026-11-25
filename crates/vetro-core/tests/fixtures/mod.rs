@@ -176,7 +176,10 @@ impl Agent for Fake {
                     }),
             );
         }
-        Ok(Transcript { items })
+        Ok(Transcript {
+            items,
+            ..Transcript::default()
+        })
     }
 
     async fn start(&self, req: StartRequest, sink: EventSink) -> Result<Arc<dyn Session>> {

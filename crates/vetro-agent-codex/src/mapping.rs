@@ -182,7 +182,10 @@ pub(crate) fn transcript(thread: &Value) -> Transcript {
             items.push(end);
         }
     }
-    Transcript { items }
+    Transcript {
+        items,
+        ..Transcript::default()
+    }
 }
 
 pub(crate) fn item(raw: &Value, turn_id: Option<&str>, streaming: bool) -> Option<ItemDraft> {

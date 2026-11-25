@@ -24,12 +24,20 @@ pub async fn exercise() {
     fs::write(
         store.join(format!("{NATIVE_ID}.jsonl")),
         format!(
-            "{}\n",
+            "{}\n{}\n",
             json!({
                 "type":"user", "uuid":"history", "sessionId":NATIVE_ID, "cwd":project,
                 "entrypoint":"claude-desktop", "timestamp":"2026-11-23T00:00:00.000Z",
                 "message":{"content":"Stored Claude turn"}
-            })
+            }),
+            json!({
+                "type":"assistant", "uuid":"historical-answer", "sessionId":NATIVE_ID,
+                "timestamp":"2026-11-23T00:00:01.000Z",
+                "message":{"id":"historical-message","model":"claude-opus-5-5",
+                    "content":[{"type":"text","text":"Stored Claude answer"}],
+                    "usage":{"input_tokens":2,"cache_creation_input_tokens":5,
+                        "cache_read_input_tokens":30,"output_tokens":3}}
+            }),
         ),
     )
     .unwrap();
@@ -62,6 +70,16 @@ pub async fn exercise() {
     assert_eq!(opened["thread"]["source"], "desktop");
     assert_eq!(opened["thread"]["resumable"], true);
     assert_eq!(opened["thread"]["live"], false);
+    assert_eq!(
+        opened["usage"],
+        json!({
+            "lastTurn":{"input":37,"cachedInput":30,"output":3,"reasoning":null,
+                "contextUsed":40,"contextWindow":1_000_000},
+            "total":{"input":37,"cachedInput":30,"output":3,"reasoning":null,
+                "contextUsed":null,"contextWindow":1_000_000},
+            "rateLimits":[]
+        })
+    );
 
     let options = set_option(&mut client, "effort", "low").await;
     assert_eq!(current(&options, "effort"), "low");

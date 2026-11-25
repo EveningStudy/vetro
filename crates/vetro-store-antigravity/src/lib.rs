@@ -496,6 +496,9 @@ impl Store {
             ));
         }
         let items = read_steps(&path).map_err(read_error)?;
-        Ok(Transcript { items })
+        Ok(Transcript {
+            items,
+            ..Transcript::default()
+        })
     }
 }

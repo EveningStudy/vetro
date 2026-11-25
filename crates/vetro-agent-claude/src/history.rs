@@ -9,12 +9,14 @@ use std::{
 use memchr::memmem;
 use serde_json::Value;
 use vetro_agent_api::{AgentError, ItemDraft, Result, SessionEvent, SessionRecord, Transcript};
-use vetro_proto::{rpc::ErrorCode, ContentBlock, ThreadSource};
+use vetro_proto::{rpc::ErrorCode, ContentBlock, ThreadSource, ThreadUsage, TokenUsage};
 
 use crate::{
     bad_request,
     events::{timestamp, user_content, Timeline},
-    io_error, string,
+    io_error,
+    session::{accumulate_usage, add_tokens, token_usage},
+    string,
 };
 
 pub(crate) fn validate_id(id: &str) -> Result<()> {
@@ -127,8 +129,10 @@ pub(crate) fn read(root: &Path, id: &str) -> Result<Transcript> {
             transcript.read(file, Some(&parent)).map_err(io_error)?;
         }
     }
+    let usage = transcript.usage.finish();
     Ok(Transcript {
         items: transcript.items,
+        usage,
     })
 }
 
@@ -147,6 +151,7 @@ struct HistoryTranscript {
     agent_calls: HashMap<String, String>,
     sidechain_parents: HashMap<String, String>,
     seen: HashSet<String>,
+    usage: HistoryUsage,
 }
 
 impl HistoryTranscript {
@@ -164,7 +169,7 @@ impl HistoryTranscript {
             });
         scan(file, |line| {
             if !has_type(line, |kind| {
-                matches!(kind, b"assistant" | b"user" | b"system")
+                matches!(kind, b"assistant" | b"user" | b"system" | b"result")
             }) {
                 return;
             }
@@ -200,14 +205,19 @@ impl HistoryTranscript {
             if let (Some(id), Some(parent)) = (id, &row_parent) {
                 self.sidechain_parents.insert(id.into(), parent.clone());
             }
+            let main = row_parent.is_none() && row["isSidechain"] != true;
             match string(&row, "type") {
                 Some("assistant" | "user") => {
+                    if row["type"] == "assistant" {
+                        self.usage.assistant(&row, main);
+                    }
                     self.timeline
                         .message(&row, row_parent.as_deref(), &mut events)
                 }
                 Some("system") => self
                     .timeline
                     .notice(&row, row_parent.as_deref(), &mut events),
+                Some("result") if main => self.usage.result(&row),
                 _ => {}
             }
             for event in events.drain(..) {
@@ -241,6 +251,104 @@ impl HistoryTranscript {
                 }
             }
         }
+    }
+}
+
+#[derive(Default)]
+struct HistoryUsage {
+    by_message: HashMap<String, TokenUsage>,
+    without_id: TokenUsage,
+    last: Option<TokenUsage>,
+    model: Option<String>,
+}
+
+impl HistoryUsage {
+    fn assistant(&mut self, row: &Value, main: bool) {
+        let message = &row["message"];
+        let model = string(message, "model");
+        if row["isSynthetic"] == true || model.is_some_and(|model| model.starts_with('<')) {
+            return;
+        }
+        let raw = &message["usage"];
+        let mut usage = token_usage(raw);
+        if usage == TokenUsage::default() {
+            return;
+        }
+        if main {
+            usage.context_used = add_tokens(usage.input, usage.output);
+            usage.context_window = [raw, message, row]
+                .into_iter()
+                .find_map(context_window)
+                .or_else(|| model.and_then(|model| default_context_window(model, usage.input)));
+            self.last = Some(usage.clone());
+            self.model = model.map(str::to_owned);
+        }
+        if let Some(id) = string(message, "id") {
+            self.by_message.insert(id.into(), usage);
+        } else {
+            self.without_id = accumulate_usage(&self.without_id, &usage);
+        }
+    }
+
+    fn result(&mut self, row: &Value) {
+        let window = context_window(row).or_else(|| {
+            let model = self.model.as_deref()?;
+            context_window(&row["modelUsage"][model])
+        });
+        if let (Some(last), Some(window)) = (&mut self.last, window) {
+            last.context_window = Some(window);
+        }
+    }
+
+    fn finish(self) -> ThreadUsage {
+        let mut total = self
+            .by_message
+            .values()
+            .fold(self.without_id, |total, usage| {
+                accumulate_usage(&total, usage)
+            });
+        let total = (total != TokenUsage::default()).then(|| {
+            total.context_window = self.last.as_ref().and_then(|last| last.context_window);
+            total
+        });
+        ThreadUsage {
+            last_turn: self.last,
+            total,
+            ..ThreadUsage::default()
+        }
+    }
+}
+
+fn context_window(value: &Value) -> Option<u64> {
+    value["contextWindow"]
+        .as_u64()
+        .or_else(|| value["context_window"].as_u64())
+        .filter(|window| *window > 0)
+}
+
+fn default_context_window(model: &str, input: Option<u64>) -> Option<u64> {
+    match model {
+        "claude-opus-4-6" | "claude-sonnet-4-6" => {
+            Some(if input.is_some_and(|input| input > 200_000) {
+                1_000_000
+            } else {
+                200_000
+            })
+        }
+        "claude-opus-4-6[1m]"
+        | "claude-sonnet-4-6[1m]"
+        | "claude-opus-4-7"
+        | "claude-opus-4-8"
+        | "claude-opus-5"
+        | "claude-opus-5-5"
+        | "claude-sonnet-5"
+        | "claude-sonnet-5-5"
+        | "claude-haiku-5-5"
+        | "claude-fable-5-2" => Some(1_000_000),
+        "claude-opus-4-5-20251101" | "claude-sonnet-4-5-20250929" | "claude-haiku-4-5-20251001" => {
+            Some(200_000)
+        }
+        _ => None,
     }
 }
 
@@ -487,4 +595,71 @@ fn trim_start(bytes: &[u8]) -> &[u8] {
         .iter()
         .position(|byte| !byte.is_ascii_whitespace())
         .unwrap_or(bytes.len())..]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn read_fixture(rows: &str) -> Transcript {
+        let root = tempfile::tempdir().unwrap();
+        let id = "01a07c95-7d45-7983-a759-ad414c92947e";
+        let project = root.path().join("project");
+        fs::create_dir(&project).unwrap();
+        fs::write(project.join(format!("{id}.jsonl")), rows).unwrap();
+        read(root.path(), id).unwrap()
+    }
+
+    #[test]
+    fn reads_latest_assistant_context_and_totals_unique_messages() {
+        let transcript = read_fixture(
+            r#"{"type":"assistant","uuid":"first","message":{"id":"msg_1","model":"claude-opus-4-6","usage":{"input_tokens":10,"cache_creation_input_tokens":5,"cache_read_input_tokens":20,"output_tokens":2}}}
+{"type":"assistant","uuid":"continued","message":{"id":"msg_1","model":"claude-opus-4-6","usage":{"input_tokens":10,"cache_creation_input_tokens":5,"cache_read_input_tokens":20,"output_tokens":4}}}
+{"type":"assistant","uuid":"latest","message":{"id":"msg_2","model":"claude-opus-4-6","usage":{"input_tokens":2,"cache_creation_input_tokens":2973,"cache_read_input_tokens":312416,"output_tokens":604}}}
+{"type":"assistant","uuid":"child","isSidechain":true,"message":{"id":"msg_3","model":"claude-haiku-4-5-20251001","usage":{"input_tokens":3,"output_tokens":1}}}
+{"type":"assistant","uuid":"synthetic","message":{"model":"<synthetic>","usage":{"input_tokens":0,"output_tokens":0}}}
+{"type":"assistant","uuid":"truncated"
+"#,
+        );
+        assert_eq!(
+            transcript.usage.last_turn.unwrap(),
+            TokenUsage {
+                input: Some(315_391),
+                cached_input: Some(312_416),
+                output: Some(604),
+                context_used: Some(315_995),
+                context_window: Some(1_000_000),
+                ..TokenUsage::default()
+            }
+        );
+        assert_eq!(
+            transcript.usage.total.unwrap(),
+            TokenUsage {
+                input: Some(315_429),
+                cached_input: Some(312_436),
+                output: Some(609),
+                context_window: Some(1_000_000),
+                ..TokenUsage::default()
+            }
+        );
+    }
+
+    #[test]
+    fn uses_recorded_window_and_leaves_unknown_model_capacity_empty() {
+        let rows = r#"{"type":"assistant","message":{"model":"provider/custom","usage":{"input_tokens":10,"output_tokens":2}}}
+"#;
+        let unknown = read_fixture(rows);
+        assert_eq!(unknown.usage.last_turn.unwrap().context_window, None);
+        assert_eq!(unknown.usage.total.unwrap().context_window, None);
+
+        let recorded = read_fixture(&format!(
+            "{rows}{}\n",
+            r#"{"type":"result","modelUsage":{"provider/custom":{"contextWindow":123456}}}"#
+        ));
+        assert_eq!(
+            recorded.usage.last_turn.unwrap().context_window,
+            Some(123_456)
+        );
+        assert_eq!(recorded.usage.total.unwrap().context_window, Some(123_456));
+    }
 }

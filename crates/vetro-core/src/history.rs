@@ -366,7 +366,7 @@ impl Core {
                         if let Some(actor) = self.sessions.get(&thread.id) {
                             actor.refresh_history(
                                 self.store.get(&thread.id)?.unwrap_or(thread),
-                                transcript.items,
+                                transcript,
                             );
                         }
                         self.publish_history(changes);
@@ -452,6 +452,15 @@ impl Core {
         {
             return Ok(Transcript::default());
         }
+        #[cfg(feature = "codex")]
+        let local = if agent.id() == "codex" && !summary.live {
+            match self.read_codex_store(&summary.native_id).await {
+                Ok(Some(transcript)) => return Ok(transcript),
+                result => result,
+            }
+        } else {
+            Ok(None)
+        };
         let read = agent.read(&summary.native_id, summary.cwd.as_deref().map(Path::new));
         let result = if agent.id() == "codex" {
             time::timeout(Duration::from_secs(8), read)
@@ -467,7 +476,12 @@ impl Core {
                 .as_ref()
                 .map_or(true, |transcript| transcript.items.is_empty())
         {
-            if let Some(transcript) = self.read_codex_store(&summary.native_id).await? {
+            let local = if summary.live {
+                self.read_codex_store(&summary.native_id).await
+            } else {
+                local
+            };
+            if let Some(transcript) = local? {
                 return Ok(transcript);
             }
         }

@@ -293,6 +293,7 @@ pub struct SessionPage {
 pub struct Transcript {
     /// Oldest first. IDs should match live item IDs when the native protocol allows it.
     pub items: Vec<ItemDraft>,
+    pub usage: ThreadUsage,
 }
 
 #[derive(Debug, Clone)]

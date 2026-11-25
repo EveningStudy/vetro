@@ -3,7 +3,9 @@ use std::{collections::HashSet, io::Read};
 use rusqlite::{Connection, OptionalExtension, Row};
 use serde_json::json;
 use vetro_agent_api::{codex_internal_source, codex_web_source, ItemDraft, Transcript};
-use vetro_proto::{ContentBlock, ItemKind, ToolCall, ToolContent, ToolKind, ToolStatus};
+use vetro_proto::{
+    ContentBlock, ItemKind, ThreadUsage, TokenUsage, ToolCall, ToolContent, ToolKind, ToolStatus,
+};
 use vetro_store_antigravity::sqlite::open_readonly;
 
 use super::*;
@@ -358,51 +360,73 @@ pub(in crate::history) fn fallback(root: &Path, id: &str) -> Result<Option<Trans
         parts.extend(rollouts(&root.join(folder))?.remove(id).unwrap_or_default());
     }
     parts.sort_unstable();
-    if parts
+    let compressed = parts
         .iter()
-        .any(|path| path.extension().is_some_and(|ext| ext == "zst"))
-    {
-        let transcript = read_rollouts(&parts, id)?;
+        .any(|path| path.extension().is_some_and(|ext| ext == "zst"));
+    let rollout = if compressed {
+        let transcript = read_rollouts(&parts, id, true)?;
         if !transcript.items.is_empty() {
             return Ok(Some(transcript));
         }
-    }
+        Some(transcript)
+    } else {
+        None
+    };
     let mut projection_error = None;
+    let mut projection = None;
     if let Some(path) = database(root, "thread_history_") {
         match open_readonly(&path)
             .map_err(internal)
             .and_then(|conn| read_projection(&conn, id))
         {
-            Ok(transcript) if !transcript.items.is_empty() => return Ok(Some(transcript)),
+            Ok(transcript) if !transcript.items.is_empty() => projection = Some(transcript),
             Ok(_) => {}
             Err(error) => projection_error = Some(error),
         }
     }
-    if parts.is_empty() {
-        if let Some(path) = database(root, "state_") {
-            let conn = open_readonly(&path).map_err(internal)?;
-            let rollout = conn
-                .query_row(
-                    "SELECT rollout_path FROM threads WHERE id=?1",
-                    [id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(internal)?
-                .map(PathBuf::from);
-            parts.extend(rollout.filter(|path| path.is_file() && rollout_id(path) == Some(id)));
+    let rollout = rollout.map_or_else(
+        || {
+            if parts.is_empty() {
+                parts.extend(state_rollout(root, id)?);
+            }
+            read_rollouts(&parts, id, projection.is_none())
+        },
+        Ok,
+    );
+    if let Some(mut transcript) = projection {
+        if let Ok(rollout) = rollout {
+            transcript.usage = rollout.usage;
         }
+        return Ok(Some(transcript));
     }
-    let transcript = read_rollouts(&parts, id)?;
-    if !transcript.items.is_empty() {
+    let transcript = rollout?;
+    if !transcript.items.is_empty() || transcript.usage != ThreadUsage::default() {
         return Ok(Some(transcript));
     }
     projection_error.map_or(Ok(None), Err)
 }
 
-fn read_rollouts(parts: &[PathBuf], id: &str) -> Result<Transcript> {
+fn state_rollout(root: &Path, id: &str) -> Result<Option<PathBuf>> {
+    let Some(path) = database(root, "state_") else {
+        return Ok(None);
+    };
+    let conn = open_readonly(&path).map_err(internal)?;
+    let path = conn
+        .query_row(
+            "SELECT rollout_path FROM threads WHERE id=?1",
+            [id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(internal)?
+        .map(PathBuf::from);
+    Ok(path.filter(|path| path.is_file() && rollout_id(path) == Some(id)))
+}
+
+fn read_rollouts(parts: &[PathBuf], id: &str, include_items: bool) -> Result<Transcript> {
     let mut items: Vec<ItemDraft> = Vec::new();
     let mut positions = HashMap::new();
+    let mut usage = ThreadUsage::default();
     for path in parts {
         let part = path
             .file_name()
@@ -410,6 +434,15 @@ fn read_rollouts(parts: &[PathBuf], id: &str) -> Result<Transcript> {
             .unwrap_or_default();
         for (index, row) in json_lines(path)?.enumerate() {
             let payload = &row["payload"];
+            if row["type"] == "event_msg" && payload["type"] == "token_count" {
+                if let Some(snapshot) = rollout_usage(&payload["info"]) {
+                    usage = snapshot;
+                }
+                continue;
+            }
+            if !include_items {
+                continue;
+            }
             let ts = timestamp(&row["timestamp"]);
             let kind = match payload["type"].as_str() {
                 Some("item_started" | "item_completed") if row["type"] == "event_msg" => {
@@ -463,7 +496,42 @@ fn read_rollouts(parts: &[PathBuf], id: &str) -> Result<Transcript> {
             });
         }
     }
-    Ok(Transcript { items })
+    Ok(Transcript { items, usage })
+}
+
+fn rollout_usage(info: &Value) -> Option<ThreadUsage> {
+    let window = info["model_context_window"]
+        .as_u64()
+        .filter(|window| *window > 0);
+    let tokens = |raw: &Value, active_context: bool| {
+        let input = raw["input_tokens"].as_u64();
+        let output = raw["output_tokens"].as_u64();
+        let mut usage = TokenUsage {
+            input,
+            cached_input: raw["cached_input_tokens"].as_u64(),
+            output,
+            reasoning: raw["reasoning_output_tokens"].as_u64(),
+            context_used: if active_context {
+                raw["total_tokens"]
+                    .as_u64()
+                    .or_else(|| Some(input?.saturating_add(output?)))
+            } else {
+                None
+            },
+            context_window: None,
+        };
+        (usage != TokenUsage::default()).then(|| {
+            usage.context_window = window;
+            usage
+        })
+    };
+    let last_turn = tokens(&info["last_token_usage"], true);
+    let total = tokens(&info["total_token_usage"], false);
+    (last_turn.is_some() || total.is_some()).then_some(ThreadUsage {
+        last_turn,
+        total,
+        ..ThreadUsage::default()
+    })
 }
 
 fn rollout_item(event: &Value, ts: Option<i64>) -> Option<ItemDraft> {
@@ -563,7 +631,10 @@ fn read_projection(conn: &Connection, id: &str) -> Result<Transcript> {
             items.push(item);
         }
     }
-    Ok(Transcript { items })
+    Ok(Transcript {
+        items,
+        ..Transcript::default()
+    })
 }
 
 fn projected_item(raw: &Value, ts: Option<i64>, turn_id: Option<String>) -> Option<ItemDraft> {
@@ -778,5 +849,65 @@ mod tests {
             })
             .collect();
         assert_eq!(actual, ["first segment", "second segment"]);
+    }
+
+    #[test]
+    fn reads_latest_token_count_with_rollout_or_projection_items() {
+        let root = tempfile::tempdir().unwrap();
+        let sessions = root.path().join("sessions");
+        fs::create_dir(&sessions).unwrap();
+        let id = "01a07c95-7d45-7983-a759-ad414c92947e";
+        fs::write(
+            sessions.join(format!("rollout-2026-09-07T00-00-00-{id}.jsonl")),
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"rollout"}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":9},"total_token_usage":{"input_tokens":9},"model_context_window":200000}}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":42,"cached_input_tokens":12,"output_tokens":8,"reasoning_output_tokens":3,"total_tokens":50},"total_token_usage":{"input_tokens":100,"cached_input_tokens":24,"output_tokens":20,"reasoning_output_tokens":6,"total_tokens":120},"model_context_window":828400}}}
+{"type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{}}}
+"#,
+        )
+        .unwrap();
+
+        let transcript = fallback(root.path(), id).unwrap().unwrap();
+        assert_eq!(transcript.items.len(), 1);
+        assert_eq!(
+            transcript.usage,
+            ThreadUsage {
+                last_turn: Some(TokenUsage {
+                    input: Some(42),
+                    cached_input: Some(12),
+                    output: Some(8),
+                    reasoning: Some(3),
+                    context_used: Some(50),
+                    context_window: Some(828_400),
+                }),
+                total: Some(TokenUsage {
+                    input: Some(100),
+                    cached_input: Some(24),
+                    output: Some(20),
+                    reasoning: Some(6),
+                    context_used: None,
+                    context_window: Some(828_400),
+                }),
+                rate_limits: Vec::new(),
+            }
+        );
+
+        let projection = Connection::open(root.path().join("thread_history_1.sqlite")).unwrap();
+        projection
+            .execute_batch(
+                "CREATE TABLE thread_items(thread_id, rollout_ordinal, item_json, turn_id,
+             started_at_ms, created_at_ms, completed_at_ms)",
+            )
+            .unwrap();
+        let item = json!({"id": "projected", "type": "agentMessage", "text": "from projection"});
+        projection
+            .execute(
+                "INSERT INTO thread_items VALUES (?1,1,?2,'turn',NULL,0,NULL)",
+                (id, item.to_string()),
+            )
+            .unwrap();
+        let projected = fallback(root.path(), id).unwrap().unwrap();
+        assert_eq!(projected.items[0].id, "projected");
+        assert_eq!(projected.usage, transcript.usage);
     }
 }
