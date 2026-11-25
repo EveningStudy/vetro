@@ -193,7 +193,7 @@ impl AcpSession {
                         session.connection.observe_auth("session/prompt", &reply);
                         tokio::spawn(async move {
                             if session.has_turn(&turn_id)
-                                && matches!(session.connection.recover_auth().await, Ok(true))
+                                && matches!(session.connection.recover_auth(None).await, Ok(true))
                                 && session.has_turn(&turn_id)
                                 && session
                                     .submit_prompt_once(params, turn_id.clone())
@@ -267,14 +267,14 @@ impl AcpSession {
         if state.closed {
             return;
         }
-        match value["sessionUpdate"].as_str() {
+        let update = value["sessionUpdate"].as_str();
+        match update {
             Some("user_message_chunk") => state.message(Role::User, value),
             Some("agent_message_chunk") => state.message(Role::Agent, value),
             Some("agent_thought_chunk") => state.message(Role::Thought, value),
             Some("tool_call" | "tool_call_update") => {
                 state.flush_user();
-                state.end_message();
-                state.tool(value);
+                state.tool(value, update == Some("tool_call"));
             }
             Some("plan") => {
                 state.flush_user();
@@ -485,7 +485,7 @@ impl Session for AcpSession {
         let _outbound = self.outbound.lock().await;
         let requires_auth =
             *self.connection.auth.lock().unwrap() == vetro_proto::AuthState::Required;
-        if requires_auth && !self.connection.recover_auth().await? {
+        if requires_auth && !self.connection.recover_auth(None).await? {
             return Err(AgentError::new(
                 ErrorCode::AuthRequired,
                 "Sign in to the agent first",
@@ -846,12 +846,16 @@ impl State {
         }
     }
 
-    fn tool(&mut self, value: &Value) {
+    fn tool(&mut self, value: &Value, announced: bool) {
         let Some(call_id) = string(value, "toolCallId") else {
             return;
         };
         let id = format!("tool:{call_id}");
-        let mut draft = self.tools.remove(&id).unwrap_or_else(|| {
+        let previous = self.tools.remove(&id);
+        if announced || previous.is_none() {
+            self.end_message();
+        }
+        let mut draft = previous.unwrap_or_else(|| {
             self.draft(
                 id.clone(),
                 ItemKind::ToolCall(ToolCall {

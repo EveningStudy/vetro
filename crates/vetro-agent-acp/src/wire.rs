@@ -35,7 +35,6 @@ pub(crate) struct Connection {
     dispatch: Mutex<Dispatch>,
     pub lifecycle: AsyncMutex<()>,
     pub auth: Mutex<AuthState>,
-    auth_required_observed: AtomicBool,
     previous_method: Option<Arc<Mutex<Option<String>>>>,
     attempted_auth: AsyncMutex<bool>,
     signed_in: AtomicBool,
@@ -55,7 +54,6 @@ impl Connection {
             dispatch: Mutex::new(Dispatch::default()),
             lifecycle: AsyncMutex::new(()),
             auth: Mutex::new(AuthState::Unknown),
-            auth_required_observed: AtomicBool::new(false),
             previous_method,
             attempted_auth: AsyncMutex::new(false),
             signed_in: AtomicBool::new(false),
@@ -241,32 +239,15 @@ impl Connection {
 
     pub fn observe_auth(&self, method: &str, reply: &Reply) {
         let mut state = self.auth.lock().unwrap();
-        if matches!(reply, Err(Error::Remote(error)) if error.code == -32000) {
-            self.auth_required_observed.store(true, Ordering::Relaxed);
-        }
         *state = observed_auth(*state, self.previous_method.is_some(), method, reply);
-    }
-
-    pub fn apply_auth_probe(&self, probe: AuthState) {
-        let mut state = self.auth.lock().unwrap();
-        if probe != AuthState::Unknown
-            && !self.auth_required_observed.load(Ordering::Relaxed)
-            && !self.signed_in.load(Ordering::Acquire)
-        {
-            *state = probe;
-        }
     }
 
     pub async fn authenticate(&self, method: &str) -> Result<()> {
         let _attempt = self.attempted_auth.lock().await;
-        self.sign_in(method).await?;
-        if let Some(previous) = &self.previous_method {
-            *previous.lock().unwrap() = Some(method.to_owned());
-        }
-        Ok(())
+        self.sign_in(method).await
     }
 
-    pub async fn recover_auth(&self) -> Result<bool> {
+    pub async fn recover_auth(&self, fallback: Option<&str>) -> Result<bool> {
         let mut attempted = self.attempted_auth.lock().await;
         if *self.auth.lock().unwrap() == AuthState::Ok {
             return Ok(self.signed_in.load(Ordering::Acquire));
@@ -277,7 +258,8 @@ impl Connection {
         let method = self
             .previous_method
             .as_ref()
-            .and_then(|method| method.lock().unwrap().clone());
+            .and_then(|method| method.lock().unwrap().clone())
+            .or_else(|| fallback.map(str::to_owned));
         let Some(method) = method else {
             return Ok(false);
         };
@@ -293,6 +275,9 @@ impl Connection {
         }
         self.observe_auth("authenticate", &reply);
         reply.map_err(agent_error)?;
+        if let Some(previous) = &self.previous_method {
+            *previous.lock().unwrap() = Some(method.to_owned());
+        }
         Ok(())
     }
 }

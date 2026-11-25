@@ -16,13 +16,24 @@ use vetro_proto::{
 };
 
 const PROMPT: &str = "  Keep this exactly.\r\n\t汉字 👋\n";
+const DEVIN_CHUNKS: [&str; 5] = [
+    "发现你已经",
+    "切到了新版 `vetro-desktop-new.exe`（PID 34260）并关掉了旧",
+    "版 `vetro-desktop.exe`！这正好省去了全量重编——直接增量编译最新版的",
+    " `target\\release\\vetro-desktop.exe`（与正在运行的 `vetro-desktop-new.exe` 互不冲突",
+    "，也可并存启动）。先取消临时目录编译，走主目录快速增量构建。",
+];
 
 fn main() {
     match env::args().nth(1).as_deref() {
         Some("--agent") => fake(env::args().nth(2).as_deref().unwrap_or_default()),
         Some("--version") => println!("fake-acp 1.0"),
         Some("auth") if env::args().nth(2).as_deref() == Some("status") => {
-            println!("Not logged in");
+            if env::var_os("VETRO_FAKE_DEVIN_LOGGED_IN").is_some() {
+                println!("Logged in");
+            } else {
+                println!("Not logged in");
+            }
         }
         Some("--ignored") => {}
         _ => tokio::runtime::Builder::new_current_thread()
@@ -52,6 +63,45 @@ fn chunk(id: &Value, kind: &str, text: &str) {
         id,
         json!({ "sessionUpdate": kind, "content": { "type": "text", "text": text } }),
     );
+}
+
+fn interleaved_devin_chunks(session: &Value) {
+    let tool = "call_18086028619706889594";
+    update(
+        session,
+        json!({
+            "sessionUpdate":"tool_call", "toolCallId":tool, "title":"Execute shell command", "kind":"execute"
+        }),
+    );
+    for (index, (text, updates)) in DEVIN_CHUNKS.into_iter().zip([7, 5, 6, 6, 0]).enumerate() {
+        update(
+            session,
+            json!({
+                "sessionUpdate":"agent_message_chunk", "content":{"type":"text","text":text},
+                "_meta":{"cognition.ai/timestamp":"2026-11-25T10:21:35.093854300+00:00"}
+            }),
+        );
+        if index == 0 {
+            output(json!({
+                "method":"_cognition.ai/thinking_complete",
+                "params":{"durationMs":5698,"blockIndex":10,"sessionId":session}
+            }));
+        }
+        for _ in 0..updates {
+            update(
+                session,
+                json!({
+                    "sessionUpdate":"tool_call_update","toolCallId":tool,
+                    "content":[{"type":"content","content":{"type":"text","text":"Compiling"}}]
+                }),
+            );
+        }
+    }
+    update(
+        session,
+        json!({"sessionUpdate":"tool_call","toolCallId":"next-tool"}),
+    );
+    chunk(session, "agent_message_chunk", "Separate message");
 }
 
 fn fake(scenario: &str) {
@@ -167,8 +217,12 @@ fn fake(scenario: &str) {
                 assert_eq!(params["mcpServers"], json!([]));
                 if message["method"] == "session/load" {
                     chunk(&params["sessionId"], "user_message_chunk", "old prompt");
-                    chunk(&params["sessionId"], "agent_message_chunk", "old ");
-                    chunk(&params["sessionId"], "agent_message_chunk", "answer");
+                    if scenario == "devin" {
+                        interleaved_devin_chunks(&params["sessionId"]);
+                    } else {
+                        chunk(&params["sessionId"], "agent_message_chunk", "old ");
+                        chunk(&params["sessionId"], "agent_message_chunk", "answer");
+                    }
                     output(json!({"id":id,"result":{"configOptions":config}}));
                     chunk(
                         &params["sessionId"],
@@ -267,6 +321,7 @@ fn fake(scenario: &str) {
                     "hi" if scenario == "dynamic-options" => {
                         chunk(session, "agent_message_chunk", "ok");
                     }
+                    "interleaved" if scenario == "devin" => interleaved_devin_chunks(session),
                     other => panic!("unexpected or modified user input {other:?}"),
                 }
                 json!({"stopReason":"end_turn"})
@@ -387,6 +442,67 @@ async fn suites() {
     assert!(devin.recover_auth().await.unwrap());
     let recovered = devin.attach("stored", None, sink).await.unwrap();
     recovered.detach().await;
+    devin.shutdown().await;
+
+    let mut spec = SpawnSpec::new(env::current_exe().unwrap());
+    spec.args = vec!["--agent".into(), "devin".into()];
+    spec.env
+        .insert("VETRO_FAKE_DEVIN_LOGGED_IN".into(), "1".into());
+    let devin = AcpAgent::new("devin", "Devin", spec);
+    assert_eq!(devin.info().await.auth.state, AuthState::Ok);
+    assert_eq!(devin.process_auth(), Some(AuthState::Unknown));
+    assert!(!devin.recover_auth().await.unwrap());
+    assert!(matches!(
+        devin.read("stored", None).await,
+        Err(error) if error.code == ErrorCode::AuthRequired
+    ));
+    assert_eq!(devin.info().await.auth.state, AuthState::Required);
+    assert!(devin.recover_auth().await.unwrap());
+    assert_eq!(devin.process_auth(), Some(AuthState::Ok));
+    let transcript = devin.read("stored", None).await.unwrap();
+    let messages: Vec<_> = transcript
+        .items
+        .iter()
+        .filter_map(|item| match &item.kind {
+            ItemKind::AgentMessage { text, streaming } => {
+                assert!(!streaming);
+                Some(text.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    let expected = [DEVIN_CHUNKS.concat(), "Separate message".into()];
+    assert_eq!(messages, expected);
+    let (sink, mut events) = mpsc::unbounded_channel();
+    let session = devin
+        .start(request(vec![text("interleaved")]), sink)
+        .await
+        .unwrap();
+    let (reason, events) = until_end(&mut events).await;
+    assert_eq!(reason, StopReason::EndTurn);
+    let deltas: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            SessionEvent::TextDelta { delta, .. } => Some(delta.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(deltas, DEVIN_CHUNKS[1..]);
+    let finalized: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            SessionEvent::Item(item) => match &item.kind {
+                ItemKind::AgentMessage {
+                    text,
+                    streaming: false,
+                } => Some(text.as_str()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    assert_eq!(finalized, expected);
+    session.detach().await;
     devin.shutdown().await;
 
     let agent = Arc::new(agent("auth"));

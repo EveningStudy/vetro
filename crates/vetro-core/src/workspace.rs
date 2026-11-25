@@ -455,29 +455,60 @@ fn contained_path(root: &Path, path: &Path) -> Result<PathBuf> {
 }
 
 pub(crate) fn open_external(params: OpenExternalParams, editor: Option<&str>) -> Result<()> {
-    let cwd = files::directory(Path::new(&params.cwd))?;
-    let path = params
-        .path
-        .as_deref()
-        .map(|path| {
-            let path = Path::new(path);
-            if !path.is_absolute()
-                && (path.has_root()
-                    || matches!(path.components().next(), Some(Component::Prefix(_))))
-            {
-                return Err(bad_request("Invalid workspace path"));
-            }
-            let resolved = fs::canonicalize(cwd.join(path))
-                .map(files::display_path)
-                .map_err(|_| bad_request("Workspace path does not exist"))?;
-            if !resolved.starts_with(&cwd) {
-                return Err(bad_request("Path is outside the workspace"));
-            }
-            Ok(resolved)
-        })
-        .transpose()?;
+    let raw_cwd = params.cwd.trim();
+    let (cwd, path) = if raw_cwd.is_empty() {
+        let raw_path = params
+            .path
+            .as_deref()
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+            .ok_or_else(|| bad_request("Expected a workspace directory or absolute path"))?;
+        let expanded = expand_tilde(raw_path)?;
+        if !expanded.is_absolute() {
+            return Err(bad_request("Relative path requires a workspace directory"));
+        }
+        let resolved = fs::canonicalize(&expanded)
+            .map(files::display_path)
+            .map_err(|_| bad_request("Path does not exist"))?;
+        let base = if resolved.is_dir() {
+            resolved.clone()
+        } else {
+            resolved
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| resolved.clone())
+        };
+        (base, Some(resolved))
+    } else {
+        let cwd = files::directory(Path::new(raw_cwd))?;
+        let path = params
+            .path
+            .as_deref()
+            .map(|raw| {
+                let path = expand_tilde(raw)?;
+                if !path.is_absolute()
+                    && (path.has_root()
+                        || matches!(path.components().next(), Some(Component::Prefix(_))))
+                {
+                    return Err(bad_request("Invalid workspace path"));
+                }
+                let resolved = fs::canonicalize(cwd.join(&path))
+                    .map(files::display_path)
+                    .map_err(|_| bad_request("Workspace path does not exist"))?;
+                if !resolved.starts_with(&cwd) {
+                    return Err(bad_request("Path is outside the workspace"));
+                }
+                Ok(resolved)
+            })
+            .transpose()?;
+        (cwd, path)
+    };
     match params.target {
-        OpenTarget::Folder => open_folder(&cwd).map_err(internal),
+        OpenTarget::Folder => match path.as_deref() {
+            Some(target) if target.is_file() => reveal_file(target, &cwd).map_err(internal),
+            Some(target) if target.is_dir() => open_folder(target).map_err(internal),
+            _ => open_folder(&cwd).map_err(internal),
+        },
         OpenTarget::Terminal => open_terminal(&cwd).map_err(internal),
         OpenTarget::Editor => {
             let target = path.as_deref().unwrap_or(&cwd);
@@ -517,6 +548,17 @@ pub(crate) fn open_external(params: OpenExternalParams, editor: Option<&str>) ->
             open::that_detached(target).map_err(internal)
         }
     }
+}
+
+fn expand_tilde(raw: &str) -> Result<PathBuf> {
+    if raw == "~" {
+        return std::env::home_dir().ok_or_else(|| bad_request("Home directory unavailable"));
+    }
+    if let Some(rest) = raw.strip_prefix("~/").or_else(|| raw.strip_prefix("~\\")) {
+        let home = std::env::home_dir().ok_or_else(|| bad_request("Home directory unavailable"))?;
+        return Ok(home.join(rest));
+    }
+    Ok(PathBuf::from(raw))
 }
 
 fn is_executable_file(path: &Path) -> bool {
@@ -587,6 +629,38 @@ fn open_folder(cwd: &Path) -> io::Result<()> {
     #[cfg(all(unix, not(target_os = "macos")))]
     let program = "xdg-open";
     launch(Path::new(program), &[cwd.as_os_str().to_owned()], cwd)
+}
+
+fn reveal_file(file: &Path, fallback_dir: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+
+        let mut arg = OsString::from("/select,\"");
+        arg.push(file.as_os_str());
+        arg.push("\"");
+        let child = Command::new("explorer.exe")
+            .raw_arg(arg)
+            .current_dir(fallback_dir)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()?;
+        drop(child);
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        launch(
+            Path::new("open"),
+            &[OsString::from("-R"), file.as_os_str().to_owned()],
+            fallback_dir,
+        )
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        open_folder(file.parent().unwrap_or(fallback_dir))
+    }
 }
 
 #[cfg(windows)]
@@ -814,6 +888,28 @@ mod tests {
         params.path = None;
         assert_eq!(
             open_external(params, Some("code --flag")).unwrap_err().code,
+            ErrorCode::BadRequest
+        );
+        let missing = OpenExternalParams {
+            cwd: String::new(),
+            target: OpenTarget::Folder,
+            path: Some("relative/file.txt".into()),
+            line: None,
+        };
+        assert_eq!(
+            open_external(missing, None).unwrap_err().code,
+            ErrorCode::BadRequest
+        );
+        let exe = root.path().join("demo.exe");
+        fs::write(&exe, "").unwrap();
+        let blocked_exe = OpenExternalParams {
+            cwd: String::new(),
+            target: OpenTarget::Editor,
+            path: Some(exe.to_string_lossy().into_owned()),
+            line: None,
+        };
+        assert_eq!(
+            open_external(blocked_exe, Some("system")).unwrap_err().code,
             ErrorCode::BadRequest
         );
     }

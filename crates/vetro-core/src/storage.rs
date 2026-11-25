@@ -264,14 +264,18 @@ impl Index {
         let old = get(&tx, &thread.id)?;
         let mut affected = HashSet::from([thread.id.clone()]);
         let mut published = affected.clone();
-        if projection.is_some() || old.is_none() {
-            affected.extend(dependents(&tx, &thread.id)?);
-        }
         let chosen = match (&old, native, projection) {
             (Some(old), Some(_), _) if old.live => old,
             (Some(old), None, Some(_)) => old,
             _ => thread,
         };
+        if projection.is_some()
+            || old
+                .as_ref()
+                .is_none_or(|old| old.created_at != chosen.created_at)
+        {
+            affected.extend(dependents(&tx, &thread.id)?);
+        }
         let internal_flag = classified(chosen)
             || (chosen.live && (classified(thread) || old.as_ref().is_some_and(classified)));
         save(&tx, chosen, internal_flag)?;
@@ -337,7 +341,7 @@ impl Index {
         }
         set_title(&tx, &thread.id, title)?;
         for id in affected {
-            relink(&tx, &id, &mut published)?;
+            relink(&tx, &id, &mut published).map_err(internal)?;
         }
         let mut upserted = Vec::new();
         for id in published {
@@ -367,7 +371,11 @@ impl Index {
                 continue;
             }
             affected.extend(dependents(&tx, &id)?);
-            published.extend(parent(&tx, &id)?.map(|value| value.thread_id));
+            published.extend(
+                parent(&tx, &id)
+                    .map_err(internal)?
+                    .map(|value| value.thread_id),
+            );
             for sql in [
                 "DELETE FROM threads WHERE id=?1",
                 "DELETE FROM calls WHERE parent=?1",
@@ -381,7 +389,7 @@ impl Index {
             changes.removed.push(id);
         }
         for id in affected {
-            relink(&tx, &id, &mut published)?;
+            relink(&tx, &id, &mut published).map_err(internal)?;
         }
         for id in published {
             changes.upserted.extend(get(&tx, &id)?);
@@ -513,6 +521,19 @@ fn migrate_internal(conn: &mut Connection) -> rusqlite::Result<()> {
         }
         tx.execute_batch("PRAGMA user_version=2;")?;
     }
+    if version < 3 {
+        let children = {
+            let mut read = tx.prepare("SELECT child FROM links ORDER BY child")?;
+            let rows = read.query_map([], |row| row.get::<_, String>(0))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        tx.execute("DELETE FROM links", [])?;
+        let mut changed = HashSet::new();
+        for child in children {
+            relink(&tx, &child, &mut changed)?;
+        }
+        tx.pragma_update(None, "user_version", 3)?;
+    }
     tx.commit()
 }
 
@@ -547,12 +568,11 @@ fn save(conn: &Connection, thread: &ThreadSummary, internal_flag: bool) -> Resul
     Ok(())
 }
 
-fn parent(conn: &Connection, id: &str) -> Result<Option<ThreadParent>> {
+fn parent(conn: &Connection, id: &str) -> rusqlite::Result<Option<ThreadParent>> {
     conn.query_row("SELECT data FROM links WHERE child=?1", [id], |row| {
         decode(row, 0)
     })
     .optional()
-    .map_err(internal)
 }
 
 fn dependents(conn: &Connection, id: &str) -> Result<Vec<String>> {
@@ -571,10 +591,11 @@ fn dependents(conn: &Connection, id: &str) -> Result<Vec<String>> {
     collect(&mut stmt, [id], |row| row.get(0))
 }
 
-fn relink(tx: &Transaction<'_>, id: &str, changed: &mut HashSet<String>) -> Result<()> {
+fn relink(tx: &Transaction<'_>, id: &str, changed: &mut HashSet<String>) -> rusqlite::Result<()> {
     let Some((summary, hint, prompt)) = tx
         .query_row(
-            "SELECT summary,hint,prompt FROM threads WHERE id=?1",
+            "SELECT t.summary,h.id,t.prompt FROM threads t
+             LEFT JOIN threads h ON h.id=t.hint AND h.id<>t.id WHERE t.id=?1",
             [id],
             |row| {
                 Ok((
@@ -584,36 +605,38 @@ fn relink(tx: &Transaction<'_>, id: &str, changed: &mut HashSet<String>) -> Resu
                 ))
             },
         )
-        .optional()
-        .map_err(internal)?
+        .optional()?
     else {
         return Ok(());
     };
-    let hint = hint.filter(|hint| hint != id && get(tx, hint).ok().flatten().is_some());
     let old = parent(tx, id)?;
     let untyped = format!(":{}", summary.native_id.to_ascii_lowercase());
-    let known_exact: bool = tx
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM call_sessions WHERE child IN (?1,?2))",
-            params![id, untyped],
-            |row| row.get(0),
-        )
-        .map_err(internal)?;
+    let known_exact: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM call_sessions WHERE child IN (?1,?2))",
+        params![id, untyped],
+        |row| row.get(0),
+    )?;
     let matching = if known_exact || hint.is_some() || links::eligible(&summary) {
         let mut stmt = tx.prepare_cached(
-            "SELECT DISTINCT parent,evidence FROM calls c WHERE parent<>?1 AND
-             (target=?2 OR (target IS NOT NULL AND parent=?3) OR (target IS NULL AND EXISTS(
+            "SELECT DISTINCT c.parent,p.summary->>'createdAt',c.evidence
+             FROM calls c JOIN threads p ON p.id=c.parent WHERE c.parent<>?1 AND
+             (c.target=?2 OR (c.target IS NOT NULL AND c.parent=?3) OR (c.target IS NULL AND EXISTS(
                SELECT 1 FROM call_sessions s WHERE s.child=?4 AND s.parent=c.parent AND s.call=c.call
              )))",
-        ).map_err(internal)?;
-        let calls = stmt
-            .query_map(params![id, summary.agent_id, hint, untyped], |row| {
-                Ok((row.get::<_, String>(0)?, decode::<Call>(row, 1)?))
-            })
-            .map_err(internal)?;
+        )?;
+        let calls = stmt.query_map(params![id, summary.agent_id, hint, untyped], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<i64>>(1)?,
+                decode::<Call>(row, 2)?,
+            ))
+        })?;
         let mut best = links::Matcher::new(&summary, hint.as_deref(), prompt.as_deref());
         for call in calls {
-            let (parent, call) = call.map_err(internal)?;
+            let (parent, created_at, mut call) = call?;
+            if call.targets.is_empty() {
+                call.start = call.start.or(created_at);
+            }
             best.consider(parent, &call);
         }
         best.finish()
@@ -635,15 +658,15 @@ fn relink(tx: &Transaction<'_>, id: &str, changed: &mut HashSet<String>) -> Resu
         changed.insert(id.into());
         changed.extend(old.map(|link| link.thread_id));
         if let Some(link) = matching {
+            let data = serde_json::to_string(&link)
+                .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
             tx.execute(
                 "INSERT OR REPLACE INTO links VALUES (?1,?2,?3)",
-                params![id, link.thread_id, json(&link)?],
-            )
-            .map_err(internal)?;
+                params![id, link.thread_id, data],
+            )?;
             changed.insert(link.thread_id);
         } else {
-            tx.execute("DELETE FROM links WHERE child=?1", [id])
-                .map_err(internal)?;
+            tx.execute("DELETE FROM links WHERE child=?1", [id])?;
         }
     }
     Ok(())
@@ -997,5 +1020,96 @@ mod tests {
             assert_eq!(loaded.status, ThreadStatus::Idle);
             assert!(!loaded.live);
         }
+    }
+
+    #[test]
+    fn migrates_v2_links_with_current_source_and_timestamp_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("index.db");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.pragma_update(None, "user_version", 2).unwrap();
+        let mut summary = crate::service::summary(
+            "devin",
+            vetro_agent_api::SessionRecord {
+                native_id: "parent".into(),
+                title: "Parent".into(),
+                preview: None,
+                cwd: None,
+                created_at: Some(20),
+                updated_at: 35,
+                source: ThreadSource::Cli,
+                origin: None,
+                model: None,
+                resumable: true,
+                parent_native_id: None,
+                internal: false,
+            },
+        );
+        save(&conn, &summary, false).unwrap();
+        let link = ThreadParent {
+            thread_id: summary.id,
+            call_id: Some("call".into()),
+            confidence: vetro_proto::LinkConfidence::Exact,
+        };
+        let evidence = serde_json::json!({
+            "id": "call",
+            "targets": [],
+            "ids": ["desktop", "older", "valid"],
+            "command": "Read an existing log",
+            "cwd": null,
+            "start": null,
+            "end": null
+        });
+        conn.execute(
+            "INSERT INTO calls VALUES (?1, ':call', NULL, ?2)",
+            params![link.thread_id, evidence.to_string()],
+        )
+        .unwrap();
+        for (native_id, source, created_at) in [
+            ("desktop", ThreadSource::Desktop, 30),
+            ("older", ThreadSource::Exec, 10),
+            ("valid", ThreadSource::Exec, 25),
+        ] {
+            summary.id = format!("claude:{native_id}");
+            summary.agent_id = "claude".into();
+            summary.native_id = native_id.into();
+            summary.source = source;
+            summary.created_at = Some(created_at);
+            save(&conn, &summary, false).unwrap();
+            conn.execute(
+                "INSERT INTO call_sessions VALUES (?1, ?2, ':call')",
+                params![format!(":{native_id}"), link.thread_id],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO links VALUES (?1, ?2, ?3)",
+                params![summary.id, link.thread_id, json(&link).unwrap()],
+            )
+            .unwrap();
+        }
+        drop(conn);
+
+        let mut reader =
+            Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        let snapshot = reader.transaction().unwrap();
+        assert!(parent(&snapshot, "claude:desktop").unwrap().is_some());
+        for _ in 0..2 {
+            let index = Index::open(dir.path()).unwrap();
+            assert_eq!(
+                index.links().unwrap(),
+                vec![("claude:valid".into(), link.clone())]
+            );
+            let version: u32 = index
+                .0
+                .lock()
+                .unwrap()
+                .pragma_query_value(None, "user_version", |row| row.get(0))
+                .unwrap();
+            assert_eq!(version, 3);
+        }
+        assert!(parent(&snapshot, "claude:desktop").unwrap().is_some());
+        snapshot.commit().unwrap();
+        assert!(parent(&reader, "claude:desktop").unwrap().is_none());
     }
 }

@@ -401,9 +401,8 @@ impl Agent for AcpAgent {
                     },
                 };
                 info.auth.methods.clone_from(&runtime.methods);
-                if self.id == "devin" {
-                    runtime.connection.apply_auth_probe(auth_state);
-                } else if caps.list
+                if self.id != "devin"
+                    && caps.list
                     && *runtime.connection.auth.lock().unwrap() == AuthState::Unknown
                 {
                     runtime
@@ -420,7 +419,10 @@ impl Agent for AcpAgent {
                         })
                         .await;
                 }
-                info.auth.state = *runtime.connection.auth.lock().unwrap();
+                let process_auth = *runtime.connection.auth.lock().unwrap();
+                if process_auth != AuthState::Unknown {
+                    info.auth.state = process_auth;
+                }
             }
             Err(error) => info.error = Some(error.message),
         }
@@ -447,11 +449,30 @@ impl Agent for AcpAgent {
     }
 
     async fn recover_auth(&self) -> Result<bool> {
-        let connection = self.connection.lock().unwrap().upgrade();
-        match connection {
-            Some(connection) if self.previous_method.is_some() => connection.recover_auth().await,
-            _ => Ok(false),
-        }
+        let Some(previous_method) = &self.previous_method else {
+            return Ok(false);
+        };
+        let Some(runtime) = self.runtime.lock().await.clone() else {
+            return Ok(false);
+        };
+        let needs_method = previous_method.lock().unwrap().is_none()
+            && *runtime.connection.auth.lock().unwrap() == AuthState::Required;
+        let fallback = if needs_method
+            && runtime
+                .methods
+                .iter()
+                .any(|method| method.id == "devin-browser")
+        {
+            match self.resolved_spec() {
+                Ok(spec) if devin_auth_status(&spec).await.0 == AuthState::Ok => {
+                    Some("devin-browser")
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+        runtime.connection.recover_auth(fallback).await
     }
 
     fn options_need_session(&self) -> bool {

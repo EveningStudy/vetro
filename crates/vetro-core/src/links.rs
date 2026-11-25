@@ -24,7 +24,7 @@ pub(crate) struct Call {
     pub ids: Vec<String>,
     command: String,
     cwd: Option<String>,
-    start: Option<i64>,
+    pub start: Option<i64>,
     end: Option<i64>,
     #[serde(default)]
     activity: bool,
