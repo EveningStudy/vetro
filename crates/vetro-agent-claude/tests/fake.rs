@@ -27,6 +27,7 @@ const PREFIX: &[&str] = &[
     "--permission-prompts",
     "host",
     "--permission-prompt-tool=stdio",
+    "--allow-dangerously-skip-permissions",
     "--include-hook-events",
     "--replay-user-messages",
     "--forward-subagent-text",
@@ -299,7 +300,7 @@ async fn test() {
         format!("{content}\n{{\"type\":\"user\"")
     );
     let (sink, _events) = unbounded_channel();
-    assert!(agent.launch_only_option("effort"));
+    assert!(agent.resume_option_at_launch("effort"));
     let resumed = agent
         .attach_with_options(
             ID,
@@ -315,6 +316,24 @@ async fn test() {
     expected.extend(["--resume", ID, "--effort", "low"]);
     assert_eq!(spawn["args"], json!(expected));
     assert_eq!(spawn["cwd"], json!(original));
+    assert!(resumed
+        .current_options()
+        .unwrap()
+        .iter()
+        .any(|option| option.id == "mode" && option.current_value == "default"));
+    assert!(resumed
+        .set_option("mode", "bypassPermissions")
+        .await
+        .unwrap()
+        .iter()
+        .any(|option| option.id == "mode" && option.current_value == "bypassPermissions"));
+    assert!(resumed
+        .set_option("effort", "high")
+        .await
+        .unwrap()
+        .iter()
+        .any(|option| option.id == "effort" && option.current_value == "high"));
+    assert_eq!(resumed.wire_log().snapshot()[0], log[0]);
     assert!(info.capabilities.fork.whole);
     assert!(!info.capabilities.fork.at_turn);
     let (sink, _events) = unbounded_channel();
@@ -380,7 +399,10 @@ fn fake(args: &[String]) {
                     "initialize" => {
                         assert_eq!(req, &json!({"subtype":"initialize"}));
                         json!({
-                            "models":[{"value":"haiku","displayName":"Haiku","supportedEffortLevels":["low"],"defaultEffortLevel":"low"}],
+                            "models":[
+                                {"value":"haiku","displayName":"Haiku","supportedEffortLevels":["low"],"defaultEffortLevel":"low"},
+                                {"value":"default","displayName":"Default","supportedEffortLevels":["low","high"],"defaultEffortLevel":"low"}
+                            ],
                             "commands":[{"name":"help","description":"Help","argumentHint":""}],
                             "claude_code_version":"test-version","current_permission_mode":"default",
                             "account":{"subscriptionType":"pro","apiProvider":"vertex"}
@@ -391,7 +413,14 @@ fn fake(args: &[String]) {
                         json!({})
                     }
                     "set_permission_mode" => {
-                        assert_eq!(req["mode"], "plan");
+                        assert!(matches!(
+                            req["mode"].as_str(),
+                            Some("plan" | "bypassPermissions")
+                        ));
+                        json!({"mode":req["mode"]})
+                    }
+                    "apply_flag_settings" => {
+                        assert_eq!(req["settings"], json!({"effortLevel":"high"}));
                         json!({})
                     }
                     "interrupt" => json!({}),

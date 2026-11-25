@@ -1,3 +1,6 @@
+#[cfg(feature = "claude")]
+#[path = "fixtures/claude.rs"]
+mod claude;
 mod fixtures;
 
 use std::{
@@ -30,6 +33,11 @@ const REMOTE_HOST: &str = "vetro.example.test:8443";
 const REMOTE_ORIGIN: &str = "https://vetro.example.test:8443";
 
 fn main() {
+    #[cfg(feature = "claude")]
+    if std::env::args().nth(1).as_deref() == Some("-p") {
+        claude::fake();
+        return;
+    }
     if let Some(port) = std::env::var_os("VETRO_TEST_TAILSCALE_PORT") {
         fake_tailscale(port.to_str().unwrap());
         return;
@@ -82,6 +90,10 @@ fn main() {
             )
             .await
             .unwrap();
+            #[cfg(feature = "claude")]
+            tokio::time::timeout(Duration::from_secs(30), claude::exercise())
+                .await
+                .unwrap();
         });
     assert_eq!(before, tree(path));
     assert!(path.join(".vetro/config.json").exists());

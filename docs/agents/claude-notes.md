@@ -7,13 +7,16 @@ Verified on Windows with Claude Code 2.1.330. The adapter uses the installed exe
 ```text
 claude -p --input-format stream-json --output-format stream-json --verbose
   --include-partial-messages --permission-prompts host --permission-prompt-tool=stdio
+  --allow-dangerously-skip-permissions
   --include-hook-events --replay-user-messages --forward-subagent-text
   (--session-id <uuid> | --resume <uuid>)
 ```
 
-`--permission-prompts host` accepted `initialize` by itself, but the native `Write` request was denied by the CLI without a host round-trip. Adding the SDK's `--permission-prompt-tool=stdio` produced `can_use_tool` with a native permission suggestion. `--replay-user-messages` gives user UUID acknowledgments. `--forward-subagent-text` asks the CLI to include subagent text and thinking with its parent tool-use ID. Start-time model, mode and effort flags require an explicit user choice. There are no environment overrides. The CLI recorded these runs as `sdk-cli`, mapped to `Exec` with the raw label retained.
+`--permission-prompts host` accepted `initialize` by itself, but the native `Write` request was denied by the CLI without a host round-trip. Adding the SDK's `--permission-prompt-tool=stdio` produced `can_use_tool` with a native permission suggestion. `--allow-dangerously-skip-permissions` makes `bypassPermissions` selectable through `set_permission_mode` while retaining the CLI's normal startup permission mode. In the Windows control probe, `initialize` reported `default` with or without the flag, and only the launch with the flag accepted the switch to `bypassPermissions`. Model, mode and effort flags on start or resume carry explicit user choices. `--replay-user-messages` gives user UUID acknowledgments. `--forward-subagent-text` asks the CLI to include subagent text and thinking with its parent tool-use ID. There are no environment overrides. The CLI recorded these runs as `sdk-cli`, mapped to `Exec` with the raw label retained.
 
 The handshake carries only `subtype: initialize`. Its reply supplies models, command metadata, the CLI version, permission mode, and account information. `Agent::info` exposes the subscription type or provider label. The `system/init` frame supplies the effective model and the native session ID, command names and tools. Raw frames are available in the session wire log. Both startup and `--resume` emitted the installed SessionStart hook's `ai-memory` output. Model and mode changes were acknowledged through `set_model` and `set_permission_mode`. Authentication is performed in the user’s Claude Code terminal.
+
+On 2.1.330, a prompt-free `--no-session-persistence` probe reported `applied.effort: medium` through `get_settings`. `set_effort` returned an unsupported subtype error, and `set_model` with an `effort` field left the applied effort at `medium`. `apply_flag_settings` with `settings: { "effortLevel": "high" }` changed the session's applied effort to `high`. Vetro uses this session-scoped control request while idle. If the CLI reports that the request is unsupported, Vetro resumes the idle session with `--effort` and any saved model and permission mode choices. Vetro keeps these choices in its thread overlay and passes them when resuming a detached session.
 
 ## Trimmed native wire
 
@@ -50,5 +53,4 @@ The history listing scans top-level project JSONL files and skips large payload 
 
 - `ToolCall` lacks typed child items. Claude Agent calls carry their nested timeline in `output.subagentItems` and preserve the native result in `output.result`.
 - `SessionEvent` has no tool inventory event, so the inventory is visible in the raw `system/init` frame. `Session::native_id()` cannot represent an ID changed by a native session reset.
-- `ConfigOption` has no launch-only attribute, so the effort option has an explanatory description. This adapter applies effort at launch.
 - Claude's message shape provides text and images. The adapter returns a bad-request error for a structured local file mention because it has no native representation that preserves the original prompt.

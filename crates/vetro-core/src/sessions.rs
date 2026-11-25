@@ -670,11 +670,19 @@ impl Thread {
         still_live
     }
 
-    async fn attach(self: &Arc<Self>) -> Result<Arc<dyn Session>> {
+    async fn attach(self: &Arc<Self>, change: Option<(&str, &str)>) -> Result<Arc<dyn Session>> {
         let summary = {
             let state = self.state.lock().unwrap();
             if let Some(session) = &state.session {
-                return Ok(session.clone());
+                let Some((id, _)) = change else {
+                    return Ok(session.clone());
+                };
+                if state.active() {
+                    return Err(AgentError::new(
+                        ErrorCode::Busy,
+                        format!("Wait for the current turn to finish before changing {id}"),
+                    ));
+                }
             }
             state.summary.clone()
         };
@@ -689,17 +697,19 @@ impl Thread {
         let (sink, events) = mpsc::unbounded_channel();
         let registry = core.registry();
         let agent = registry.get(&summary.agent_id)?;
-        let (launch, mut choices): (Vec<_>, Vec<_>) = core
-            .home
-            .read_state(|state| {
-                state
-                    .threads
-                    .get(&summary.id)
-                    .map(|overlay| overlay.options.clone())
-                    .unwrap_or_default()
-            })
+        let mut saved = core.home.read_state(|state| {
+            state
+                .threads
+                .get(&summary.id)
+                .map(|overlay| overlay.options.clone())
+                .unwrap_or_default()
+        });
+        if let Some((id, value)) = change {
+            saved.insert(id.to_owned(), value.to_owned());
+        }
+        let (launch, mut choices): (Vec<_>, Vec<_>) = saved
             .into_iter()
-            .partition(|(id, _)| agent.launch_only_option(id));
+            .partition(|(id, _)| agent.resume_option_at_launch(id));
         let launch: BTreeMap<_, _> = launch.into_iter().collect();
         let result = core
             .user_agent_call_on(&registry, &summary.agent_id, || {
@@ -712,7 +722,7 @@ impl Thread {
             })
             .await;
         if let Err(error) = &result {
-            if error.code == ErrorCode::NotResumable {
+            if change.is_none() && error.code == ErrorCode::NotResumable {
                 let mut state = self.state.lock().unwrap();
                 state.summary.resumable = false;
                 state.changed(&core);
@@ -723,6 +733,23 @@ impl Thread {
             session.detach().await;
             return Err(internal("Agent attached to a different native session"));
         }
+        let requested_options = if let Some((id, value)) = change {
+            let options = session.current_options().unwrap_or_default();
+            if !options
+                .iter()
+                .any(|option| option.id == id && option.current_value == value)
+            {
+                session.detach().await;
+                return Err(bad_request(format!("Agent did not apply {id}={value}")));
+            }
+            if let Err(error) = Self::save_option(&core, &summary.id, id, value) {
+                session.detach().await;
+                return Err(error);
+            }
+            Some(options)
+        } else {
+            None
+        };
         choices.sort_by_key(|(id, _)| match id.as_str() {
             "model" => 0,
             "mode" | "permissions" | "approvalPolicy" | "sandbox" => 1,
@@ -771,13 +798,27 @@ impl Thread {
             let _ = sink.send(SessionEvent::Options(options));
         }
         drop(sink);
-        let mut state = self.state.lock().unwrap();
-        state.session = Some(session.clone());
-        state.summary.live = true;
-        state.last_activity = Instant::now();
-        state.raw_saved_at = None;
-        state.changed(&core);
-        self.listen(state.generation, events);
+        let previous = {
+            let mut state = self.state.lock().unwrap();
+            let previous = state.session.replace(session.clone());
+            if let Some(previous) = &previous {
+                state.generation += 1;
+                self.persist_log(&core, &summary.id, previous);
+            }
+            if let Some(options) = requested_options {
+                state.set_options(&options);
+                state.emit(&core, ThreadEvent::Options { options });
+            }
+            state.summary.live = true;
+            state.last_activity = Instant::now();
+            state.raw_saved_at = None;
+            state.changed(&core);
+            self.listen(state.generation, events);
+            previous
+        };
+        if let Some(previous) = previous {
+            previous.detach().await;
+        }
         Ok(session)
     }
 
@@ -811,7 +852,7 @@ impl Thread {
                 return Ok(());
             }
         }
-        let session = self.attach().await?;
+        let session = self.attach(None).await?;
         self.send_now(&core, session, content).await
     }
 
@@ -923,25 +964,46 @@ impl Thread {
         params: ThreadSetOptionParams,
     ) -> Result<OptionsResult> {
         let _operation = self.operations.lock().await;
-        let session = self.attach().await?;
         let core = self.core();
-        let agent_id = self.state.lock().unwrap().summary.agent_id.clone();
-        let options = core
-            .user_agent_call(&agent_id, || {
-                session.set_option(&params.option_id, &params.value)
-            })
+        let (agent_id, live) = {
+            let state = self.state.lock().unwrap();
+            (state.summary.agent_id.clone(), state.session.is_some())
+        };
+        let registry = core.registry();
+        let agent = registry.get(&agent_id)?;
+        if live || !agent.resume_option_at_launch(&params.option_id) {
+            let session = self.attach(None).await?;
+            let result = core
+                .user_agent_call_on(&registry, &agent_id, || {
+                    session.set_option(&params.option_id, &params.value)
+                })
+                .await;
+            match result {
+                Ok(options) => {
+                    Self::save_option(&core, &params.thread_id, &params.option_id, &params.value)?;
+                    let generation = self.state.lock().unwrap().generation;
+                    self.handle(generation, SessionEvent::Options(options.clone()));
+                    return Ok(OptionsResult { options });
+                }
+                Err(error) if agent.retry_option_on_resume(&params.option_id, &error) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        self.attach(Some((&params.option_id, &params.value)))
             .await?;
+        let options = self.state.lock().unwrap().options.clone();
+        Ok(OptionsResult { options })
+    }
+
+    fn save_option(core: &Core, thread_id: &str, id: &str, value: &str) -> Result<()> {
         core.home.change_state(|state| {
             state
                 .threads
-                .entry(params.thread_id)
+                .entry(thread_id.to_owned())
                 .or_default()
                 .options
-                .insert(params.option_id, params.value);
-        })?;
-        let generation = self.state.lock().unwrap().generation;
-        self.handle(generation, SessionEvent::Options(options.clone()));
-        Ok(OptionsResult { options })
+                .insert(id.to_owned(), value.to_owned());
+        })
     }
 
     pub(crate) async fn respond(self: &Arc<Self>, params: ThreadRespondParams) -> Result<()> {

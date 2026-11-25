@@ -347,7 +347,10 @@ pub trait Agent: Send + Sync + 'static {
         cwd: Option<&Path>,
         sink: EventSink,
     ) -> Result<Arc<dyn Session>>;
-    fn launch_only_option(&self, _id: &str) -> bool {
+    fn resume_option_at_launch(&self, _id: &str) -> bool {
+        false
+    }
+    fn retry_option_on_resume(&self, _id: &str, _error: &AgentError) -> bool {
         false
     }
     async fn attach_with_options(
@@ -378,6 +381,9 @@ pub trait Agent: Send + Sync + 'static {
 pub trait Session: Send + Sync + 'static {
     fn native_id(&self) -> &str;
     fn initial_options(&self) -> Option<AgentOptions> {
+        None
+    }
+    fn current_options(&self) -> Option<Vec<ConfigOption>> {
         None
     }
     async fn send(&self, content: Vec<ContentBlock>) -> Result<()>;

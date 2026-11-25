@@ -81,6 +81,7 @@ impl ClaudeSession {
                 "--permission-prompts",
                 "host",
                 "--permission-prompt-tool=stdio",
+                "--allow-dangerously-skip-permissions",
                 "--include-hook-events",
                 "--replay-user-messages",
                 "--forward-subagent-text",
@@ -386,6 +387,10 @@ impl Session for ClaudeSession {
         &self.id
     }
 
+    fn current_options(&self) -> Option<Vec<ConfigOption>> {
+        Some(self.state.lock().unwrap().options())
+    }
+
     async fn send(&self, content: Vec<ContentBlock>) -> Result<()> {
         let blocks = prompt_blocks(&content)?;
         let id = uuid()?;
@@ -442,20 +447,40 @@ impl Session for ClaudeSession {
         if value.is_empty() {
             return Err(bad_request("Claude option value cannot be empty"));
         }
+        let _writes = self.writes.lock().await;
         let request = match option_id {
             "model" => json!({"subtype":"set_model","model":value}),
             "mode" => json!({"subtype":"set_permission_mode","mode":value}),
-            "effort" => return Err(bad_request("Claude Code supports --effort at launch")),
+            "effort" => {
+                let state = self.state.lock().unwrap();
+                if state.status() != ThreadStatus::Idle {
+                    return Err(AgentError::new(
+                        ErrorCode::Busy,
+                        "Wait for the current turn to finish before changing effort",
+                    ));
+                }
+                if !state.options().iter().any(|option| {
+                    option.id == "effort"
+                        && option.choices.iter().any(|choice| choice.value == value)
+                }) {
+                    return Err(bad_request(
+                        "Effort level is unavailable for the current model",
+                    ));
+                }
+                json!({"subtype":"apply_flag_settings","settings":{"effortLevel":value}})
+            }
             _ => return Err(bad_request(format!("Unknown Claude option: {option_id}"))),
         };
-        let _writes = self.writes.lock().await;
         self.control(request, Duration::from_secs(15)).await?;
         let mut state = self.state.lock().unwrap();
-        if option_id == "model" {
-            value.clone_into(&mut state.model);
-            self.emit(SessionEvent::Model(Some(value.to_owned())));
-        } else {
-            value.clone_into(&mut state.mode);
+        match option_id {
+            "model" => {
+                value.clone_into(&mut state.model);
+                self.emit(SessionEvent::Model(Some(value.to_owned())));
+            }
+            "mode" => value.clone_into(&mut state.mode),
+            "effort" => value.clone_into(&mut state.effort),
+            _ => unreachable!(),
         }
         let options = state.options();
         self.emit(SessionEvent::Options(options.clone()));
@@ -580,15 +605,13 @@ impl State {
                 if !choices.iter().any(|choice| choice.value == effort_value) {
                     choices.insert(0, choice(effort_value));
                 }
-                let mut effort = option(
+                options.push(option(
                     "effort",
                     "Effort",
                     ConfigCategory::ThoughtLevel,
                     effort_value,
                     choices,
-                );
-                effort.description = Some("Applies when starting a session".into());
-                options.push(effort);
+                ));
             }
         }
         if !mode.is_empty() {

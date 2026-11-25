@@ -240,8 +240,14 @@ impl Agent for ClaudeAgent {
             .await
     }
 
-    fn launch_only_option(&self, id: &str) -> bool {
+    fn resume_option_at_launch(&self, id: &str) -> bool {
+        matches!(id, "effort" | "model" | "mode")
+    }
+
+    fn retry_option_on_resume(&self, id: &str, error: &AgentError) -> bool {
         id == "effort"
+            && error.code == ErrorCode::BadRequest
+            && error.message == "Unsupported control request subtype: apply_flag_settings"
     }
 
     async fn attach_with_options(
