@@ -7,6 +7,7 @@ import {
   CornerDownRightIcon,
   CornerLeftUpIcon,
   FileDiffIcon,
+  FolderGit2Icon,
   FolderOpenIcon,
   GitBranchIcon,
   GitForkIcon,
@@ -328,13 +329,18 @@ function ThreadHeader({ thread, threadId }: { thread: OpenThread | undefined; th
   const cwd = summary.cwd?.trim() ? summary.cwd : null;
   const quickChat = isQuickChatPath(cwd, dataDir);
   const branch = useStore((s) => (cwd && !quickChat ? s.gitStatus[cwd]?.branch : null));
+  const worktrees = useStore((s) => (cwd && !quickChat ? s.worktrees[cwd] : undefined));
+  const currentWorktree = worktrees?.isRepo ? worktrees.worktrees.find((w) => w.isCurrent && !w.isMain) : undefined;
   const idle = summary.status === "idle" || summary.status === "error";
   const modelOption = thread?.options.find((option) => option.category === "model");
   const model = (modelOption && prepare(modelOption).find((choice) => choice.value === modelOption.currentValue)?.label) ?? summary.model;
   const source = summary.source !== "vetro" ? t("thread.from", { source: sourceLabel(summary, agent?.name, t) }) : null;
 
   useEffect(() => {
-    if (cwd && !quickChat && idle) void actions.refreshGitStatus(cwd);
+    if (cwd && !quickChat && idle) {
+      void actions.refreshGitStatus(cwd);
+      void actions.refreshWorktrees(cwd);
+    }
   }, [cwd, quickChat, idle]);
 
   const where = (
@@ -396,6 +402,14 @@ function ThreadHeader({ thread, threadId }: { thread: OpenThread | undefined; th
               <GitBranchIcon className="size-3 shrink-0" />
               <span className="truncate font-mono text-[11px]">{branch}</span>
             </span>
+          ) : null}
+          {currentWorktree && worktrees ? (
+            <Tip label={t("worktree.mainRepo", { path: tildePath(worktrees.mainRoot, home) })}>
+              <span className="inline-flex h-4.5 shrink-0 items-center gap-1 rounded-[5px] bg-foreground/[0.05] px-1.5 text-[11px] dark:bg-foreground/[0.07] max-sm:hidden">
+                <FolderGit2Icon className="size-3 shrink-0" />
+                {t("worktree.badge")}
+              </span>
+            </Tip>
           ) : null}
         </div>
       </div>

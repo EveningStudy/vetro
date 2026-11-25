@@ -1,9 +1,11 @@
 import { ArrowDownIcon, LayersIcon } from "lucide-react";
 import { Fragment, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { Item, ItemOf } from "~/api/types";
+import type { Item, ItemOf, RewindFilesResult } from "~/api/types";
 import { type MessageKey, type Translate, useT } from "~/i18n";
 import { actions, isCatalogStub, useStore } from "~/state/store";
+import { errorMessage, toast } from "~/state/toast";
 import { Button } from "../ui/button";
+import { Dialog, DialogDescription, DialogPopup, DialogTitle } from "../ui/overlay";
 import { Spinner } from "../ui/primitives";
 import { ThreadCwdContext } from "./threadContext";
 import { AgentMessage, NoticeRow, PlanCard, Reasoning, RequestItem, ToolCallRow, TurnEnd, UserMessage } from "./Items";
@@ -111,6 +113,8 @@ function ItemView({
   isLastTurn,
   onFork,
   forkLabel,
+  onRollback,
+  onRewindFiles,
 }: {
   item: Item;
   threadId: string;
@@ -118,10 +122,12 @@ function ItemView({
   isLastTurn?: boolean;
   onFork?: () => void;
   forkLabel?: string;
+  onRollback?: () => void;
+  onRewindFiles?: () => void;
 }) {
   switch (item.type) {
     case "user_message":
-      return <UserMessage item={item} />;
+      return <UserMessage item={item} onRollback={onRollback} onRewindFiles={onRewindFiles} />;
     case "agent_message":
       return <AgentMessage item={item} />;
     case "reasoning":
@@ -258,6 +264,16 @@ function TimelineRows({ items, threadId, dockRequests }: { items: Item[]; thread
   });
   const canForkAtTurn = (forkCaps & 1) !== 0;
   const canForkWhole = (forkCaps & 2) !== 0;
+  const historyCaps = useStore((s) => {
+    const summary = s.threads[threadId] ?? s.open[threadId]?.summary;
+    if (!summary?.resumable || summary.status === "running" || summary.status === "awaiting_input") return 0;
+    const edit = s.agents.find((agent) => agent.id === summary.agentId)?.capabilities.historyEdit;
+    return (edit?.rollbackConversation ? 1 : 0) | (edit?.rewindFiles ? 2 : 0) | (edit?.previewRewindFiles ? 4 : 0);
+  });
+  const canRollback = (historyCaps & 1) !== 0;
+  const canRewind = (historyCaps & 2) !== 0;
+  const canPreviewRewind = (historyCaps & 4) !== 0;
+  const [historyEdit, setHistoryEdit] = useState<HistoryEditTarget | null>(null);
   const segments = useMemo(
     () =>
       segment(
@@ -315,20 +331,202 @@ function TimelineRows({ items, threadId, dockRequests }: { items: Item[]; thread
         }
         const isLastTurn = current.item.type === "turn_end" && current.item.id === lastTurnEndId;
         const fork = forkFor(current.item, isLastTurn);
+        const item = current.item;
+        const turnId = item.turnId;
+        const isUser = item.type === "user_message";
         return (
-          <div key={current.item.id} data-item-id={current.item.id} className={spacing(segments[index - 1], current)}>
+          <div key={item.id} data-item-id={item.id} className={spacing(segments[index - 1], current)}>
             <ItemView
-              item={current.item}
+              item={item}
               threadId={threadId}
-              answerText={current.item.type === "turn_end" ? turnAnswers.get(current.item.id) : undefined}
+              answerText={item.type === "turn_end" ? turnAnswers.get(item.id) : undefined}
               isLastTurn={isLastTurn}
               onFork={fork.onFork}
               forkLabel={fork.forkLabel}
+              onRollback={isUser && canRollback && turnId ? () => setHistoryEdit({ kind: "rollback", turnId }) : undefined}
+              onRewindFiles={isUser && canRewind ? () => setHistoryEdit({ kind: "rewind", userMessageId: item.id }) : undefined}
             />
           </div>
         );
       })}
+      {historyEdit?.kind === "rollback" ? (
+        <RollbackDialog threadId={threadId} turnId={historyEdit.turnId} onClose={() => setHistoryEdit(null)} />
+      ) : historyEdit?.kind === "rewind" ? (
+        <RewindFilesDialog
+          threadId={threadId}
+          userMessageId={historyEdit.userMessageId}
+          canPreview={canPreviewRewind}
+          onClose={() => setHistoryEdit(null)}
+        />
+      ) : null}
     </ThreadCwdContext>
+  );
+}
+
+type HistoryEditTarget = { kind: "rollback"; turnId: string } | { kind: "rewind"; userMessageId: string };
+
+function RollbackDialog({ threadId, turnId, onClose }: { threadId: string; turnId: string; onClose: () => void }) {
+  const t = useT();
+  const [busy, setBusy] = useState(false);
+  const confirm = () => {
+    setBusy(true);
+    void actions.rollbackThread(threadId, turnId).then((ok) => {
+      setBusy(false);
+      if (ok) onClose();
+    });
+  };
+  return (
+    <Dialog open onOpenChange={(open) => !open && !busy && onClose()}>
+      <DialogPopup className="max-w-md" showClose={!busy}>
+        <div className="flex flex-col gap-4 p-5">
+          <div className="flex flex-col gap-1.5 pe-8">
+            <DialogTitle>{t("history.rollbackTitle")}</DialogTitle>
+            <DialogDescription>{t("history.rollbackBody")}</DialogDescription>
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" disabled={busy} onClick={onClose}>
+              {t("common.cancel")}
+            </Button>
+            <Button variant="destructive" disabled={busy} onClick={confirm}>
+              {busy ? <Spinner className="size-3.5" /> : null}
+              {t("history.rollbackConfirm")}
+            </Button>
+          </div>
+        </div>
+      </DialogPopup>
+    </Dialog>
+  );
+}
+
+type RewindState = { phase: "loading" } | { phase: "ready"; result: RewindFilesResult | null } | { phase: "error"; message: string };
+
+function RewindFilesDialog({
+  threadId,
+  userMessageId,
+  canPreview,
+  onClose,
+}: {
+  threadId: string;
+  userMessageId: string;
+  canPreview: boolean;
+  onClose: () => void;
+}) {
+  const t = useT();
+  const [state, setState] = useState<RewindState>(canPreview ? { phase: "loading" } : { phase: "ready", result: null });
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (!canPreview) return;
+    let cancelled = false;
+    actions
+      .rewindFiles(threadId, userMessageId, true)
+      .then((result) => !cancelled && setState({ phase: "ready", result }))
+      .catch((error: unknown) => !cancelled && setState({ phase: "error", message: errorMessage(error) }));
+    return () => {
+      cancelled = true;
+    };
+  }, [threadId, userMessageId, canPreview]);
+
+  const confirm = () => {
+    setBusy(true);
+    actions
+      .rewindFiles(threadId, userMessageId, false)
+      .then((result) => {
+        if (result.canRewind) {
+          toast.success(t("history.rewound"));
+          onClose();
+        } else setState({ phase: "ready", result });
+      })
+      .catch((error: unknown) => setState({ phase: "error", message: errorMessage(error) }))
+      .finally(() => setBusy(false));
+  };
+
+  const preview = state.phase === "ready" ? state.result : null;
+  const failure =
+    state.phase === "error" ? state.message : preview && !preview.canRewind ? (preview.error ?? t("history.rewindUnavailable")) : null;
+  const ready = state.phase === "ready" && !failure;
+
+  return (
+    <Dialog open onOpenChange={(open) => !open && !busy && onClose()}>
+      <DialogPopup className="max-w-md" showClose={!busy}>
+        <div className="flex min-h-0 flex-col gap-4 p-5">
+          <div className="flex flex-col gap-1.5 pe-8">
+            <DialogTitle>{t("history.rewindTitle")}</DialogTitle>
+            {ready ? <DialogDescription>{t("history.rewindBody")}</DialogDescription> : null}
+          </div>
+          {state.phase === "loading" ? (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Spinner className="size-3.5" />
+              {t("history.checking")}
+            </div>
+          ) : failure ? (
+            <p className="rounded-lg border border-destructive/24 bg-destructive/4 px-3 py-2 text-sm text-destructive-foreground">{failure}</p>
+          ) : preview ? (
+            <RewindPreview result={preview} />
+          ) : null}
+          <div className="flex justify-end gap-2">
+            {ready ? (
+              <>
+                <Button variant="ghost" disabled={busy} onClick={onClose}>
+                  {t("common.cancel")}
+                </Button>
+                <Button disabled={busy} onClick={confirm}>
+                  {busy ? <Spinner className="size-3.5" /> : null}
+                  {t("history.rewindConfirm")}
+                </Button>
+              </>
+            ) : (
+              <Button variant="ghost" onClick={onClose}>
+                {t("common.close")}
+              </Button>
+            )}
+          </div>
+        </div>
+      </DialogPopup>
+    </Dialog>
+  );
+}
+
+function RewindPreview({ result }: { result: RewindFilesResult }) {
+  const t = useT();
+  const files = result.filesChanged;
+  return (
+    <div className="flex min-h-0 flex-col gap-2">
+      {files.length === 0 ? (
+        <p className="text-sm text-muted-foreground">{t("history.rewindNoFiles")}</p>
+      ) : (
+        <>
+          <div className="flex items-baseline justify-between gap-2 text-xs text-muted-foreground">
+            <span>{t("history.rewindFileList", { n: files.length })}</span>
+            {result.insertions || result.deletions ? (
+              <span className="font-mono tabular-nums">
+                <span className="text-diff-addition-foreground">+{result.insertions ?? 0}</span>{" "}
+                <span className="text-diff-deletion-foreground">−{result.deletions ?? 0}</span>
+              </span>
+            ) : null}
+          </div>
+          <ul className="max-h-48 overflow-y-auto rounded-lg border bg-muted/40 px-3 py-2 font-mono text-xs">
+            {files.map((file) => (
+              <li key={file} className="truncate py-0.5" title={file}>
+                {file}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      {result.skippedLinks.length > 0 ? (
+        <div className="rounded-lg border border-warning/32 bg-warning-surface px-3 py-2 text-xs text-warning-foreground">
+          <p>{t("history.rewindSkipped")}</p>
+          <ul className="mt-1 font-mono">
+            {result.skippedLinks.map((link) => (
+              <li key={link} className="truncate" title={link}>
+                {link}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </div>
   );
 }
 

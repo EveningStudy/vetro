@@ -31,7 +31,7 @@ export const agents: AgentInfo[] = [
     path: `${HOME}\\.local\\bin\\claude.exe`,
     version: "2.1.31",
     auth: { state: "ok", methods: [], account: "Claude Pro" },
-    capabilities: { imageInput: true, midTurnInput: false, resume: true, listSessions: true, fork: { whole: true, atTurn: false } },
+    capabilities: { imageInput: true, midTurnInput: false, resume: true, listSessions: true, fork: { whole: true, atTurn: false }, historyEdit: { rollbackConversation: false, rewindFiles: true, previewRewindFiles: true } },
     error: null,
     rateLimits: [
       { label: "5h", usedPercent: 28, resetsAt: now + 50 * MIN },
@@ -47,7 +47,7 @@ export const agents: AgentInfo[] = [
     path: `${HOME}\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\vendor\\x86_64-pc-windows-msvc\\codex\\codex.exe`,
     version: "0.98.0",
     auth: { state: "ok", methods: [], account: "ChatGPT Plus", provider: "litellm", endpoint: "http://127.0.0.1:4000" },
-    capabilities: { imageInput: true, midTurnInput: true, resume: true, listSessions: true, fork: { whole: true, atTurn: true } },
+    capabilities: { imageInput: true, midTurnInput: true, resume: true, listSessions: true, fork: { whole: true, atTurn: true }, historyEdit: { rollbackConversation: true, rewindFiles: false, previewRewindFiles: false } },
     error: null,
     rateLimits: [
       { label: "5h", usedPercent: 84, resetsAt: now + 50 * MIN },
@@ -71,7 +71,7 @@ export const agents: AgentInfo[] = [
       ],
       account: null,
     },
-    capabilities: { imageInput: true, midTurnInput: false, resume: true, listSessions: true, fork: { whole: false, atTurn: false } },
+    capabilities: { imageInput: true, midTurnInput: false, resume: true, listSessions: true, fork: { whole: false, atTurn: false }, historyEdit: { rollbackConversation: false, rewindFiles: false, previewRewindFiles: false } },
     error: null,
   },
   {
@@ -82,7 +82,7 @@ export const agents: AgentInfo[] = [
     path: "D:\\Software\\Devin\\resources\\app\\extensions\\windsurf\\devin\\bin\\devin.exe",
     version: "2026.11.4",
     auth: { state: "ok", methods: [{ id: "devin-browser", name: "Sign in with browser", description: null }], account: "Devin Max" },
-    capabilities: { imageInput: true, midTurnInput: false, resume: true, listSessions: true, fork: { whole: false, atTurn: false } },
+    capabilities: { imageInput: true, midTurnInput: false, resume: true, listSessions: true, fork: { whole: false, atTurn: false }, historyEdit: { rollbackConversation: false, rewindFiles: false, previewRewindFiles: false } },
     error: null,
   },
   {
@@ -93,7 +93,7 @@ export const agents: AgentInfo[] = [
     path: null,
     version: null,
     auth: { state: "unknown", methods: [], account: null },
-    capabilities: { imageInput: false, midTurnInput: false, resume: false, listSessions: false, fork: { whole: false, atTurn: false } },
+    capabilities: { imageInput: false, midTurnInput: false, resume: false, listSessions: false, fork: { whole: false, atTurn: false }, historyEdit: { rollbackConversation: false, rewindFiles: false, previewRewindFiles: false } },
     error: "Command not found: goose",
   },
 ];

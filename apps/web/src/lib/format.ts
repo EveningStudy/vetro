@@ -38,6 +38,12 @@ export function formatTokens(n: number | null | undefined) {
   return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
 }
 
+export function formatBytes(n: number) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(n < 10 * 1024 ? 1 : 0).replace(/\.0$/, "")} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1).replace(/\.0$/, "")} MB`;
+}
+
 export function basename(path: string | null | undefined) {
   if (!path) return "";
   return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;

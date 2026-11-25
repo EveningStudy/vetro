@@ -661,6 +661,29 @@ export class MockTransport implements Transport {
       return {};
     },
     "threads.raw": (params) => ({ entries: this.thread(params.threadId).raw.slice(-(params.limit ?? 2000)) }),
+    "threads.rollback": (params) => {
+      const thread = this.thread(params.threadId);
+      if (this.runs.has(params.threadId)) throw new RpcFailure("busy", "A turn is already running");
+      const index = thread.items.findIndex((item) => item.turnId === params.beforeTurnId);
+      if (index < 0) throw new RpcFailure("not_found", "No such turn");
+      thread.items = thread.items.slice(0, index);
+      this.updateSummary(thread, {});
+      return this.handlers["threads.open"]({ threadId: params.threadId, limit: 200 }) as Result<"threads.open">;
+    },
+    "threads.rewindFiles": (params) => {
+      const thread = this.thread(params.threadId);
+      if (!thread.items.some((item) => item.id === params.userMessageId && item.type === "user_message"))
+        return { canRewind: false, dryRun: params.dryRun, error: "No file checkpoint for this message", filesChanged: [], insertions: null, deletions: null, skippedLinks: [] };
+      return {
+        canRewind: true,
+        dryRun: params.dryRun,
+        error: null,
+        filesChanged: MOCK_GIT_FILES.slice(0, 2).map((file) => file.path),
+        insertions: 3,
+        deletions: 14,
+        skippedLinks: [],
+      };
+    },
     "search.threads": (params) => this.search(params),
     "fs.list": (params) => this.list(params),
     "fs.find": (params) => this.find(params),
@@ -684,6 +707,36 @@ export class MockTransport implements Transport {
       if (file.path.endsWith(".png")) return { path: file.path, oldText: null, newText: null, diff: null, binary: true, truncated: false };
       if (file.status === "untracked") return { path: file.path, oldText: null, newText: MOCK_NEW_FILE, diff: null, binary: false, truncated: false };
       return { path: file.path, oldText: null, newText: null, diff: MOCK_DIFF, binary: false, truncated: false };
+    },
+    "workspace.readFile": (params) => {
+      const path = params.path.replace(/\\/g, "/");
+      const resolvedPath = /^(?:[a-z]:|\/)/i.test(path) || !params.cwd ? path : `${params.cwd}\\${path.replace(/\//g, "\\")}`;
+      if (/\.(?:png|jpe?g|gif|webp)$/i.test(path)) {
+        const base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+        return { path, resolvedPath, sizeBytes: 68, content: { kind: "image", mimeType: "image/png", base64 } };
+      }
+      if (/\.(?:pdf|bin|woff2?)$/i.test(path)) {
+        return { path, resolvedPath, sizeBytes: 4096, content: { kind: "unsupported", reason: "Binary file" } };
+      }
+      const markdown = /\.(?:md|markdown)$/i.test(path);
+      const text = markdown
+        ? "# Vetro\n\nA thin client for the coding agents already on your machine.\n\n- Zero injection\n- Zero footprint\n\n```ts\nconst answer = 42;\n```\n"
+        : MOCK_NEW_FILE + MOCK_DIFF.replace(/^[+-]/gm, "");
+      const language = markdown ? "markdown" : (path.split(".").at(-1) ?? null);
+      return { path, resolvedPath, sizeBytes: new TextEncoder().encode(text).length, content: { kind: "text", text, language, truncated: false } };
+    },
+    "workspace.worktrees": (params) => {
+      if (!/[\\/]vetro(?:-preview-drawer)?$/i.test(params.cwd)) return { isRepo: false, mainRoot: null, worktrees: [] };
+      const main = params.cwd.replace(/-preview-drawer$/i, "");
+      const linked = `${main}-preview-drawer`;
+      return {
+        isRepo: true,
+        mainRoot: main,
+        worktrees: [
+          { path: main, branch: "main", head: "4f2c1a9", isMain: true, isCurrent: params.cwd === main, detached: false },
+          { path: linked, branch: "feat/preview-drawer", head: "9b07e3d", isMain: false, isCurrent: params.cwd === linked, detached: false },
+        ],
+      };
     },
     "workspace.openExternal": () => {
       this.desktopOnly();

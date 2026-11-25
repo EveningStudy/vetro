@@ -13,14 +13,17 @@ import type {
   QueuedMessage,
   RemoteStatus,
   RequestResolution,
+  RewindFilesResult,
   ServerEvent,
   Settings,
   SlashCommand,
   ThreadEvent,
+  ThreadOpenResult,
   ThreadStatus,
   ThreadSummary,
   ThreadUsage,
   VoiceStatus,
+  WorktreesResult,
 } from "~/api/types";
 import { translate } from "~/i18n";
 import { connectPrefs, type Filters, flushPrefs, getPrefs, type PrefsData, resolvedLanguage, sanitizeFilters, savePrefs, setSidebarCollapsed, usePrefs } from "./prefs";
@@ -53,7 +56,8 @@ export type RightDrawer =
   | { kind: "raw" }
   | { kind: "changes" }
   | { kind: "children"; parentId: string }
-  | { kind: "child"; threadId: string; fromParentId?: string };
+  | { kind: "child"; threadId: string; fromParentId?: string }
+  | { kind: "preview"; cwd: string; path: string; line?: number };
 
 interface State {
   connection: ConnectionStatus;
@@ -82,6 +86,8 @@ interface State {
   unreadCompleted: Record<string, boolean>;
   /** Read-only Git summary per working directory, fetched when a thread opens or a turn ends. */
   gitStatus: Record<string, GitStatusResult>;
+  /** Read-only list of Git worktrees per working directory. */
+  worktrees: Record<string, WorktreesResult>;
   voice: VoiceStatus | null;
   voiceProgress: { stage: string; downloadedBytes: number; totalBytes: number; done: boolean; error: string | null } | null;
 }
@@ -144,6 +150,7 @@ export const useStore = create<State>(() => ({
   loadingMore: false,
   unreadCompleted: {},
   gitStatus: {},
+  worktrees: {},
   voice: null,
   voiceProgress: null,
 }));
@@ -299,6 +306,10 @@ function handleEvent(event: ServerEvent) {
       break;
     case "index.progress":
       break;
+    case "app.resync":
+      void loadLists().catch((error) => toast.error(errorMessage(error)));
+      for (const id of Object.keys(get().open)) void actions.openThread(id, true).catch(() => undefined);
+      break;
   }
 }
 
@@ -450,6 +461,34 @@ function leavesChildDrawer(from: Route, to: Route) {
 }
 
 const gitInflight = new Map<string, Promise<GitStatusResult | null>>();
+const worktreeInflight = new Map<string, Promise<WorktreesResult | null>>();
+
+function applySnapshot(threadId: string, result: ThreadOpenResult) {
+  generations.set(threadId, (generations.get(threadId) ?? 0) + 1);
+  const previous = get().open[threadId];
+  set({
+    open: {
+      ...get().open,
+      [threadId]: {
+        summary: result.thread,
+        items: sortItems(result.items),
+        hasMore: result.hasMore,
+        seq: result.seq,
+        options: result.options,
+        commands: result.commands,
+        usage: result.usage,
+        queue: result.queue ?? [],
+        scrollSignal: (previous?.scrollSignal ?? 0) + 1,
+        loadingOlder: false,
+      },
+    },
+    threads: { ...get().threads, [threadId]: result.thread },
+  });
+}
+
+function threadCwd(threadId: string) {
+  return get().open[threadId]?.summary.cwd ?? get().threads[threadId]?.cwd ?? null;
+}
 
 /** Root threads in sidebar order — the Active list (same rule as the sidebar) first, then newest
  * restricted to what the sidebar would list. Backs Alt+Arrow cycling and Alt+1..9 jumps. */
@@ -731,6 +770,47 @@ export const actions = {
       .finally(() => gitInflight.delete(cwd));
     gitInflight.set(cwd, promise);
     return promise;
+  },
+
+  refreshWorktrees(cwd: string): Promise<WorktreesResult | null> {
+    const inflight = worktreeInflight.get(cwd);
+    if (inflight) return inflight;
+    const promise = client()
+      .request("workspace.worktrees", { cwd })
+      .then((result) => {
+        set({ worktrees: { ...get().worktrees, [cwd]: result } });
+        return result;
+      })
+      .catch(() => null)
+      .finally(() => worktreeInflight.delete(cwd));
+    worktreeInflight.set(cwd, promise);
+    return promise;
+  },
+
+  async rollbackThread(threadId: string, beforeTurnId: string): Promise<boolean> {
+    try {
+      const result = await client().request("threads.rollback", { threadId, beforeTurnId });
+      applySnapshot(threadId, result);
+      const cwd = result.thread.cwd;
+      if (cwd) void actions.refreshGitStatus(cwd);
+      return true;
+    } catch (error) {
+      toast.error(errorMessage(error));
+      return false;
+    }
+  },
+
+  async rewindFiles(threadId: string, userMessageId: string, dryRun: boolean): Promise<RewindFilesResult> {
+    const result = await client().request("threads.rewindFiles", { threadId, userMessageId, dryRun });
+    if (!dryRun && result.canRewind) {
+      const cwd = threadCwd(threadId);
+      if (cwd) void actions.refreshGitStatus(cwd);
+    }
+    return result;
+  },
+
+  openPreviewDrawer(cwd: string, path: string, line?: number) {
+    set({ rightDrawer: { kind: "preview", cwd, path, ...(line ? { line } : {}) } });
   },
 
   async openExternal(cwd: string, target: OpenTarget, path?: string, line?: number) {

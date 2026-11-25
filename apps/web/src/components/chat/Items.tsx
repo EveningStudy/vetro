@@ -13,6 +13,7 @@ import {
   FolderInputIcon,
   GitForkIcon,
   GlobeIcon,
+  HistoryIcon,
   InfoIcon,
   ListTodoIcon,
   PlugIcon,
@@ -21,6 +22,7 @@ import {
   SquareTerminalIcon,
   Trash2Icon,
   TriangleAlertIcon,
+  Undo2Icon,
   WrenchIcon,
   XIcon,
 } from "lucide-react";
@@ -61,7 +63,15 @@ function Timestamp({ ts }: { ts: number | null }) {
   );
 }
 
-export const UserMessage = memo(function UserMessage({ item }: { item: ItemOf<"user_message"> }) {
+export const UserMessage = memo(function UserMessage({
+  item,
+  onRollback,
+  onRewindFiles,
+}: {
+  item: ItemOf<"user_message">;
+  onRollback?: () => void;
+  onRewindFiles?: () => void;
+}) {
   const t = useT();
   const [copied, setCopied] = useState(false);
   const text = item.content.map((block) => (block.type === "text" ? block.text : "")).join("\n");
@@ -115,6 +125,30 @@ export const UserMessage = memo(function UserMessage({ item }: { item: ItemOf<"u
         >
           {copied ? <CheckIcon className="size-3" /> : <CopyIcon className="size-3" />}
         </button>
+        {onRewindFiles ? (
+          <Tip label={t("history.rewindFiles")}>
+            <button
+              type="button"
+              aria-label={t("history.rewindFiles")}
+              className="inline-flex size-5 items-center justify-center rounded hover:bg-accent hover:text-foreground"
+              onClick={onRewindFiles}
+            >
+              <HistoryIcon className="size-3" />
+            </button>
+          </Tip>
+        ) : null}
+        {onRollback ? (
+          <Tip label={t("history.rollback")}>
+            <button
+              type="button"
+              aria-label={t("history.rollback")}
+              className="inline-flex size-5 items-center justify-center rounded hover:bg-accent hover:text-foreground"
+              onClick={onRollback}
+            >
+              <Undo2Icon className="size-3" />
+            </button>
+          </Tip>
+        ) : null}
       </div>
     </div>
   );

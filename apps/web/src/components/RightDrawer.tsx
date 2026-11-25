@@ -9,6 +9,7 @@ import { actions, useStore } from "~/state/store";
 import { AgentIcon } from "./AgentIcon";
 import { Timeline } from "./chat/Timeline";
 import { ChangesPanel } from "./drawer/ChangesPanel";
+import { PreviewPanel } from "./drawer/PreviewPanel";
 import { useMediaQuery, useNow } from "./hooks";
 import { RawLogPanel } from "./RawLogPanel";
 import { Button } from "./ui/button";
@@ -85,6 +86,8 @@ export function RightDrawer({ threadId }: { threadId: string }) {
           <ChangesPanel threadId={threadId} />
         ) : drawer.kind === "children" ? (
           <ChildSessionsList key={drawer.parentId} parentId={drawer.parentId} />
+        ) : drawer.kind === "preview" ? (
+          <PreviewPanel key={`${drawer.cwd}\n${drawer.path}`} cwd={drawer.cwd} path={drawer.path} line={drawer.line} />
         ) : (
           <ChildSessionPeek key={drawer.threadId} threadId={drawer.threadId} fromParentId={drawer.fromParentId} />
         )}

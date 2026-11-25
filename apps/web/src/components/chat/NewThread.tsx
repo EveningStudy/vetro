@@ -1,9 +1,9 @@
-import { ChevronDownIcon, KeyRoundIcon, SlidersHorizontalIcon } from "lucide-react";
+import { ChevronDownIcon, FolderGit2Icon, KeyRoundIcon, SlidersHorizontalIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { client } from "~/api/client";
-import type { AgentInfo, ConfigOption, SlashCommand } from "~/api/types";
+import type { AgentInfo, ConfigOption, SlashCommand, WorktreeInfo, WorktreesResult } from "~/api/types";
 import { useT } from "~/i18n";
-import { shortVersion } from "~/lib/format";
+import { basename, shortVersion, tildePath } from "~/lib/format";
 import { cn } from "~/lib/utils";
 import { getPrefs, rememberAgentOption, resolveSavedAgentOptions, savePrefs, usePrefs } from "~/state/prefs";
 import { actions, useStore } from "~/state/store";
@@ -61,6 +61,17 @@ export function NewThread({ projectPath, agentId: routeAgent }: { projectPath: s
   }, [projects, dataDir, lastProject]);
   const effectiveCwd = cwd;
   const realProjectCwd = effectiveCwd && !isScratchOrTempPath(effectiveCwd) && !isQuickChatPath(effectiveCwd, dataDir) ? effectiveCwd : null;
+  const worktreeCwd = effectiveCwd && !isQuickChatPath(effectiveCwd, dataDir) ? effectiveCwd : null;
+  const worktrees = useStore((s) => {
+    if (!worktreeCwd) return undefined;
+    const direct = s.worktrees[worktreeCwd];
+    if (direct) return direct;
+    return Object.values(s.worktrees).find((result) => result.worktrees.some((wt) => samePath(wt.path, worktreeCwd)));
+  });
+
+  useEffect(() => {
+    if (worktreeCwd) void actions.refreshWorktrees(worktreeCwd);
+  }, [worktreeCwd]);
 
   const hydrateLoadedOptions = (
     targetAgentId: string,
@@ -280,6 +291,9 @@ export function NewThread({ projectPath, agentId: routeAgent }: { projectPath: s
           below={
             <div className="flex min-w-0 items-center gap-1">
               <ProjectPicker projects={visibleProjects} value={effectiveCwd} home={home} onChange={setCwd} onAddFolder={() => setBrowsing(true)} />
+              {effectiveCwd && worktrees?.isRepo && worktrees.worktrees.length > 1 ? (
+                <WorktreePicker result={worktrees} cwd={effectiveCwd} home={home} onChange={setCwd} />
+              ) : null}
             </div>
           }
         />
@@ -330,6 +344,63 @@ function AgentPicker({ agents, current, onChange }: { agents: AgentInfo[]; curre
               </MenuRadioItem>
             );
           })}
+        </MenuRadioGroup>
+      </MenuPopup>
+    </Menu>
+  );
+}
+
+function samePath(a: string, b: string) {
+  const normalize = (path: string) => path.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  return normalize(a) === normalize(b);
+}
+
+function WorktreePicker({
+  result,
+  cwd,
+  home,
+  onChange,
+}: {
+  result: WorktreesResult;
+  cwd: string;
+  home: string | undefined;
+  onChange: (path: string) => void;
+}) {
+  const t = useT();
+  const list = result.worktrees;
+  const current = list.find((wt) => samePath(wt.path, cwd)) ?? list.find((wt) => wt.isCurrent);
+  const label = (wt: WorktreeInfo) => wt.branch ?? (wt.detached && wt.head ? wt.head.slice(0, 7) : basename(wt.path));
+  return (
+    <Menu>
+      <MenuTrigger className={cn(composerControlClass, "max-w-[12rem]")} aria-label={t("worktree.switch")}>
+        <FolderGit2Icon className="shrink-0" />
+        <span className="min-w-0 truncate">{current ? label(current) : t("worktree.badge")}</span>
+        {current && !current.isMain ? <span className="shrink-0 text-2xs text-muted-foreground">{t("worktree.badge")}</span> : null}
+        <ChevronDownIcon className="-me-1 size-3 opacity-70" />
+      </MenuTrigger>
+      <MenuPopup side="top" align="start" className="w-80">
+        <MenuGroupLabel>{t("worktree.switch")}</MenuGroupLabel>
+        <MenuRadioGroup
+          value={current?.path ?? ""}
+          onValueChange={(value) => {
+            const path = String(value);
+            if (path && !samePath(path, cwd)) onChange(path);
+          }}
+        >
+          {list.map((wt) => (
+            <MenuRadioItem key={wt.path} value={wt.path} className="items-start py-1.5">
+              <span className="flex min-w-0 flex-col">
+                <span className="flex items-center gap-1.5">
+                  <span className="truncate font-mono text-xs">{label(wt)}</span>
+                  {wt.isMain ? <span className="shrink-0 text-2xs text-muted-foreground">{t("worktree.main")}</span> : null}
+                  {wt.detached ? <span className="shrink-0 text-2xs text-muted-foreground">{t("worktree.detached")}</span> : null}
+                </span>
+                <span className="truncate font-mono text-[11px] text-muted-foreground" title={wt.path}>
+                  {tildePath(wt.path, home)}
+                </span>
+              </span>
+            </MenuRadioItem>
+          ))}
         </MenuRadioGroup>
       </MenuPopup>
     </Menu>

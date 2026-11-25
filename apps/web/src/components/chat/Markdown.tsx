@@ -1,4 +1,4 @@
-import { CheckIcon, CodeIcon, CopyIcon, FolderOpenIcon } from "lucide-react";
+import { CheckIcon, CodeIcon, CopyIcon, EyeIcon, FolderOpenIcon } from "lucide-react";
 import { type Token, type Tokens, Lexer } from "marked";
 import { Fragment, memo, type ReactNode, useMemo, useState } from "react";
 import { useT } from "~/i18n";
@@ -53,7 +53,7 @@ const LINE_SUFFIX = /(?:#L(\d+)(?:C\d+)?(?:-L?\d+(?:C\d+)?)?|:(\d+)(?::\d+)?(?:-
 const UNIX_ROOTS = new Set(["Users", "home", "usr", "opt", "etc", "var", "tmp", "private", "Volumes", "mnt", "root", "srv", "Applications", "Library", "nix", "bin", "sbin"]);
 const DOMAIN_LIKE = /^(?:www\.|[\w-]+\.(?:com|org|net|io|dev|ai|app|co|sh)$)/i;
 const RELATIVE_SEGMENT = /^[\w@.+\-()[\]]+$/;
-const BINARY_FILE = /\.(?:exe|msi|dll|dmg|appimage|so|dylib|pkg|deb|rpm|iso|zip|7z|gz|tar|rar)$/i;
+const NO_PREVIEW = /\.(?:exe|msi|dll|dmg|appimage|so|dylib|pkg|deb|rpm|iso|zip|7z|gz|tar|rar)$/i;
 
 function splitLine(value: string): FileTarget {
   const match = LINE_SUFFIX.exec(value);
@@ -157,9 +157,16 @@ function FileRef({ target, variant, children }: { target: FileTarget; variant: "
   const label = target.line ? `${target.path}:${target.line}` : target.path;
   const className = cn("chat-file-ref", variant === "link" && "chat-file-ref-link");
   const copy = () => void copyText(target.path).then(() => toast.success(t("common.copied")));
+  const previewable = !NO_PREVIEW.test(target.path);
   if (!local) {
+    const preview = !!cwd && previewable && !isAbsolutePath(target.path);
     return (
-      <button type="button" title={label} className={className} onClick={copy}>
+      <button
+        type="button"
+        title={label}
+        className={className}
+        onClick={preview && cwd ? () => actions.openPreviewDrawer(cwd, target.path, target.line) : copy}
+      >
         {children}
       </button>
     );
@@ -175,16 +182,22 @@ function FileRef({ target, variant, children }: { target: FileTarget; variant: "
         <div title={label} dir="rtl" className="truncate px-2 pt-1 pb-1.5 text-left font-mono text-2xs text-muted-foreground">
           <bdi>{label}</bdi>
         </div>
+        {previewable ? (
+          <MenuItem onClick={() => actions.openPreviewDrawer(openCwd, path, target.line)}>
+            <EyeIcon />
+            {t("open.preview")}
+          </MenuItem>
+        ) : null}
         <MenuItem onClick={() => void actions.openExternal(openCwd, "folder", path)}>
           <FolderOpenIcon />
           {t("open.reveal")}
         </MenuItem>
-        {BINARY_FILE.test(target.path) ? null : (
+        {previewable ? (
           <MenuItem onClick={() => void actions.openExternal(openCwd, "editor", path, target.line)}>
             <CodeIcon />
             {t("open.editor")}
           </MenuItem>
-        )}
+        ) : null}
         <MenuSeparator />
         <MenuItem onClick={copy}>
           <CopyIcon />
