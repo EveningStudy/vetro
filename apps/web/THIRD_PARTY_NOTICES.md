@@ -14,8 +14,9 @@ terminal or browser-preview code is included.
 | `src/components/ui/primitives.tsx` | Badge, Kbd, Switch and input styling from `src/components/ui/{badge,kbd,switch,input}.tsx`. |
 | `src/components/ui/overlay.tsx` | Tooltip, menu, popover and dialog popup styling from `src/components/ui/{tooltip,menu,dialog,dialog-styles}.tsx`. |
 | `src/components/chat/WorkLog.tsx` | Work-log row layout from `src/components/chat/WorkLog.tsx`. |
-| `src/components/chat/OptionPicker.tsx` | Composer control styling from `src/components/chat/ComposerControl.tsx`. |
-| `src/components/chat/Composer.tsx` | Send and stop button styling from `src/components/chat/ComposerPrimaryActions.tsx`; composer surface from `ComposerSurface.tsx`. |
+| `src/components/chat/OptionPicker.tsx` | Composer control styling (sizes, typography, icon sizes, hover, open and focus states) from `src/components/chat/ComposerControl.tsx`. |
+| `src/components/chat/Composer.tsx` | Send and stop button styling from `src/components/chat/ComposerPrimaryActions.tsx`; composer surface outline and highlight from `ComposerSurface.tsx`; the strip under the composer from `ComposerSurface.tsx` (`ContextStrip`); the context meter's tones, value styling and tooltip layout from `ThreadDetailsUsage.tsx` (`ThreadDetailsContext`). |
+| `src/components/chat/RateLimits.tsx` | Usage chip, hairline bar, warning/error tones and tooltip rows from `src/components/chat/ThreadDetailsUsage.tsx` (`UsageRow`, `LimitRow`) and `src/components/usage/UsageLimits.tsx` (`LimitWindows`). |
 | `src/components/sidebar/Sidebar.tsx` | Project folder header and thread row styling from `src/components/sidebar/SidebarProjectFolderHeader.tsx` and `SidebarThreadRow.tsx`. |
 | `src/components/chat/Items.tsx` | User message bubble styling from `TimelineUserMessageRow.tsx`. |
 | `src/components/AgentIcon.tsx`, `src/assets/antigravity.png` | OpenAI and Claude marks from `src/components/Icons.tsx`; the Antigravity image from `apps/mobile/assets/antigravity.png`. The marks belong to their owners and are used only to identify each agent. |

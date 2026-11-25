@@ -28,7 +28,7 @@ const SEARCHABLE_AFTER = 12;
 
 // Trigger styling follows T3 Code's ComposerControl (MIT).
 export const composerControlClass =
-  "relative inline-flex h-7 shrink-0 cursor-pointer items-center justify-center gap-1.5 whitespace-nowrap rounded-(--control-radius) border border-transparent px-2 font-medium text-foreground/80 text-sm outline-none hover:bg-accent hover:text-foreground data-popup-open:bg-accent focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-64 sm:text-[13px] [&_svg]:shrink-0 [&_svg:not([class*='text-'])]:text-muted-foreground [&_svg:not([class*='size-'])]:size-4 sm:[&_svg:not([class*='size-'])]:size-3.5";
+  "relative inline-flex h-7 shrink-0 cursor-pointer items-center justify-center gap-1.5 whitespace-nowrap rounded-(--control-radius) border border-transparent px-2 font-medium text-base text-foreground/80 outline-none transition-colors hover:bg-accent hover:text-foreground data-popup-open:bg-accent data-popup-open:text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-64 sm:text-sm [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg]:-mx-0.5 [&_svg:not([class*='text-'])]:text-muted-foreground [&_svg:not([class*='size-'])]:size-4.5 sm:[&_svg:not([class*='size-'])]:size-4";
 
 type Choice = ConfigOption["choices"][number] & { label: string; section: string };
 
@@ -108,7 +108,7 @@ export function OptionPicker({
   const label = current?.label || option.name;
   const triggerClass = cn(
     composerControlClass,
-    danger ? "shrink-0" : option.category === "model" ? "min-w-[4.5rem] max-w-[11rem] shrink" : "max-w-[9rem] @max-[36rem]:px-1.5",
+    danger ? "shrink-0" : option.category === "model" ? "min-w-[4.5rem] max-w-[11rem] shrink" : "max-w-[9rem] @min-[40rem]:max-w-[14rem] @max-[36rem]:px-1.5",
     danger &&
       "border-destructive/40 bg-error-surface/70 text-destructive-foreground hover:bg-error-surface hover:text-destructive-foreground [&_svg:not([class*='text-'])]:text-destructive-foreground",
   );

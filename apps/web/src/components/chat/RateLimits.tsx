@@ -1,3 +1,4 @@
+import { Fragment } from "react";
 import type { AgentInfo, RateLimit, ThreadUsage } from "~/api/types";
 import { type Translate, useT } from "~/i18n";
 import { cn } from "~/lib/utils";
@@ -29,15 +30,25 @@ export function shownPercent(limit: RateLimit, display: UsageDisplay) {
 }
 
 export function limitTone(limit: RateLimit) {
-  if (limit.usedPercent >= 100) return "text-destructive";
-  if (limit.usedPercent >= 80) return "text-warning";
+  const level = limitLevel(limit);
+  if (level === "error") return "text-destructive";
+  if (level === "warning") return "text-warning";
   return "text-muted-foreground";
 }
 
 export function limitBarTone(limit: RateLimit) {
-  if (limit.usedPercent >= 100) return "bg-destructive";
-  if (limit.usedPercent >= 80) return "bg-warning";
+  const level = limitLevel(limit);
+  if (level === "error") return "bg-destructive";
+  if (level === "warning") return "bg-warning";
   return "bg-muted-foreground/60";
+}
+
+export type UsageTone = "error" | "warning" | null;
+
+export function limitLevel(limit: RateLimit): UsageTone {
+  if (limit.usedPercent >= 100) return "error";
+  if (limit.usedPercent >= 80) return "warning";
+  return null;
 }
 
 export function formatSpan(ms: number, t: Translate) {
@@ -83,43 +94,83 @@ function headline(limits: RateLimit[]) {
   return limits.filter((limit) => top.includes(limit));
 }
 
+// Usage chips follow the label / hairline / value rows of T3 Code's ThreadDetailsUsage (MIT).
+export const usageChipClass =
+  "inline-flex h-6 shrink-0 cursor-default items-center gap-1.5 whitespace-nowrap rounded-lg px-2 text-xs leading-none outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring data-popup-open:bg-accent";
+
+export function usageValueClass(tone: UsageTone) {
+  return cn(
+    "font-medium tabular-nums",
+    tone === "error" ? "text-error-foreground" : tone === "warning" ? "text-warning-foreground" : "text-foreground/80",
+  );
+}
+
+export function usageFillClass(tone: UsageTone) {
+  if (tone === "error") return "bg-error";
+  if (tone === "warning") return "bg-warning";
+  return "bg-foreground/80";
+}
+
+export function UsageHairline({ fill, tone, className }: { fill: number; tone: UsageTone; className?: string }) {
+  return (
+    <span aria-hidden className={cn("relative h-[3px] shrink-0 rounded-full bg-muted-foreground/30 dark:bg-muted-foreground/20", className)}>
+      {fill > 0 ? (
+        <span className={cn("absolute inset-y-0 left-0 rounded-full", usageFillClass(tone))} style={{ width: `max(${fill}%, 3px)` }} />
+      ) : null}
+    </span>
+  );
+}
+
 export function RateLimitBadge({ source }: { source: RateLimitSource }) {
   const t = useT();
   const display = usePrefs((s) => s.usageDisplay);
   const now = useNow(30_000);
   const shown = headline(source.limits);
-  const worst = shown.reduce((a, b) => (b.usedPercent > a.usedPercent ? b : a));
   const age = snapshotAge(source.updatedAt, now, t);
-  const label = (
-    <div className="flex flex-col gap-1">
-      {source.limits.map((limit) => {
-        const reset = resetLabel(limit, now, t);
-        return (
-          <div key={limit.label} className="flex items-baseline justify-between gap-4 tabular-nums">
-            <span className="font-medium">{limit.label}</span>
-            <span className="text-muted-foreground">
-              {t("usage.remaining", { n: remainingPercent(limit) })} · {t("usage.used", { n: usedPercent(limit) })}
-              {reset ? ` · ${reset}` : ""}
-            </span>
-          </div>
-        );
-      })}
-      {age ? <span className="text-muted-foreground">{age}</span> : null}
-      {source.provider ? <span className="text-muted-foreground/80">{t("usage.routed", { provider: source.provider })}</span> : null}
+  const primaryKey = display === "used" ? "usage.used" : "usage.remaining";
+  const secondaryKey = display === "used" ? "usage.remaining" : "usage.used";
+  const summary = shown.map((limit) => `${shortLimitLabel(limit.label)} ${t(primaryKey, { n: shownPercent(limit, display) })}`).join(", ");
+  const details = (
+    <div className="flex min-w-0 flex-col gap-1.5 py-0.5">
+      <span className="font-medium text-foreground">{t("usage.limits")}</span>
+      <div className="grid grid-cols-[auto_2.5rem_auto_auto_auto] items-center gap-x-2.5 gap-y-1 tabular-nums">
+        {source.limits.map((limit) => {
+          const tone = limitLevel(limit);
+          const reset = resetLabel(limit, now, t);
+          const other = display === "used" ? remainingPercent(limit) : usedPercent(limit);
+          return (
+            <Fragment key={limit.label}>
+              <span className="max-w-32 truncate text-muted-foreground">{limit.label}</span>
+              <UsageHairline fill={shownPercent(limit, display)} tone={tone} className="w-full" />
+              <span className={usageValueClass(tone)}>{t(primaryKey, { n: shownPercent(limit, display) })}</span>
+              <span className="text-muted-foreground">{t(secondaryKey, { n: other })}</span>
+              <span className="text-muted-foreground">{reset ?? ""}</span>
+            </Fragment>
+          );
+        })}
+      </div>
+      {age || source.provider ? (
+        <div className="flex flex-col gap-0.5 text-muted-foreground">
+          {age ? <span>{age}</span> : null}
+          {source.provider ? <span>{t("usage.routed", { provider: source.provider })}</span> : null}
+        </div>
+      ) : null}
     </div>
   );
   return (
-    <Tip label={label}>
-      <span
-        aria-label={t("usage.limits")}
-        className={cn("inline-flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5 text-xs tabular-nums", limitTone(worst))}
-      >
-        {shown.map((limit, index) => (
-          <span key={limit.label} className={cn("whitespace-nowrap", limitTone(limit))}>
-            {index > 0 ? <span className="me-1 text-muted-foreground/60">·</span> : null}
-            <span className="opacity-75">{shortLimitLabel(limit.label)}</span> {shownPercent(limit, display)}%
-          </span>
-        ))}
+    <Tip label={details} className="max-w-[min(28rem,calc(100vw-2rem))] px-2.5 py-1.5">
+      <span role="img" tabIndex={0} aria-label={`${t("usage.limits")}: ${summary}`} className={cn(usageChipClass, "gap-2.5")}>
+        {shown.map((limit) => {
+          const tone = limitLevel(limit);
+          const percent = shownPercent(limit, display);
+          return (
+            <span key={limit.label} className="inline-flex items-center gap-1.5">
+              <span className="text-muted-foreground">{shortLimitLabel(limit.label)}</span>
+              <UsageHairline fill={percent} tone={tone} className="w-5" />
+              <span className={usageValueClass(tone)}>{percent}%</span>
+            </span>
+          );
+        })}
       </span>
     </Tip>
   );

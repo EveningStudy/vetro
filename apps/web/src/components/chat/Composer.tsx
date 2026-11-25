@@ -12,7 +12,7 @@ import { errorMessage, toast } from "~/state/toast";
 import { Menu, MenuItem, MenuItemHint, MenuPopup, MenuTrigger, Popover, PopoverPopup, PopoverTrigger, Tip } from "../ui/overlay";
 import { Spinner } from "../ui/primitives";
 import { OptionPicker, composerControlClass, isDangerChoice } from "./OptionPicker";
-import { RateLimitBadge, rateLimitSource } from "./RateLimits";
+import { RateLimitBadge, type UsageTone, rateLimitSource, usageChipClass, usageValueClass } from "./RateLimits";
 import { VoiceButton } from "./VoiceButton";
 
 interface Attachment {
@@ -358,7 +358,7 @@ export function Composer(props: ComposerProps) {
       ) : null}
       <div
         className={cn(
-          "@container relative isolate w-full rounded-2xl border border-black/8 bg-card/90 shadow-composer backdrop-blur-[var(--glass-blur)] transition-colors dark:border-white/[0.06] dark:bg-surface-raised/90 dark:shadow-[0_14px_32px_-18px_rgb(0_0_0/75%)]",
+          "@container relative isolate w-full rounded-2xl border border-(--composer-outline) bg-card/90 shadow-composer backdrop-blur-[var(--glass-blur)] transition-colors dark:bg-surface-raised/90 dark:shadow-[inset_0_1px_var(--composer-highlight),0_14px_32px_-18px_rgb(0_0_0/75%)]",
           dragging && "border-primary/60 ring-2 ring-primary/20",
         )}
         onDragOver={(event) => {
@@ -590,12 +590,11 @@ export function Composer(props: ComposerProps) {
         </div>
       </div>
       {props.below || contextVisible || limitsVisible ? (
-        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-1 pt-2">
-          <div className="flex min-w-0 items-center gap-1 text-muted-foreground">{props.below}</div>
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-1 pt-1.5 text-muted-foreground">
+          <div className="flex min-w-0 items-center gap-1">{props.below}</div>
           {contextVisible || limitsVisible ? (
-            <div className="ms-auto flex min-w-0 items-center gap-1">
+            <div className="ms-auto flex min-w-0 items-center gap-0.5">
               {contextVisible ? <ContextMeter used={contextUsed!} window={contextWindow!} /> : null}
-              {contextVisible && limitsVisible ? <span className="mx-1 h-3 w-px shrink-0 bg-border/70" aria-hidden="true" /> : null}
               {limitsVisible ? <RateLimitBadge source={limits} /> : null}
             </div>
           ) : null}
@@ -614,28 +613,40 @@ const stopIcon = (
 function ContextMeter({ used, window }: { used: number; window: number }) {
   const t = useT();
   const ratio = Math.min(1, used / window);
-  const radius = 7;
+  const percent = Math.round(ratio * 100);
+  const tone: UsageTone = percent >= 90 ? "error" : percent >= 80 ? "warning" : null;
+  const radius = 6;
   const circumference = 2 * Math.PI * radius;
+  const summary = t("composer.contextUsed", { n: percent });
+  const details = (
+    <div className="flex flex-col gap-0.5">
+      <span className="text-foreground">{summary}</span>
+      <span className="text-muted-foreground tabular-nums">
+        {t("composer.contextTokens", { used: formatTokens(used), window: formatTokens(window) })}
+      </span>
+    </div>
+  );
   return (
-    <Tip label={t("composer.context", { used: formatTokens(used), window: formatTokens(window) })}>
-      <span className="inline-flex h-6 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-1.5 text-xs tabular-nums text-muted-foreground">
-        <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden className="-rotate-90">
-          <circle cx="8" cy="8" r={radius} fill="none" strokeWidth="2" className="stroke-foreground/12" />
-          <circle
-            cx="8"
-            cy="8"
-            r={radius}
-            fill="none"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeDasharray={circumference}
-            strokeDashoffset={circumference * (1 - ratio)}
-            className={ratio > 0.85 ? "stroke-warning" : "stroke-muted-foreground"}
-          />
+    <Tip label={details}>
+      <span role="img" tabIndex={0} aria-label={summary} className={usageChipClass}>
+        <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden className="shrink-0 -rotate-90">
+          <circle cx="8" cy="8" r={radius} fill="none" strokeWidth="2.25" className="stroke-muted-foreground/30 dark:stroke-muted-foreground/20" />
+          {ratio > 0 ? (
+            <circle
+              cx="8"
+              cy="8"
+              r={radius}
+              fill="none"
+              strokeWidth="2.25"
+              strokeLinecap="round"
+              strokeDasharray={circumference}
+              strokeDashoffset={circumference * (1 - ratio)}
+              className={tone === "error" ? "stroke-error" : tone === "warning" ? "stroke-warning" : "stroke-muted-foreground"}
+            />
+          ) : null}
         </svg>
-        <span>
-          <span className="opacity-75">{t("composer.contextShort")}</span> {Math.round(ratio * 100)}%
-        </span>
+        <span className="text-muted-foreground">{t("composer.contextShort")}</span>
+        <span className={usageValueClass(tone)}>{percent}%</span>
       </span>
     </Tip>
   );

@@ -17,11 +17,13 @@ export function Tip({
   side = "top",
   children,
   disabled,
+  className,
 }: {
   label: React.ReactNode;
   side?: TooltipPrimitive.Positioner.Props["side"];
   children: React.ReactElement;
   disabled?: boolean;
+  className?: string;
 }) {
   if (disabled || !label) return children;
   return (
@@ -29,7 +31,12 @@ export function Tip({
       <TooltipPrimitive.Trigger render={children} />
       <TooltipPrimitive.Portal>
         <TooltipPrimitive.Positioner side={side} sideOffset={6} className="pointer-events-none z-[140]">
-          <TooltipPrimitive.Popup className="relative flex max-w-80 origin-(--transform-origin) rounded-md border bg-popover px-2 py-1 text-popover-foreground text-xs leading-snug shadow-md/5 not-dark:bg-clip-padding transition-[scale,opacity] data-ending-style:scale-98 data-ending-style:opacity-0 data-instant:duration-0 data-starting-style:scale-98 data-starting-style:opacity-0">
+          <TooltipPrimitive.Popup
+            className={cn(
+              "relative flex max-w-80 origin-(--transform-origin) rounded-md border bg-popover px-2 py-1 text-popover-foreground text-xs leading-snug shadow-md/5 not-dark:bg-clip-padding transition-[scale,opacity] data-ending-style:scale-98 data-ending-style:opacity-0 data-instant:duration-0 data-starting-style:scale-98 data-starting-style:opacity-0",
+              className,
+            )}
+          >
             {label}
           </TooltipPrimitive.Popup>
         </TooltipPrimitive.Positioner>

@@ -24,6 +24,8 @@
   --workspace-topbar-height: 48px;
   --chat-content-max-width: 46rem;
   --workspace-gutter: 0.75rem;
+  --composer-outline: color-mix(in srgb, var(--foreground) 8%, transparent);
+  --composer-highlight: transparent;
 
   @variant sm {
     --workspace-gutter: 1.25rem;
@@ -34,6 +36,8 @@
     --app-scrollbar-thumb-hover: rgb(255 255 255 / 45%);
     --glass-blur: 16px;
     --glass-saturation: 1.08;
+    --composer-outline: color-mix(in srgb, var(--foreground) 6%, transparent);
+    --composer-highlight: color-mix(in srgb, var(--foreground) 3%, transparent);
   }
 }
 

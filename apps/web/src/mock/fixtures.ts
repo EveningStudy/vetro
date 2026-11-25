@@ -715,7 +715,14 @@ function childThreads(): { parent: MockThread; child: MockThread } {
     items: b.items,
     options: structuredClone(agentOptions.claude!.options),
     commands: agentOptions.claude!.commands,
-    usage: { lastTurn: usage(31_002, 1_920, 200_000), total: usage(31_002, 1_920, 200_000), rateLimits: [{ label: "5h", usedPercent: 72, resetsAt: now + 50 * MIN }] },
+    usage: {
+      lastTurn: usage(168_400, 1_920, 200_000),
+      total: usage(168_400, 1_920, 200_000),
+      rateLimits: [
+        { label: "5h", usedPercent: 86, resetsAt: now + 50 * MIN },
+        { label: "7d", usedPercent: 42, resetsAt: now + 4 * DAY },
+      ],
+    },
     raw: rawLog("claude", VETRO, b.items),
   };
   const child: MockThread = {
