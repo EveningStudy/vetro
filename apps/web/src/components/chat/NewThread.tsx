@@ -278,7 +278,7 @@ export function NewThread({ projectPath, agentId: routeAgent }: { projectPath: s
             </>
           }
           below={
-            <div className="flex items-center gap-1 px-1 pt-2 text-muted-foreground">
+            <div className="flex min-w-0 items-center gap-1">
               <ProjectPicker projects={visibleProjects} value={effectiveCwd} home={home} onChange={setCwd} onAddFolder={() => setBrowsing(true)} />
             </div>
           }
@@ -293,9 +293,9 @@ function AgentPicker({ agents, current, onChange }: { agents: AgentInfo[]; curre
   const t = useT();
   return (
     <Menu>
-      <MenuTrigger className={composerControlClass} aria-label={t("composer.agent")}>
-        {current ? <AgentIcon agentId={current.id} className="size-4" /> : null}
-        <span className="max-w-32 truncate">{current?.name ?? t("composer.agent")}</span>
+      <MenuTrigger className={cn(composerControlClass, "max-w-[8rem]")} aria-label={t("composer.agent")}>
+        {current ? <AgentIcon agentId={current.id} className="size-4 shrink-0" /> : null}
+        <span className="min-w-0 truncate">{current?.name ?? t("composer.agent")}</span>
         <ChevronDownIcon className="-me-1 size-3 opacity-70" />
       </MenuTrigger>
       <MenuPopup side="top" align="start" className="w-72">

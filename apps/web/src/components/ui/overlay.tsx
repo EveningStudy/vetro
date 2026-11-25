@@ -51,17 +51,19 @@ export function MenuPopup({
   side = "bottom",
   align = "start",
   sideOffset = 4,
+  finalFocus,
 }: {
   children: React.ReactNode;
   className?: string;
   side?: MenuPrimitive.Positioner.Props["side"];
   align?: MenuPrimitive.Positioner.Props["align"];
   sideOffset?: number;
+  finalFocus?: MenuPrimitive.Popup.Props["finalFocus"];
 }) {
   return (
     <MenuPrimitive.Portal>
       <MenuPrimitive.Positioner side={side} align={align} sideOffset={sideOffset} className="z-[130]">
-        <MenuPrimitive.Popup className={cn(popupClass, "min-w-[min(11rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)]", className)}>
+        <MenuPrimitive.Popup finalFocus={finalFocus} className={cn(popupClass, "min-w-[min(11rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)]", className)}>
           <div className="max-h-(--available-height) w-full overflow-y-auto p-1">{children}</div>
         </MenuPrimitive.Popup>
       </MenuPrimitive.Positioner>

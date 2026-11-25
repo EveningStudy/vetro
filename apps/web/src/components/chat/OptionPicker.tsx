@@ -108,13 +108,14 @@ export function OptionPicker({
   const label = current?.label || option.name;
   const triggerClass = cn(
     composerControlClass,
+    danger ? "shrink-0" : option.category === "model" ? "min-w-[4.5rem] max-w-[11rem] shrink" : "max-w-[9rem] @max-[36rem]:px-1.5",
     danger &&
       "border-destructive/40 bg-error-surface/70 text-destructive-foreground hover:bg-error-surface hover:text-destructive-foreground [&_svg:not([class*='text-'])]:text-destructive-foreground",
   );
   const trigger = (
     <>
       {option.category !== "model" || compact || danger ? <Icon /> : null}
-      <span className={cn(compact && !danger && "max-sm:hidden", "max-w-44 truncate", !current && "text-muted-foreground")}>{label}</span>
+      <span className={cn("min-w-0 max-w-44 truncate", !current && "text-muted-foreground")}>{label}</span>
       <ChevronDownIcon className="-me-1 size-3 opacity-70" />
     </>
   );

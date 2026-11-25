@@ -60,6 +60,16 @@ export function snapshotAge(updatedAt: number | null, now: number, t: Translate)
   return age < 60_000 ? t("usage.updatedNow") : t("usage.updated", { time: formatSpan(age, t) });
 }
 
+/** "codex (5h)", "5-hour" or "weekly" become "5h" / "7d" for the inline pill; tooltips keep the agent's label. */
+export function shortLimitLabel(label: string) {
+  const inner = (/^[a-z0-9_-]+\s*\(([^)]+)\)$/i.exec(label.trim())?.[1] ?? label).trim();
+  const lower = inner.toLowerCase();
+  if (lower === "weekly") return "7d";
+  if (lower === "daily") return "1d";
+  const span = /^(\d+)\s*-?\s*(m|mins?|minutes?|h|hrs?|hours?|d|days?|w|wks?|weeks?)$/.exec(lower);
+  return span ? `${span[1]}${span[2]![0]}` : inner;
+}
+
 /** The two most constrained windows, kept in the order the agent reported them. */
 function headline(limits: RateLimit[]) {
   const top = [...limits].sort((a, b) => b.usedPercent - a.usedPercent).slice(0, 2);
@@ -95,12 +105,12 @@ export function RateLimitBadge({ source }: { source: RateLimitSource }) {
     <Tip label={label}>
       <span
         aria-label={t("usage.limits")}
-        className={cn("me-1 hidden h-7 shrink-0 items-center gap-1 rounded-md px-1.5 text-xs tabular-nums sm:inline-flex", limitTone(worst))}
+        className={cn("inline-flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5 text-xs tabular-nums", limitTone(worst))}
       >
         {shown.map((limit, index) => (
           <span key={limit.label} className={cn("whitespace-nowrap", limitTone(limit))}>
             {index > 0 ? <span className="me-1 text-muted-foreground/60">·</span> : null}
-            <span className="opacity-75">{limit.label}</span> {shownPercent(limit, display)}%
+            <span className="opacity-75">{shortLimitLabel(limit.label)}</span> {shownPercent(limit, display)}%
           </span>
         ))}
       </span>

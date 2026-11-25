@@ -1,4 +1,4 @@
-import { FileIcon, ImagePlusIcon, SlashIcon, SlidersHorizontalIcon, XIcon } from "lucide-react";
+import { FileIcon, ImagePlusIcon, PlusIcon, SlashIcon, SlidersHorizontalIcon, XIcon } from "lucide-react";
 import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { client } from "~/api/client";
 import type { AgentInfo, ConfigOption, ContentBlock, QueuedMessage, SlashCommand, ThreadUsage } from "~/api/types";
@@ -8,7 +8,7 @@ import { cn } from "~/lib/utils";
 import { usePrefs } from "~/state/prefs";
 import { actions, useStore } from "~/state/store";
 import { errorMessage, toast } from "~/state/toast";
-import { Popover, PopoverPopup, PopoverTrigger, Tip } from "../ui/overlay";
+import { Menu, MenuItem, MenuItemHint, MenuPopup, MenuTrigger, Popover, PopoverPopup, PopoverTrigger, Tip } from "../ui/overlay";
 import { Spinner } from "../ui/primitives";
 import { OptionPicker, composerControlClass, isDangerChoice } from "./OptionPicker";
 import { RateLimitBadge, rateLimitSource } from "./RateLimits";
@@ -183,6 +183,31 @@ export function Composer(props: ComposerProps) {
     });
   };
 
+  const openTrigger = (next: string, caret: number) => {
+    setDraft(next);
+    setTrigger(findTrigger(next, caret));
+    setHighlight(0);
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(caret, caret);
+    });
+  };
+
+  const startMention = () => {
+    const area = textareaRef.current;
+    const start = area ? area.selectionStart : draft.length;
+    const end = area ? area.selectionEnd : draft.length;
+    const before = draft.slice(0, start);
+    const insert = before.length > 0 && !/\s$/.test(before) ? " @" : "@";
+    openTrigger(before + insert + draft.slice(end), start + insert.length);
+  };
+
+  const startCommand = () => {
+    const existing = /^\/\S*/.exec(draft)?.[0];
+    if (existing) openTrigger(draft, existing.length);
+    else openTrigger(`/${draft}`, 1);
+  };
+
   const addFiles = async (list: FileList | File[]) => {
     const images = [...list].filter(isImageFile);
     if (images.length === 0) return;
@@ -228,6 +253,10 @@ export function Composer(props: ComposerProps) {
   const showContext = usePrefs((s) => s.composerShowContext);
   const showLimits = usePrefs((s) => s.composerShowLimits);
   const limits = useMemo(() => rateLimitSource(props.usage, props.agent), [props.usage, props.agent]);
+  const contextVisible = showContext && !!contextUsed && contextUsed > 0 && !!contextWindow && contextWindow > 0;
+  const limitsVisible = showLimits && limits.limits.length > 0;
+  const canMention = Boolean(props.cwd) && !props.readOnly;
+  const canCommand = props.commands.length > 0 && !props.readOnly;
 
   const queuedPreview = (content: ContentBlock[]) => {
     const text = content
@@ -265,7 +294,7 @@ export function Composer(props: ComposerProps) {
       ) : null}
       <div
         className={cn(
-          "relative isolate w-full rounded-2xl border border-black/8 bg-card/90 shadow-composer backdrop-blur-[var(--glass-blur)] transition-colors dark:border-white/[0.06] dark:bg-surface-raised/90 dark:shadow-[0_14px_32px_-18px_rgb(0_0_0/75%)]",
+          "@container relative isolate w-full rounded-2xl border border-black/8 bg-card/90 shadow-composer backdrop-blur-[var(--glass-blur)] transition-colors dark:border-white/[0.06] dark:bg-surface-raised/90 dark:shadow-[0_14px_32px_-18px_rgb(0_0_0/75%)]",
           dragging && "border-primary/60 ring-2 ring-primary/20",
         )}
         onDragOver={(event) => {
@@ -383,19 +412,38 @@ export function Composer(props: ComposerProps) {
           className="block max-h-[40vh] min-h-[3.25rem] w-full resize-none bg-transparent px-4 pt-3.5 pb-1 text-base leading-relaxed text-foreground outline-none placeholder:text-placeholder disabled:cursor-not-allowed sm:text-sm"
         />
         <div className="flex items-center gap-1 px-2 pt-1 pb-2">
-          <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto [scrollbar-width:none]">
+          <div className="flex min-w-0 flex-1 items-center gap-0.5 @max-[36rem]:flex-wrap @max-[36rem]:gap-y-1">
+            <Menu>
+              <Tip label={t("composer.add")}>
+                <MenuTrigger disabled={props.readOnly} className={cn(composerControlClass, "px-1.5")} aria-label={t("composer.add")}>
+                  <PlusIcon />
+                </MenuTrigger>
+              </Tip>
+              <MenuPopup side="top" align="start" className="w-56" finalFocus={textareaRef}>
+                <MenuItem disabled={!props.imageInput || props.readOnly} onClick={() => fileInputRef.current?.click()}>
+                  <ImagePlusIcon />
+                  <span className="flex min-w-0 flex-col">
+                    <span className="truncate">{t("composer.attach")}</span>
+                    {!props.imageInput ? <MenuItemHint>{t("composer.noImages", { agent: props.agentName })}</MenuItemHint> : null}
+                  </span>
+                </MenuItem>
+                {canMention ? (
+                  <MenuItem onClick={startMention}>
+                    <FileIcon />
+                    <span className="min-w-0 flex-1 truncate">{t("composer.mentionFile")}</span>
+                    <kbd className="font-mono text-xs text-muted-foreground">@</kbd>
+                  </MenuItem>
+                ) : null}
+                {canCommand ? (
+                  <MenuItem onClick={startCommand}>
+                    <SlashIcon />
+                    <span className="min-w-0 flex-1 truncate">{t("composer.slashCommand")}</span>
+                    <kbd className="font-mono text-xs text-muted-foreground">/</kbd>
+                  </MenuItem>
+                ) : null}
+              </MenuPopup>
+            </Menu>
             {props.leading}
-            <Tip label={props.imageInput ? t("composer.attach") : t("composer.noImages", { agent: props.agentName })}>
-              <button
-                type="button"
-                className={cn(composerControlClass, "px-1.5")}
-                aria-label={t("composer.attach")}
-                disabled={!props.imageInput || props.readOnly}
-                onClick={() => fileInputRef.current?.click()}
-              >
-                <ImagePlusIcon />
-              </button>
-            </Tip>
             {primary.map((option) => (
               <OptionPicker
                 key={option.id}
@@ -442,10 +490,6 @@ export function Composer(props: ComposerProps) {
               event.target.value = "";
             }}
           />
-          {showLimits && limits.limits.length > 0 ? <RateLimitBadge source={limits} /> : null}
-          {showContext && contextUsed && contextUsed > 0 && contextWindow && contextWindow > 0 ? (
-            <ContextMeter used={contextUsed} window={contextWindow} />
-          ) : null}
           {!props.readOnly ? <VoiceButton disabled={sending} onTranscript={insertTranscript} /> : null}
           {showStop ? (
             <Tip label={t("composer.stop")}>
@@ -481,7 +525,17 @@ export function Composer(props: ComposerProps) {
           )}
         </div>
       </div>
-      {props.below}
+      {props.below || contextVisible || limitsVisible ? (
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-1 pt-2">
+          <div className="flex min-w-0 items-center gap-1 text-muted-foreground">{props.below}</div>
+          {contextVisible || limitsVisible ? (
+            <div className="ms-auto flex min-w-0 items-center gap-1">
+              {contextVisible ? <ContextMeter used={contextUsed!} window={contextWindow!} /> : null}
+              {limitsVisible ? <RateLimitBadge source={limits} /> : null}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -493,8 +547,8 @@ function ContextMeter({ used, window }: { used: number; window: number }) {
   const circumference = 2 * Math.PI * radius;
   return (
     <Tip label={t("composer.context", { used: formatTokens(used), window: formatTokens(window) })}>
-      <span className="me-1 hidden h-7 shrink-0 items-center gap-1.5 rounded-md px-1.5 text-xs tabular-nums text-muted-foreground sm:inline-flex">
-        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden className="-rotate-90">
+      <span className="inline-flex h-6 shrink-0 items-center gap-1.5 rounded-md px-1.5 text-xs tabular-nums text-muted-foreground">
+        <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden className="-rotate-90">
           <circle cx="8" cy="8" r={radius} fill="none" strokeWidth="2" className="stroke-foreground/12" />
           <circle
             cx="8"
