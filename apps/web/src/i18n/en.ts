@@ -331,6 +331,8 @@ export const en = {
   "open.terminal": "Open terminal",
   "open.folder": "Open folder",
   "open.copyPath": "Copy folder path",
+  "open.reveal": "Reveal in file manager",
+  "open.copyFilePath": "Copy path",
   "drawer.children": "Linked sessions ({n})",
   "drawer.noChildren": "No linked sessions found.",
   "drawer.backToList": "Back to linked sessions",

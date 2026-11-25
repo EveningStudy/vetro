@@ -483,6 +483,34 @@ html.dark[data-paper-grain="true"]::after {
   text-decoration: underline;
   text-underline-offset: 2px;
 }
+.chat-markdown .chat-file-ref {
+  display: inline;
+  border-radius: 0.25rem;
+  text-align: start;
+  cursor: pointer;
+}
+.chat-markdown .chat-file-ref:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--ring) 45%, transparent);
+  outline-offset: 1px;
+}
+.chat-markdown .chat-file-ref > code {
+  transition:
+    background-color 120ms,
+    color 120ms;
+}
+.chat-markdown .chat-file-ref:hover > code,
+.chat-markdown .chat-file-ref[data-popup-open] > code {
+  background: color-mix(in srgb, var(--info-foreground) 14%, transparent);
+  color: var(--info-foreground);
+}
+.chat-markdown .chat-file-ref-link {
+  color: var(--info-foreground);
+}
+.chat-markdown .chat-file-ref-link:hover,
+.chat-markdown .chat-file-ref-link[data-popup-open] {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
 .chat-markdown blockquote {
   border-inline-start: 2px solid color-mix(in srgb, currentcolor 35%, transparent);
   padding-inline-start: 0.8rem;

@@ -333,6 +333,8 @@ export const zh: Record<MessageKey, string> = {
   "open.terminal": "打开终端",
   "open.folder": "打开文件夹",
   "open.copyPath": "复制文件夹路径",
+  "open.reveal": "在文件管理器中显示",
+  "open.copyFilePath": "复制路径",
   "drawer.children": "关联会话（{n}）",
   "drawer.noChildren": "没有找到关联会话。",
   "drawer.backToList": "返回关联会话",

@@ -519,8 +519,8 @@ export const TurnEnd = memo(function TurnEnd({
       {hasCopy || onFork ? (
         <div
           className={cn(
-            "flex items-center gap-0.5 transition-opacity focus-within:opacity-100 group-hover/turn-footer:opacity-100 pointer-coarse:opacity-100",
-            isLast ? "opacity-75 hover:opacity-100" : "opacity-0",
+            "flex items-center gap-0.5 transition-opacity hover:opacity-100 focus-within:opacity-100 group-hover/turn-footer:opacity-100 pointer-coarse:opacity-100",
+            isLast ? "opacity-75" : "opacity-60",
           )}
         >
           {hasCopy ? (
