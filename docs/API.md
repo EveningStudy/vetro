@@ -42,7 +42,7 @@ Unknown fields must be ignored by both sides. Timestamps are milliseconds since 
 | `threads.setOption` | `ThreadSetOptionParams` | `OptionsResult` | Model, mode, thinking level, ... |
 | `threads.respond` | `ThreadRespondParams` | `Empty` | Answers a permission request or question. |
 | `threads.update` | `ThreadUpdateParams` | `ThreadResult` | Vetro-local title, archive and pin flags. Never modifies the agent's own store. |
-| `threads.detach` | `ThreadIdParams` | `Empty` | Releases the agent process for this thread. |
+| `threads.detach` | `ThreadDetachParams` | `Empty` | Releases the agent process for this thread. Fails with `background_work` while processes started in the latest turn are still running, unless `force` is `true`. |
 | `threads.rollback` | `ThreadRollbackParams` | `ThreadOpenResult` | Requires a resumable, idle thread with `historyEdit.rollbackConversation` support. Excludes the specified native turn and all later turns from the conversation. Returns a fresh snapshot and subscribes the caller. Other views refresh on `app.resync`. |
 | `threads.rewindFiles` | `ThreadRewindFilesParams` | `RewindFilesResult` | Requires a resumable, idle thread and a native user-message checkpoint UUID. `dryRun: true` previews the changes. Applying restores tracked files through the agent and can report skipped links. Check `historyEdit.rewindFiles` and `historyEdit.previewRewindFiles` for support. |
 | `threads.raw` | `ThreadRawParams` | `ThreadRawResult` | Per-thread wire log. The limit preserves launch and handshake entries. |

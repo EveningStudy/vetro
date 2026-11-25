@@ -387,7 +387,11 @@ fn record(file: File, id: &str) -> io::Result<SessionRecord> {
     let mut title = None;
     let mut summary = None;
     let mut fallback_prompt = None;
+    let mut last_activity = None;
     scan(file, |line| {
+        if let Some(latest) = latest_timestamp(line) {
+            last_activity = last_activity.max(Some(latest));
+        }
         if !has_type(line, |kind| match kind {
             b"custom-title" | b"ai-title" | b"summary" | b"relocated" => true,
             b"last-prompt" => fallback_prompt.is_none(),
@@ -436,6 +440,9 @@ fn record(file: File, id: &str) -> io::Result<SessionRecord> {
             _ => {}
         }
     })?;
+    if let Some(last_activity) = last_activity {
+        record.updated_at = last_activity;
+    }
     record.source = source(record.origin.as_deref());
     record.preview = record.preview.or(fallback_prompt);
     record.title = title
@@ -454,6 +461,20 @@ fn record(file: File, id: &str) -> io::Result<SessionRecord> {
         .unwrap_or_else(|| "Claude session".into());
     record.resumable = record.cwd.is_some();
     Ok(record.classify("claude"))
+}
+
+/// Metadata rows that Claude rewrites later (titles, tool lists, lineage) carry no
+/// timestamp, so file mtime overstates activity. Use the newest recorded event instead.
+fn latest_timestamp(line: &[u8]) -> Option<i64> {
+    static KEY: std::sync::LazyLock<memmem::Finder<'static>> =
+        std::sync::LazyLock::new(|| memmem::Finder::new(b"\"timestamp\":\""));
+    KEY.find_iter(line)
+        .filter_map(|start| {
+            let value = &line[start + KEY.needle().len()..];
+            let end = memchr::memchr(b'"', &value[..value.len().min(40)])?;
+            crate::events::iso_millis(std::str::from_utf8(&value[..end]).ok()?)
+        })
+        .max()
 }
 
 fn first_prompt(content: &Value) -> Option<String> {
@@ -726,6 +747,34 @@ mod tests {
                 ..TokenUsage::default()
             }
         );
+    }
+
+    #[test]
+    fn activity_time_ignores_untimestamped_metadata_appended_later() {
+        let root = tempfile::tempdir().unwrap();
+        let id = "01a07c95-7d45-7983-a759-ad414c92947e";
+        let path = root.path().join(format!("{id}.jsonl"));
+        fs::write(
+            &path,
+            concat!(
+                r#"{"type":"user","cwd":"/p","timestamp":"2026-11-16T14:50:00.000Z","message":{"role":"user","content":"hi"}}"#,
+                "
+",
+                r#"{"type":"assistant","timestamp":"2026-11-16T14:56:50.519Z","message":{"model":"m","content":[]}}"#,
+                "
+",
+                r#"{"type":"tools-used","tools":["Bash"],"sessionId":"x"}"#,
+                "
+",
+                r#"{"type":"derived-from","v":1,"sessions":[]}"#,
+                "
+",
+            ),
+        )
+        .unwrap();
+        let record = record(File::open(&path).unwrap(), id).unwrap();
+        assert_eq!(record.updated_at, 1_794_841_010_519);
+        assert_eq!(record.created_at, Some(1_794_840_600_000));
     }
 
     #[test]

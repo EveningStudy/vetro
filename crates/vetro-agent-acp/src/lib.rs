@@ -21,6 +21,7 @@ pub use vetro_agent_api::process::SpawnSpec;
 
 mod devin_history;
 mod interaction;
+mod kiro_history;
 mod mapping;
 mod session;
 mod wire;
@@ -252,7 +253,7 @@ impl AcpAgent {
             .unwrap()
             .as_ref()
             .map(|(_, session)| session.id.clone());
-        let sessions = array(&result["sessions"])
+        let mut sessions = array(&result["sessions"])
             .filter(|session| {
                 session["sessionId"].as_str() != prepared.as_deref() || prepared.is_none()
             })
@@ -264,6 +265,9 @@ impl AcpAgent {
                 )
             })
             .collect::<Vec<_>>();
+        if self.id == "kiro" {
+            kiro_history::fill_created_at(&self.spec, &mut sessions).await;
+        }
         for record in &sessions {
             if let Some(cwd) = &record.cwd {
                 self.remember(&record.native_id, cwd);
@@ -278,6 +282,52 @@ impl AcpAgent {
                     .any(|session| session["sessionId"].as_str().is_none_or(str::is_empty))
             }),
         })
+    }
+
+    async fn read_replay(&self, native_id: &str, cwd: Option<&Path>) -> Result<Transcript> {
+        let runtime = self.runtime(cwd).await?;
+        if !runtime.capabilities.load {
+            return Err(AgentError::new(
+                ErrorCode::NotResumable,
+                "ACP agent does not support history replay",
+            ));
+        }
+        let cwd = self.stored_cwd(&runtime, native_id, cwd).await?;
+        let _lifecycle = runtime.connection.lifecycle.lock().await;
+        let session = AcpSession::new(
+            Arc::clone(&runtime.connection),
+            native_id.to_owned(),
+            cwd.clone(),
+            &runtime.capabilities,
+            None,
+            true,
+        );
+        runtime.connection.register(native_id, &session)?;
+        let transcript = Arc::new(Mutex::new(None));
+        let replay = Arc::clone(&transcript);
+        let capture = Arc::downgrade(&session);
+        let reply = runtime
+            .connection
+            .call_ordered(
+                "session/load",
+                session_params(native_id, &cwd),
+                move |reply| {
+                    if reply.is_ok() {
+                        if let Some(session) = capture.upgrade() {
+                            *replay.lock().unwrap() = Some(session.take_replay());
+                        }
+                    }
+                },
+            )
+            .await;
+        runtime.connection.observe_auth("session/load", &reply);
+        if let Err(error) = reply {
+            runtime.connection.unregister(native_id);
+            return Err(session_error(error, &self.id, native_id));
+        }
+        runtime.close_session(native_id).await;
+        let result = transcript.lock().unwrap().take().unwrap_or_default();
+        Ok(result)
     }
 
     async fn new_session(
@@ -517,62 +567,52 @@ impl Agent for AcpAgent {
     }
 
     async fn list(&self, cursor: Option<String>) -> Result<SessionPage> {
+        if cursor.is_none() {
+            if let Ok(Some(page)) = self.list_without_runtime().await {
+                for record in &page.sessions {
+                    if let Some(cwd) = &record.cwd {
+                        self.remember(&record.native_id, cwd);
+                    }
+                }
+                return Ok(page);
+            }
+        }
         let runtime = self.runtime(None).await?;
         self.list_on(&runtime, cursor).await
     }
 
+    async fn list_without_runtime(&self) -> Result<Option<SessionPage>> {
+        if self.id == "devin" {
+            return devin_history::list(&self.spec).await;
+        }
+        Ok(None)
+    }
+
+    async fn read_without_runtime(&self, native_id: &str) -> Result<Option<Transcript>> {
+        if self.id == "devin" {
+            return devin_history::read(&self.spec, native_id).await;
+        }
+        Ok(None)
+    }
+
     async fn read(&self, native_id: &str, cwd: Option<&Path>) -> Result<Transcript> {
-        let runtime = self.runtime(cwd).await?;
-        if !runtime.capabilities.load {
-            return Err(AgentError::new(
-                ErrorCode::NotResumable,
-                "ACP agent does not support history replay",
-            ));
+        let snapshot = self.read_without_runtime(native_id).await;
+        if let Ok(Some(transcript)) = snapshot {
+            return Ok(transcript);
         }
-        let cwd = self.stored_cwd(&runtime, native_id, cwd).await?;
-        let lifecycle = runtime.connection.lifecycle.lock().await;
-        let session = AcpSession::new(
-            Arc::clone(&runtime.connection),
-            native_id.to_owned(),
-            cwd.clone(),
-            &runtime.capabilities,
-            None,
-            true,
-        );
-        runtime.connection.register(native_id, &session)?;
-        let transcript = Arc::new(Mutex::new(None));
-        let replay = Arc::clone(&transcript);
-        let capture = Arc::downgrade(&session);
-        let reply = runtime
-            .connection
-            .call_ordered(
-                "session/load",
-                session_params(native_id, &cwd),
-                move |reply| {
-                    if reply.is_ok() {
-                        if let Some(session) = capture.upgrade() {
-                            *replay.lock().unwrap() = Some(session.take_replay());
-                        }
-                    }
-                },
-            )
-            .await;
-        runtime.connection.observe_auth("session/load", &reply);
-        if let Err(error) = reply {
-            runtime.connection.unregister(native_id);
-            drop(lifecycle);
-            let error = session_error(error, &self.id, native_id);
-            if self.id == "devin" && matches!(error.code, ErrorCode::Busy | ErrorCode::AuthRequired)
-            {
-                if let Some(snapshot) = devin_history::read(&self.spec, native_id).await {
-                    return Ok(snapshot);
-                }
+        let mut transcript = self.read_replay(native_id, cwd).await.map_err(|error| {
+            if let Err(snapshot_error) = snapshot {
+                return AgentError::new(
+                    error.code,
+                    format!("{}; local history: {snapshot_error}", error.message),
+                );
             }
-            return Err(error);
+            error
+        })?;
+        if self.id == "kiro" {
+            kiro_history::enrich_replay(&self.spec, native_id, &mut transcript).await;
         }
-        runtime.close_session(native_id).await;
-        let result = transcript.lock().unwrap().take().unwrap_or_default();
-        Ok(result)
+        Ok(transcript)
     }
 
     async fn start(&self, req: StartRequest, sink: EventSink) -> Result<Arc<dyn Session>> {

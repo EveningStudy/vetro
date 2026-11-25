@@ -41,6 +41,7 @@ futures-util = "0.3"
 tar = "0.4"
 bzip2-rs = "0.1"
 reqwest = { version = "0.13", default-features = false, features = ["stream", "multipart", "json", "native-tls"] }
+memchr = "2.8.3"
 
 [dev-dependencies]
 tokio-tungstenite = "0.29"

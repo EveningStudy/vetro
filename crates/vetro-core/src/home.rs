@@ -65,6 +65,8 @@ pub(crate) struct ThreadOverlay {
     pub options: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub history_rolled_back: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub created_here: bool,
 }
 
 #[derive(Clone, Default, Deserialize, Serialize)]

@@ -182,16 +182,15 @@ pub fn session_is_internal(
     title: &str,
     preview: Option<&str>,
 ) -> bool {
+    if source == ThreadSource::Vetro {
+        return false;
+    }
     source == ThreadSource::Exec
         || (agent_id == "codex"
             && (origin.is_some_and(codex_subagent)
                 || (origin == Some("history projection")
                     && title == "Codex thread"
                     && preview.unwrap_or_default().trim().is_empty())))
-        || [Some(title), preview]
-            .into_iter()
-            .flatten()
-            .any(|text| text.trim_start().starts_with("<caller_constraints>"))
 }
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -245,6 +244,27 @@ pub struct ItemDraft {
     pub ts: Option<i64>,
     pub turn_id: Option<String>,
     pub kind: ItemKind,
+}
+
+impl ItemDraft {
+    pub fn turn_end(
+        turn_id: &str,
+        stop_reason: vetro_proto::StopReason,
+        ts: Option<i64>,
+        duration_ms: Option<u64>,
+        usage: Option<vetro_proto::TokenUsage>,
+    ) -> Self {
+        Self {
+            id: format!("{turn_id}:end"),
+            ts,
+            turn_id: Some(turn_id.to_owned()),
+            kind: ItemKind::TurnEnd {
+                stop_reason,
+                duration_ms,
+                usage,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -417,4 +437,8 @@ pub trait Session: Send + Sync + 'static {
     }
     async fn detach(&self);
     fn wire_log(&self) -> Arc<WireLog>;
+    /// Live processes started by the agent process that hosts this session.
+    fn descendants(&self) -> Vec<process::ProcessIdentity> {
+        Vec::new()
+    }
 }

@@ -70,6 +70,10 @@ impl Connection {
         self.process.wire_log()
     }
 
+    pub fn descendants(&self) -> Vec<vetro_agent_api::process::ProcessIdentity> {
+        self.process.descendants()
+    }
+
     pub async fn startup_error(&self, error: Error) -> AgentError {
         let mut error = agent_error(error);
         error.message.push_str(&self.process.exit_detail().await);

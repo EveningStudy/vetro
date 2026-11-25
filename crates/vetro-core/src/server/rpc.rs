@@ -235,8 +235,11 @@ async fn call(
             thread: core.update_thread(parse(params)?)?,
         }),
         "threads.detach" => {
-            let params: ThreadIdParams = parse(params)?;
-            core.thread(&params.thread_id).await?.detach().await?;
+            let params: ThreadDetachParams = parse(params)?;
+            core.thread(&params.thread_id)
+                .await?
+                .detach(params.force.unwrap_or(false))
+                .await?;
             empty()
         }
         "threads.raw" => {

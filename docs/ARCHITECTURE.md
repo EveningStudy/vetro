@@ -81,7 +81,7 @@ One generic ACP v1 client (`agent-client-protocol` crate or a small hand-written
 
 ## History (read-only)
 
-Four readers produce `ThreadSummary` rows for the index and items on demand:
+The history readers produce `ThreadSummary` rows for the index and items on demand:
 
 | Agent | Listing | Items | Continue |
 |---|---|---|---|
@@ -89,21 +89,30 @@ Four readers produce `ThreadSummary` rows for the index and items on demand:
 | Claude Code | scan `~/.claude/projects/**/*.jsonl` | parse the JSONL | `--resume <id>` |
 | Antigravity (CLI/ACP store) | ACP `session/list` | ACP `session/load` | same session |
 | Antigravity (desktop app store) | `~/.gemini/antigravity/conversation_summaries.db` | `conversations/<id>.db` (`steps` protobuf, decoded best-effort; text from the FTS tables) | read-only unless ACP can load it |
-| Devin | ACP `session/list` | ACP `session/load` first for native replay. If loading reports a session lock (`Busy`) or `AuthRequired`, fall back to a read-only local SQLite snapshot on Windows when available. | same session via ACP |
+| Devin | Read-only local SQLite inventory on Windows where available, otherwise ACP `session/list` | Read the saved main chain from SQLite when available, otherwise ACP `session/load`. | same session via ACP |
+| Kiro and custom ACP | ACP `session/list` | ACP `session/load`. Kiro's native JSONL can supply verified turn boundaries and elapsed time for matching replayed prompts. | native ACP capabilities |
 
 Foreign SQLite readers take no write or exclusive locks and create no files. A WAL database is read with `mode=ro`, using a shared read mark for the duration of one short batch in the Antigravity store. An unavailable WAL is retried on a subsequent scan. A database without a WAL can be opened with `immutable=1`. The index stores summaries and searchable text only and can be deleted at any time. A file watcher keeps threads that are being written by other apps fresh. Watching must not keep files locked on Windows.
 
-The core opens `index.db` before serving requests. One worker per agent lists metadata and reads changed transcripts one at a time. The native mark and successfully indexed mark are separate, so interrupted work resumes on the next scan. File notifications trigger debounced scans, with polling for protocol sources and missed file events. Background indexing lists Devin summaries before sign-in and starts reading transcripts after sign-in in the running process. On-demand history reads can use the local snapshot when native replay requires sign-in.
+The core opens `index.db` before serving requests. One worker per agent lists metadata and reads changed transcripts one at a time. The native mark and successfully indexed mark are separate, so interrupted work resumes on the next scan. File notifications trigger debounced scans, with polling for protocol sources and missed file events. Devin's local snapshot supports browsing and indexing while another process holds the native session or before ACP sign-in. Resuming still requires ACP sign-in and the native session lock.
 
-`ThreadSource` comes from the agent's own records: Codex `originator`/`source`, Claude `entrypoint`, the Antigravity store the session lives in, Devin's session metadata.
+`ThreadSource` comes from the agent's own records, with one exception: a session Vetro created or forked is remembered in `~/.vetro/state.json` and keeps `ThreadSource::Vetro` after the agent's store reports how it was launched (for example Claude's `sdk-cli` entrypoint). A Vetro session is never internal. Internal means the native record says the session was non-interactive or a sub-agent; Vetro does not infer it from prompt text, because wrapper conventions belong to the user, not to the product.
+
+`updatedAt` is the newest event timestamp recorded in the native session, not the file's modification time. Agents append untimestamped metadata (titles, tool lists, lineage) long after the conversation, so mtime is only a fallback when a record carries no timestamps.
+
+Historical `TurnEnd` items carry completion metadata supported by the source. A generic ACP replay can infer a boundary when a settled answer is followed by the next user input. Native completion events can also close the final turn. Timestamps, elapsed time and token usage are optional.
+
+## Background work
+
+An agent's tools can leave processes running after its turn ends (background shells, delegated agents). The core snapshots the agent process tree when a turn starts; processes that appear after that snapshot and are still alive count as the thread's background work. Processes that already existed (tool servers, console hosts) do not count, and a later turn absorbs any helper that started lazily. Idle release skips a thread with background work, because releasing the agent process ends its tree. `threads.detach` refuses with `background_work` until the client confirms with `force`. Every release is logged with its reason. Vetro never prompts the agent when background work finishes; whether the agent resumes on its own is native behaviour.
 
 ## Links between agents
 
-When an agent runs another agent's CLI (`codex exec`, `claude -p`, `agy -p`, `devin -p`), the child session is stored by the child agent and is invisible in the parent's app. The linker finds the parent tool call for every `Exec`-sourced session:
+When an agent starts a delegated session, the child runtime stores it separately. The linker looks for the parent tool call using the following evidence.
 
-1. **Exact**: the child's session id appears in the parent's tool output (Codex prints `session id: <id>`; `claude -p --output-format json` returns `session_id`; `agy -p --output-format json` returns `conversation_id`), or the agent's own store names the parent.
+1. **Exact**. The agent's store names the parent, or the launch returned the child's session ID. A later read of the same background shell handle can supply this output for the launch.
 2. **Prompt**: the child's first user message is contained in the parent's command line or in a file that command read from stdin.
-3. **Heuristic**: an execute tool call that invokes that CLI, in the same working directory, whose time window contains the child's start.
+3. **Heuristic**. A CLI invocation in the same working directory whose time window contains the child's start. A command Vetro cannot interpret (a script, a wrapper) qualifies as a launch when it ran in the background or for at least 10 seconds; a non-interactive child in the same directory that started within 60 seconds of it, and while it was running, links when exactly one launch matches. No wrapper syntax is parsed.
 
 A link sets `ThreadSummary.parent` on the child and adds the child to `ToolCall.childThreadIds` on the parent's tool call. Links are recomputed incrementally as either side changes, so a running child shows up under the running tool call and streams as its file grows.
 

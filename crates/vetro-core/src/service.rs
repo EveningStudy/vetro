@@ -62,6 +62,19 @@ impl Core {
             Index::temporary()
         });
         let theme = watch::channel(window_theme(&home.prefs("local"))).0;
+        match store.created_in_vetro() {
+            Ok(ids) if !ids.is_empty() => {
+                if let Err(error) = home.change_state(|state| {
+                    for id in ids {
+                        state.threads.entry(id).or_default().created_here = true;
+                    }
+                }) {
+                    home.log(&format!("Could not keep Vetro session origins: {error}"));
+                }
+            }
+            Ok(_) => {}
+            Err(error) => home.log(&format!("Could not read Vetro session origins: {error}")),
+        }
         Arc::new(Self {
             home,
             registry: RwLock::new(Arc::new(registry)),
@@ -778,6 +791,25 @@ impl Core {
         thread
     }
 
+    pub(crate) fn remember_created_here(&self, id: &str) {
+        if let Err(error) = self.home.change_state(|state| {
+            state.threads.entry(id.to_owned()).or_default().created_here = true;
+        }) {
+            self.home.log(&format!(
+                "Could not remember {id} as created in Vetro: {error}"
+            ));
+        }
+    }
+
+    pub(crate) fn created_here(&self, id: &str) -> bool {
+        self.home.read_state(|state| {
+            state
+                .threads
+                .get(id)
+                .is_some_and(|overlay| overlay.created_here)
+        })
+    }
+
     pub(crate) fn overlay_with_live(&self, mut thread: ThreadSummary) -> ThreadSummary {
         if let Some(actor) = self.sessions.get(&thread.id) {
             actor.live_overlay_into(&mut thread);
@@ -1336,11 +1368,11 @@ mod tests {
                 false,
             ),
             (
-                "wrapper",
-                ThreadSource::Cli,
+                "vetro",
+                ThreadSource::Vetro,
                 None,
-                "Wrapper",
-                Some("<caller_constraints>\nrun"),
+                "Vetro",
+                None,
                 None,
                 false,
             ),
@@ -1402,7 +1434,7 @@ mod tests {
                 .iter()
                 .map(|thread| thread.native_id.as_str())
                 .collect::<Vec<_>>(),
-            ["root"]
+            ["vetro", "root"]
         );
         let all = list(ThreadsListParams {
             include_internal: Some(true),
@@ -1414,7 +1446,7 @@ mod tests {
             .filter(|thread| thread.internal)
             .map(|thread| thread.native_id.as_str())
             .collect::<Vec<_>>();
-        assert_eq!(internal, ["projection", "wrapper", "compact", "exec"]);
+        assert_eq!(internal, ["projection", "compact", "exec"]);
         let exec = list(ThreadsListParams {
             sources: Some(vec![ThreadSource::Exec]),
             ..Default::default()
@@ -1436,7 +1468,7 @@ mod tests {
         );
         assert_eq!(
             (project.root_thread_count, project.last_root_activity_at),
-            (1, Some(10))
+            (2, Some(13))
         );
         core.update_thread(ThreadUpdateParams {
             thread_id: "codex:root".into(),
@@ -1448,7 +1480,7 @@ mod tests {
         let project = core.projects().unwrap().pop().unwrap();
         assert_eq!(
             (project.root_thread_count, project.last_root_activity_at),
-            (0, None)
+            (1, Some(13))
         );
     }
 

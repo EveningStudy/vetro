@@ -699,7 +699,10 @@ fn tool_content(content: &Value) -> Vec<ToolContent> {
 }
 
 pub(crate) fn timestamp(row: &Value) -> Option<i64> {
-    let text = string(row, "timestamp")?;
+    iso_millis(string(row, "timestamp")?)
+}
+
+pub(crate) fn iso_millis(text: &str) -> Option<i64> {
     let number = |start, end| text.get(start..end)?.parse::<i64>().ok();
     let year = number(0, 4)?;
     let month = number(5, 7)?;

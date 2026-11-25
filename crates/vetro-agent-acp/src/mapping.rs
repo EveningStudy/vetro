@@ -27,6 +27,10 @@ pub fn timestamp(value: &Value) -> Option<i64> {
     })
 }
 
+pub fn update_timestamp(value: &Value) -> Option<i64> {
+    timestamp(&value["timestamp"]).or_else(|| timestamp(&value["_meta"]["cognition.ai/timestamp"]))
+}
+
 pub fn record(agent_id: &str, value: &Value, resumable: bool) -> Option<SessionRecord> {
     let native_id = string(value, "sessionId")?;
     let record = SessionRecord {
@@ -38,12 +42,17 @@ pub fn record(agent_id: &str, value: &Value, resumable: bool) -> Option<SessionR
             .and_then(|cwd| native_cwd(cwd, cfg!(windows))),
         created_at: timestamp(&value["createdAt"]),
         updated_at: timestamp(&value["updatedAt"]).unwrap_or_default(),
-        source: ThreadSource::Unknown,
-        origin: None,
+        source: match value["source"].as_str() {
+            Some("exec") => ThreadSource::Exec,
+            Some("cli") => ThreadSource::Cli,
+            Some("desktop") => ThreadSource::Desktop,
+            _ => ThreadSource::Unknown,
+        },
+        origin: string(value, "origin"),
         model: string(value, "model"),
         resumable,
         parent_native_id: string(value, "parentSessionId"),
-        internal: false,
+        internal: value["internal"].as_bool() == Some(true),
     };
     Some(record.classify(agent_id))
 }
@@ -501,7 +510,9 @@ pub fn patch_tool(tool: &mut ToolCall, value: &Value) {
     if let Some(title) = string(value, "title") {
         tool.title = title;
     }
-    if let Some(name) = string(value, "name") {
+    if let Some(name) =
+        string(value, "name").or_else(|| string(&value["_meta"], "cognition.ai/inferenceToolName"))
+    {
         tool.name = Some(name);
     }
     if let Some(status) = value["status"].as_str() {

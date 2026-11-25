@@ -14,6 +14,17 @@ pub(super) struct Tracker {
     watchdog: pid_t,
 }
 
+/// Lists the live descendants of `leader`, for callers outside the watchdog.
+pub(super) unsafe fn snapshot(leader: pid_t) -> Vec<(u32, u64)> {
+    let mut tracker = Box::new(Tracker::new(leader));
+    tracker.refresh();
+    tracker.processes[..tracker.count]
+        .iter()
+        .flatten()
+        .map(|identity| (identity.pid as u32, identity.birth))
+        .collect()
+}
+
 impl Tracker {
     pub(super) unsafe fn new(leader: pid_t) -> Self {
         let mut tracker = Self {

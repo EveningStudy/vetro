@@ -189,6 +189,21 @@ fn first_text(value: &Value) -> Option<String> {
         .map(|text| text.chars().take(300).collect())
 }
 
+/// Claude later rewrites untimestamped metadata rows (titles, tool lists, lineage),
+/// so file mtime overstates activity. The newest recorded event time is authoritative.
+fn latest_timestamp(line: &[u8]) -> Option<i64> {
+    static KEY: std::sync::LazyLock<memchr::memmem::Finder<'static>> =
+        std::sync::LazyLock::new(|| memchr::memmem::Finder::new(br#""timestamp":""#));
+    KEY.find_iter(line)
+        .filter_map(|start| {
+            let value = &line[start + KEY.needle().len()..];
+            let end = memchr::memchr(b'"', &value[..value.len().min(40)])?;
+            let text = std::str::from_utf8(&value[..end]).ok()?;
+            timestamp(&Value::String(text.into()))
+        })
+        .max()
+}
+
 fn claude_record(path: &Path, id: String) -> Result<Option<SessionRecord>> {
     let file = match File::open(path) {
         Ok(file) => file,
@@ -199,8 +214,10 @@ fn claude_record(path: &Path, id: String) -> Result<Option<SessionRecord>> {
     let mut title = None;
     let mut generated = None;
     let mut fallback = None;
+    let mut last_activity = None;
     for line in BufReader::new(file).split(b'\n') {
         let Ok(line) = line else { break };
+        last_activity = last_activity.max(latest_timestamp(&line));
         if ![
             b"\"custom-title\"".as_slice(),
             b"\"ai-title\"",
@@ -272,6 +289,9 @@ fn claude_record(path: &Path, id: String) -> Result<Option<SessionRecord>> {
     }
     record.resumable = record.cwd.is_some();
     record.preview = record.preview.or(fallback);
+    if let Some(last_activity) = last_activity {
+        record.updated_at = last_activity;
+    }
     record.source = match record.origin.as_deref() {
         Some("cli") => ThreadSource::Cli,
         Some("sdk-cli" | "sdk-ts" | "sdk-py" | "print") => ThreadSource::Exec,

@@ -310,15 +310,25 @@ enum TreeShutdown {
 
 async fn tree_shutdown(shutdown: TreeShutdown, mode: &str) {
     let (process, mut stdout) = spawn(mode, Arc::default());
+    let leaves: Vec<u32> = line(&mut stdout)
+        .await
+        .split_whitespace()
+        .map(|pid| pid.parse().unwrap())
+        .collect();
     let mut tree = vec![TrackedProcess::new(process.id())];
-    tree.extend(
-        line(&mut stdout)
-            .await
-            .split_whitespace()
-            .map(|pid| TrackedProcess::new(pid.parse().unwrap())),
-    );
+    tree.extend(leaves.iter().map(|pid| TrackedProcess::new(*pid)));
+    let descendants: Vec<u32> = process
+        .descendants()
+        .into_iter()
+        .map(|(pid, _)| pid)
+        .collect();
+    assert!(!descendants.contains(&process.id()));
+    for leaf in &leaves {
+        assert!(descendants.contains(leaf), "{leaf} not in {descendants:?}");
+    }
     let (other, _) = spawn("fixture-leaf", Arc::default());
     let other_handle = TrackedProcess::new(other.id());
+    assert!(!descendants.contains(&other.id()));
     match shutdown {
         TreeShutdown::Drop => drop(process),
         TreeShutdown::Kill => assert!(!process.kill().await.unwrap().success()),

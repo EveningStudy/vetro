@@ -6,7 +6,8 @@ use std::collections::HashMap;
 use serde_json::{json, Map, Value};
 use vetro_agent_api::ItemDraft;
 use vetro_proto::{
-    ContentBlock, ItemKind, NoticeLevel, ToolCall, ToolContent, ToolKind, ToolLocation, ToolStatus,
+    ContentBlock, ItemKind, NoticeLevel, StopReason, ToolCall, ToolContent, ToolKind, ToolLocation,
+    ToolStatus,
 };
 
 use crate::{
@@ -35,6 +36,8 @@ pub struct Builder {
     items: Vec<ItemDraft>,
     calls: HashMap<String, usize>,
     turn: Option<String>,
+    started_at: Option<i64>,
+    turn_end: Option<ItemDraft>,
     started: bool,
 }
 
@@ -289,9 +292,15 @@ impl Builder {
         );
     }
 
-    fn start_turn(&mut self, idx: i64) {
+    fn start_turn(&mut self, idx: i64, ts: Option<i64>) {
+        self.finish_turn();
         self.turn = Some(format!("turn-{idx}"));
+        self.started_at = ts;
         self.started = true;
+    }
+
+    fn finish_turn(&mut self) {
+        self.items.extend(self.turn_end.take());
     }
 
     pub fn step(
@@ -308,8 +317,11 @@ impl Builder {
         let error = error.filter(|e| !e.is_empty()).map(Msg);
         match step_type {
             STEP_USER_INPUT => self.user_input(idx, ts, p.msg(19).unwrap_or(Msg(&[]))),
-            STEP_PLANNER => self.planner(idx, ts, status, p.msg(20).unwrap_or(Msg(&[]))),
-            STEP_TOOL => return self.tool(idx, ts, status, meta, p.msg(140), error),
+            STEP_PLANNER => self.planner(idx, ts, status, p.msg(20).unwrap_or(Msg(&[])), meta),
+            STEP_TOOL => {
+                self.turn_end = None;
+                return self.tool(idx, ts, status, meta, p.msg(140), error);
+            }
             STEP_SYSTEM_MESSAGE => self.system_message(idx, ts, p.msg(114).unwrap_or(Msg(&[]))),
             STEP_EPHEMERAL => {
                 let text = p
@@ -337,6 +349,7 @@ impl Builder {
             _ => self.unknown(idx, ts, step_type, status, p),
         }
         if let Some(e) = error {
+            self.turn_end = None;
             let text = e.text(2).or(e.text(3)).unwrap_or("Step failed").to_owned();
             let detail = e.text(3).map(|d| json!({ "detail": d }));
             self.notice(
@@ -350,7 +363,7 @@ impl Builder {
     }
 
     fn user_input(&mut self, idx: i64, ts: Option<i64>, m: Msg<'_>) {
-        self.start_turn(idx);
+        self.start_turn(idx, ts);
         let text = m.text(2).map(str::to_owned).unwrap_or_else(|| {
             m.msgs(3)
                 .filter_map(|i| i.text(1))
@@ -382,7 +395,30 @@ impl Builder {
         }
     }
 
-    fn planner(&mut self, idx: i64, ts: Option<i64>, status: i64, m: Msg<'_>) {
+    fn planner(&mut self, idx: i64, ts: Option<i64>, status: i64, m: Msg<'_>, meta: Msg<'_>) {
+        let answer = m.text(1).or(m.text(8));
+        self.turn_end = self
+            .turn
+            .as_deref()
+            .filter(|_| {
+                matches!(status, 3 | 5)
+                    && answer.is_some_and(|text| !text.trim().is_empty())
+                    && m.msgs(7).next().is_none()
+            })
+            .map(|turn| {
+                let ended_at = meta.msg(26).and_then(|history| {
+                    history
+                        .msgs(1)
+                        .filter(|update| update.uint(1) == Some(3))
+                        .filter_map(|update| update.msg(2).and_then(timestamp_ms))
+                        .last()
+                });
+                let duration = ended_at
+                    .zip(self.started_at)
+                    .and_then(|(end, start)| end.checked_sub(start))
+                    .and_then(|duration| u64::try_from(duration).ok());
+                ItemDraft::turn_end(turn, StopReason::EndTurn, ended_at, duration, None)
+            });
         if let Some(text) = m.text(3) {
             self.push(
                 format!("step-{idx}-thinking"),
@@ -393,7 +429,7 @@ impl Builder {
                 },
             );
         }
-        if let Some(text) = m.text(1).or(m.text(8)) {
+        if let Some(text) = answer {
             self.push(
                 format!("step-{idx}-text"),
                 ts,
@@ -438,7 +474,7 @@ impl Builder {
             .or_else(|| m.text(1));
         if kind == "agent_message" && !self.started {
             if let Some(text) = body {
-                self.start_turn(idx);
+                self.start_turn(idx, ts);
                 let content = vec![ContentBlock::Text {
                     text: text.to_owned(),
                 }];
@@ -702,7 +738,8 @@ impl Builder {
         }
     }
 
-    pub fn finish(self) -> Vec<ItemDraft> {
+    pub fn finish(mut self) -> Vec<ItemDraft> {
+        self.finish_turn();
         self.items
     }
 }
@@ -710,6 +747,36 @@ impl Builder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn desktop_footer_uses_native_done_transition_and_leaves_active_tail_open() {
+        let mut builder = Builder::default();
+        builder.start_turn(1, Some(10_000));
+        builder.planner(
+            2,
+            Some(11_000),
+            3,
+            Msg(b"\x0a\x06answer"),
+            Msg(b"\xd2\x01\x08\x0a\x06\x08\x03\x12\x02\x08\x0d"),
+        );
+        builder.start_turn(3, None);
+        builder.planner(4, None, 2, Msg(b"\x0a\x07partial"), Msg(&[]));
+        let items = builder.finish();
+        let [_, end, partial] = items.as_slice() else {
+            panic!("expected one completed answer and an active tail");
+        };
+        assert_eq!(end.ts, Some(13_000));
+        assert_eq!(end.turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(partial.turn_id.as_deref(), Some("turn-3"));
+        assert!(matches!(
+            end.kind,
+            ItemKind::TurnEnd {
+                stop_reason: StopReason::EndTurn,
+                duration_ms: Some(3_000),
+                usage: None,
+            }
+        ));
+    }
 
     #[test]
     fn unified_diff_groups_hunks_with_context() {

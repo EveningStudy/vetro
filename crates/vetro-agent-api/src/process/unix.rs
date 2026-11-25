@@ -20,6 +20,16 @@ impl Tree {
         self.0.lock().unwrap().take();
         Ok(())
     }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub(super) fn members(&self, leader: u32) -> Vec<(u32, u64)> {
+        unsafe { descendants::snapshot(leader as libc::pid_t) }
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    pub(super) fn members(&self, _leader: u32) -> Vec<(u32, u64)> {
+        Vec::new()
+    }
 }
 
 pub(super) struct Spawned<Wait> {

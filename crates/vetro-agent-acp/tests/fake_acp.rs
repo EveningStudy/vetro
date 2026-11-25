@@ -207,9 +207,20 @@ fn fake(scenario: &str) {
                 }
             }
             Some("session/list") => {
+                if scenario == "devin-list-error" {
+                    output(
+                        json!({"id":id,"error":{"code":-32603,"message":"Failed to list sessions"}}),
+                    );
+                    continue;
+                }
                 assert!(params.as_object().is_some());
                 let cwd = env::current_dir().unwrap();
-                json!({"sessions":[{"sessionId":"stored","cwd":cwd,"title":"Saved","updatedAt":"2026-11-23T00:00:00.250Z"}]})
+                let session = if scenario == "kiro-history" {
+                    "sess_fixture"
+                } else {
+                    "stored"
+                };
+                json!({"sessions":[{"sessionId":session,"cwd":cwd,"title":"Saved","updatedAt":"2026-11-23T00:00:00.250Z"}]})
             }
             Some("session/load" | "session/resume") => {
                 if matches!(scenario, "devin-locked" | "devin-load-error") {
@@ -233,7 +244,12 @@ fn fake(scenario: &str) {
                     continue;
                 }
                 assert_eq!(params.as_object().unwrap().len(), 3);
-                assert_eq!(params["sessionId"], "stored");
+                let session = if scenario == "kiro-history" {
+                    "sess_fixture"
+                } else {
+                    "stored"
+                };
+                assert_eq!(params["sessionId"], session);
                 assert_eq!(params["mcpServers"], json!([]));
                 if message["method"] == "session/load" {
                     chunk(&params["sessionId"], "user_message_chunk", "old prompt");
@@ -242,6 +258,14 @@ fn fake(scenario: &str) {
                     } else {
                         chunk(&params["sessionId"], "agent_message_chunk", "old ");
                         chunk(&params["sessionId"], "agent_message_chunk", "answer");
+                        if scenario == "replay-boundaries" {
+                            chunk(&params["sessionId"], "user_message_chunk", "second prompt");
+                            chunk(&params["sessionId"], "agent_message_chunk", "partial");
+                            update(
+                                &params["sessionId"],
+                                json!({"sessionUpdate":"tool_call","toolCallId":"pending","status":"in_progress"}),
+                            );
+                        }
                     }
                     output(json!({"id":id,"result":{"configOptions":config}}));
                     chunk(
@@ -439,8 +463,37 @@ async fn devin_history_replay() {
 
     spec.args[1] = "devin".into();
     let devin = AcpAgent::new("devin", "Devin", spec.clone());
+    assert_eq!(
+        devin.read("stored", None).await.unwrap_err().code,
+        ErrorCode::AuthRequired
+    );
+    devin.authenticate("devin-browser").await.unwrap();
+    let transcript = devin.read("stored", Some(&cwd)).await.unwrap();
+    assert!(matches!(
+        &transcript.items[0].kind,
+        ItemKind::UserMessage { content } if *content == [text("old prompt")]
+    ));
+    assert!(transcript.items.iter().any(|item| {
+        matches!(&item.kind, ItemKind::AgentMessage { text, streaming: false }
+            if text == &DEVIN_CHUNKS.concat())
+    }));
+
     spec.args[1] = "devin-load-error".into();
-    let failed = AcpAgent::new("devin", "Devin", spec);
+    let failed = AcpAgent::new("devin", "Devin", spec.clone());
+    assert_eq!(
+        failed.read("stored", Some(&cwd)).await.unwrap_err().code,
+        ErrorCode::Internal
+    );
+    spec.args[1] = "devin-list-error".into();
+    let unlisted = AcpAgent::new("devin", "Devin", spec.clone());
+    assert!(unlisted
+        .read("stored", None)
+        .await
+        .unwrap_err()
+        .message
+        .contains("Failed to list sessions"));
+    spec.args[1] = "startup-failure".into();
+    let offline = AcpAgent::new("devin", "Devin", spec);
 
     let root = temp.path().join("Devin/cli");
     std::fs::create_dir_all(&root).unwrap();
@@ -448,7 +501,9 @@ async fn devin_history_replay() {
     db.execute_batch(
         "PRAGMA journal_mode=WAL;
          PRAGMA wal_autocheckpoint=0;
-         CREATE TABLE sessions (id TEXT PRIMARY KEY, main_chain_id INTEGER);
+         CREATE TABLE sessions (id TEXT PRIMARY KEY, main_chain_id INTEGER, title TEXT,
+            working_directory TEXT, created_at INTEGER, last_activity_at INTEGER,
+            model TEXT, hidden INTEGER);
          CREATE TABLE message_nodes (
             session_id TEXT, node_id INTEGER, parent_node_id INTEGER,
             chat_message TEXT, created_at INTEGER, PRIMARY KEY (session_id, node_id)
@@ -457,7 +512,7 @@ async fn devin_history_replay() {
             session_id TEXT, tool_call_id TEXT, tool_call_json TEXT,
             tool_call_update_json TEXT, PRIMARY KEY (session_id, tool_call_id)
          );
-         INSERT INTO sessions VALUES ('stored', 4);",
+         INSERT INTO sessions VALUES ('stored', 7, 'Saved', 'project', 10, 20, 'fake', 0);",
     )
     .unwrap();
     let nodes = [
@@ -475,7 +530,7 @@ async fn devin_history_replay() {
                     {"mime_type":"image/png","base64_data":"aW1hZ2Ux"},
                     {"mime_type":"image/png","base64_data":"aW1hZ2Uy"}
                 ],
-                "metadata":{"is_user_input":true,"extensions":{
+                "metadata":{"created_at":"2026-11-25T12:00:00Z","is_user_input":true,"extensions":{
                     "chisel/acp-content-blocks":[{"type":"text","text":"two attachments"}]
                 }}
             }),
@@ -488,12 +543,34 @@ async fn devin_history_replay() {
         (
             3,
             Some(1),
-            json!({"role":"assistant","tool_calls":[{"id":"tool-id","name":"test"}]}),
+            json!({"role":"assistant","tool_calls":[
+                {"id":"tool-id","name":"test"},
+                {"id":"shell","name":"get_output","arguments":{"shell_id":"job-1"}}
+            ]}),
         ),
         (
             4,
             Some(3),
-            json!({"role":"assistant","content":"saved response"}),
+            json!({"role":"tool","tool_call_id":"shell","content":"session_id=sess_child"}),
+        ),
+        (
+            5,
+            Some(4),
+            json!({"role":"assistant","content":"saved response","metadata":{
+                "created_at":"2026-11-25T12:00:03Z",
+                "finish_reason":"stop", "request_id":"request",
+                "metrics":{"input_tokens":42,"output_tokens":7}
+            }}),
+        ),
+        (
+            6,
+            Some(5),
+            json!({"role":"user","content":"second prompt","metadata":{"is_user_input":true}}),
+        ),
+        (
+            7,
+            Some(6),
+            json!({"role":"assistant","content":"interrupted"}),
         ),
     ];
     for (node_id, parent, message) in nodes {
@@ -516,11 +593,20 @@ async fn devin_history_replay() {
         ],
     )
     .unwrap();
+    db.execute(
+        "INSERT INTO tool_call_state VALUES ('stored', 'shell', NULL, '{\"status\":\"completed\"}')",
+        [],
+    )
+    .unwrap();
 
-    for agent in [&locked, &devin] {
-        let transcript = agent.read("stored", Some(&cwd)).await.unwrap();
-        let [user, tool, answer] = transcript.items.as_slice() else {
-            panic!("expected user, tool and assistant items");
+    assert_eq!(
+        offline.list(None).await.unwrap().sessions[0].native_id,
+        "stored"
+    );
+    for agent in [&locked, &devin, &failed, &unlisted, &offline] {
+        let transcript = agent.read("stored", None).await.unwrap();
+        let [user, tool, shell, answer, end, _, interrupted] = transcript.items.as_slice() else {
+            panic!("expected two historical turns, one completed");
         };
         assert!(matches!(&user.kind, ItemKind::UserMessage { content } if
             matches!(content.as_slice(), [
@@ -533,26 +619,27 @@ async fn devin_history_replay() {
             tool.status == ToolStatus::Completed
                 && tool.content == [vetro_proto::ToolContent::Text { text: output.clone() }]
         ));
+        assert!(matches!(&shell.kind, ItemKind::ToolCall(tool) if
+            tool.input.as_ref().unwrap()["shell_id"] == "job-1"
+                && tool.content == [vetro_proto::ToolContent::Text { text: "session_id=sess_child".into() }]
+        ));
         assert!(
             matches!(&answer.kind, ItemKind::AgentMessage { text, streaming: false }
             if text == "saved response")
         );
+        assert_eq!(end.ts, answer.ts);
+        assert_eq!(end.turn_id, user.turn_id);
+        assert_ne!(end.turn_id, interrupted.turn_id);
+        assert!(matches!(
+            &end.kind,
+            ItemKind::TurnEnd {
+                stop_reason: StopReason::EndTurn,
+                duration_ms: Some(3000),
+                usage: Some(usage),
+            } if usage.input == Some(42) && usage.output == Some(7)
+        ));
     }
-    assert_eq!(devin.process_auth(), Some(AuthState::Required));
-    devin.authenticate("devin-browser").await.unwrap();
-    let transcript = devin.read("stored", Some(&cwd)).await.unwrap();
-    assert!(matches!(
-        &transcript.items[0].kind,
-        ItemKind::UserMessage { content } if *content == [text("old prompt")]
-    ));
-    assert!(transcript.items.iter().any(|item| {
-        matches!(&item.kind, ItemKind::AgentMessage { text, streaming: false }
-            if text == &DEVIN_CHUNKS.concat())
-    }));
-    assert_eq!(
-        failed.read("stored", Some(&cwd)).await.unwrap_err().code,
-        ErrorCode::Internal
-    );
+    assert!(offline.wire_log().await.is_none());
 
     let (sink, _) = mpsc::unbounded_channel();
     assert!(matches!(
@@ -562,10 +649,106 @@ async fn devin_history_replay() {
     locked.shutdown().await;
     devin.shutdown().await;
     failed.shutdown().await;
+    unlisted.shutdown().await;
+}
+
+async fn acp_replay_boundaries() {
+    let mut spec = SpawnSpec::new(env::current_exe().unwrap());
+    spec.args = vec!["--agent".into(), "replay-boundaries".into()];
+    let agent = AcpAgent::new("custom", "Custom", spec);
+    let transcript = agent.read("stored", None).await.unwrap();
+    let [user, answer, end, second, partial, tool] = transcript.items.as_slice() else {
+        panic!("expected completed turn and interrupted replay tail");
+    };
+    assert_eq!(end.turn_id, user.turn_id);
+    assert_eq!(end.turn_id, answer.turn_id);
+    assert_eq!(tool.turn_id, second.turn_id);
+    assert_eq!(partial.turn_id, second.turn_id);
+    assert_eq!(end.ts, None);
+    assert!(matches!(
+        end.kind,
+        ItemKind::TurnEnd {
+            stop_reason: StopReason::EndTurn,
+            duration_ms: None,
+            usage: None,
+        }
+    ));
+    agent.shutdown().await;
+}
+
+async fn kiro_native_history_metadata() {
+    let temp = tempfile::tempdir().unwrap();
+    let session = temp.path().join(".kiro/sessions/project/sess_fixture");
+    std::fs::create_dir_all(&session).unwrap();
+    std::fs::write(
+        session.join("session.json"),
+        json!({"id":"sess_fixture","createdAt":"2026-11-25T12:00:00.250Z"}).to_string(),
+    )
+    .unwrap();
+    let events = [
+        json!({"timestamp":"2026-11-25T12:00:00.500Z","payload":{
+            "type":"user","content":"old prompt","_meta":{"kiro":{"userMessageTag":"prompt-1"}}
+        }}),
+        json!({"timestamp":"2026-11-25T12:00:01Z","payload":{
+            "type":"turn_start","turnId":"native","userMessageTag":"prompt-1"
+        }}),
+        json!({"timestamp":"2026-11-25T12:00:06Z","payload":{
+            "type":"usage_summary","turnId":"native","elapsedTime":4242
+        }}),
+        json!({"timestamp":"2026-11-25T12:00:06Z","payload":{
+            "type":"turn_end","turnId":"native","stopReason":"end_turn"
+        }}),
+    ];
+    let log = session.join("messages.jsonl");
+    let write_log = |events: &[Value]| {
+        let text = events
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&log, text).unwrap();
+    };
+    write_log(&events);
+    let mut spec = SpawnSpec::new(env::current_exe().unwrap());
+    spec.args = vec!["--agent".into(), "kiro-history".into()];
+    spec.env.insert(
+        if cfg!(windows) { "USERPROFILE" } else { "HOME" }.into(),
+        temp.path().as_os_str().to_owned(),
+    );
+    let agent = AcpAgent::new("kiro", "Kiro", spec);
+    let listing = agent.list(None).await.unwrap();
+    assert_eq!(listing.sessions[0].created_at, Some(1_795_608_000_250));
+    let transcript = agent.read("sess_fixture", None).await.unwrap();
+    let [user, answer, end] = transcript.items.as_slice() else {
+        panic!("expected native-backed terminal footer");
+    };
+    assert_eq!(end.ts, Some(1_795_608_006_000));
+    assert_eq!(answer.turn_id, user.turn_id);
+    assert_eq!(end.turn_id, user.turn_id);
+    assert!(matches!(
+        end.kind,
+        ItemKind::TurnEnd {
+            stop_reason: StopReason::EndTurn,
+            duration_ms: Some(4242),
+            usage: None,
+        }
+    ));
+    write_log(&events[..3]);
+    let interrupted = agent.read("sess_fixture", None).await.unwrap();
+    assert_eq!(interrupted.items.len(), 2);
+
+    let mut mismatched = events;
+    mismatched[0]["payload"]["content"] = json!("different prompt");
+    write_log(&mismatched);
+    let unmatched = agent.read("sess_fixture", None).await.unwrap();
+    assert_eq!(unmatched.items.len(), 2);
+    agent.shutdown().await;
 }
 
 async fn suites() {
     devin_history_replay().await;
+    acp_replay_boundaries().await;
+    kiro_native_history_metadata().await;
     let silent = agent("cancel-timeout");
     let (sink, mut events) = mpsc::unbounded_channel();
     let session = silent

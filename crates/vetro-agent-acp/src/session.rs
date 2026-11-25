@@ -244,7 +244,10 @@ impl AcpSession {
         state
             .replay
             .take()
-            .map(|replay| replay.transcript)
+            .map(|mut replay| {
+                replay.transcript.items = replay_turns(replay.transcript.items);
+                replay.transcript
+            })
             .unwrap_or_default()
     }
 
@@ -631,6 +634,10 @@ impl Session for AcpSession {
     fn wire_log(&self) -> Arc<WireLog> {
         self.log.clone()
     }
+
+    fn descendants(&self) -> Vec<vetro_agent_api::process::ProcessIdentity> {
+        self.connection.descendants()
+    }
 }
 
 impl State {
@@ -790,7 +797,7 @@ impl State {
             {
                 *streaming = true;
             }
-            draft.ts = draft.ts.or_else(|| mapping::timestamp(&value["timestamp"]));
+            draft.ts = draft.ts.or_else(|| mapping::update_timestamp(value));
             self.open = Some(Message {
                 role,
                 native_id,
@@ -857,7 +864,7 @@ impl State {
         let mut draft = previous.unwrap_or_else(|| {
             self.draft(id.clone(), ItemKind::ToolCall(mapping::new_tool(call_id)))
         });
-        draft.ts = draft.ts.or_else(|| mapping::timestamp(&value["timestamp"]));
+        draft.ts = draft.ts.or_else(|| mapping::update_timestamp(value));
         if let ItemKind::ToolCall(tool) = &mut draft.kind {
             mapping::patch_tool(tool, value);
         }
@@ -884,4 +891,46 @@ impl State {
         }
         self.emit(SessionEvent::Usage(self.usage.clone()));
     }
+}
+
+fn replay_turns(items: Vec<ItemDraft>) -> Vec<ItemDraft> {
+    let mut replay = Vec::with_capacity(items.len());
+    let mut turn = None::<String>;
+    let mut answered = false;
+    let mut pending = false;
+    for mut item in items {
+        match &item.kind {
+            ItemKind::UserMessage { .. } => {
+                if let Some(previous) = turn.filter(|_| answered && !pending) {
+                    replay.push(ItemDraft::turn_end(
+                        &previous,
+                        StopReason::EndTurn,
+                        None,
+                        None,
+                        None,
+                    ));
+                }
+                turn = Some(format!("replay:{}", item.id));
+                answered = false;
+                pending = false;
+            }
+            ItemKind::AgentMessage { text, streaming } => {
+                answered = !streaming && !text.trim().is_empty();
+            }
+            ItemKind::Reasoning { .. } => answered = false,
+            ItemKind::ToolCall(tool) => {
+                answered = false;
+                pending |= matches!(
+                    tool.status,
+                    vetro_proto::ToolStatus::Pending | vetro_proto::ToolStatus::InProgress
+                );
+            }
+            ItemKind::Request(request) => pending |= request.resolution.is_none(),
+            ItemKind::TurnEnd { .. } => answered = false,
+            _ => {}
+        }
+        item.turn_id = item.turn_id.or_else(|| turn.clone());
+        replay.push(item);
+    }
+    replay
 }

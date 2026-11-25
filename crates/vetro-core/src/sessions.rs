@@ -32,6 +32,7 @@ struct Timeline {
     last_activity: Instant,
     last_access: Instant,
     raw_saved_at: Option<Instant>,
+    turn_baseline: Option<HashSet<vetro_agent_api::process::ProcessIdentity>>,
     status: ThreadStatus,
     pending: HashMap<String, usize>,
     queue: VecDeque<QueuedMessage>,
@@ -127,7 +128,10 @@ impl Core {
         id: &str,
         limit: Option<u32>,
     ) -> Result<(ThreadOpenResult, Arc<Thread>)> {
-        let thread = self.thread(id).await?;
+        let thread = self.thread(id).await.inspect_err(|error| {
+            self.home
+                .log(&format!("Opening {id} failed ({:?}): {error}", error.code));
+        })?;
         let mut snapshot = thread.snapshot(limit);
         if !snapshot.thread.live {
             let cached = self.cached_thread_options(&snapshot.thread);
@@ -235,13 +239,15 @@ impl Core {
         );
         summary.live = true;
         summary.status = ThreadStatus::Running;
-        if !params.options.is_empty() {
-            if let Err(error) = self.home.change_state(|state| {
-                state.threads.entry(summary.id.clone()).or_default().options = params.options;
-            }) {
-                self.home
-                    .log(&format!("Could not save thread choices: {error}"));
+        if let Err(error) = self.home.change_state(|state| {
+            let overlay = state.threads.entry(summary.id.clone()).or_default();
+            overlay.created_here = true;
+            if !params.options.is_empty() {
+                overlay.options = params.options;
             }
+        }) {
+            self.home
+                .log(&format!("Could not save thread choices: {error}"));
         }
         if let Some(options) = session.initial_options() {
             if let Err(error) = self
@@ -324,6 +330,7 @@ impl Core {
         summary.model.clone_from(&source_summary.model);
         summary.live = true;
         summary.status = ThreadStatus::Idle;
+        self.remember_created_here(&summary.id);
         let native_items = self
             .read_history_items(&agent, &summary)
             .await
@@ -837,6 +844,7 @@ impl Thread {
         let previous = {
             let mut state = self.state.lock().unwrap();
             let previous = state.session.replace(session.clone());
+            state.turn_baseline = None;
             if let Some(previous) = &previous {
                 state.generation += 1;
                 self.persist_log(&core, &summary.id, previous);
@@ -898,8 +906,10 @@ impl Thread {
         session: Arc<dyn Session>,
         content: Vec<ContentBlock>,
     ) -> Result<()> {
+        let baseline = session.descendants().into_iter().collect();
         let (generation, was_active) = {
             let mut state = self.state.lock().unwrap();
+            state.turn_baseline = Some(baseline);
             state.last_activity = Instant::now();
             let was_active = state.active();
             state.status = ThreadStatus::Running;
@@ -1094,8 +1104,17 @@ impl Thread {
         thread
     }
 
-    pub(crate) async fn detach(&self) -> Result<()> {
+    pub(crate) async fn detach(&self, force: bool) -> Result<()> {
         let _operation = self.operations.lock().await;
+        let background = self.background_processes();
+        if !force && background > 0 {
+            return Err(AgentError::new(
+                ErrorCode::BackgroundWork,
+                format!(
+                    "{background} background process(es) started by this thread are still running"
+                ),
+            ));
+        }
         self.release(false, None).await
     }
 
@@ -1212,8 +1231,28 @@ impl Thread {
         session.rewind_files(user_message_id, dry_run).await
     }
 
+    /// Processes started during the latest turn that are still running.
+    /// Tool servers the agent already had when the turn began are not counted.
+    pub(crate) fn background_processes(&self) -> usize {
+        let (session, baseline) = {
+            let state = self.state.lock().unwrap();
+            let (Some(session), Some(baseline)) =
+                (state.session.clone(), state.turn_baseline.clone())
+            else {
+                return 0;
+            };
+            (session, baseline)
+        };
+        session
+            .descendants()
+            .into_iter()
+            .filter(|process| !baseline.contains(process))
+            .count()
+    }
+
     async fn release(&self, force: bool, idle: Option<Duration>) -> Result<()> {
         let core = self.core();
+        let automatic = idle.is_some_and(|idle| !idle.is_zero());
         let agent_id = {
             let state = self.state.lock().unwrap();
             if state.session.is_none() {
@@ -1224,6 +1263,10 @@ impl Thread {
             }
             state.summary.agent_id.clone()
         };
+        let background = self.background_processes();
+        if automatic && background > 0 {
+            return Ok(());
+        }
         let registry = core.registry();
         let _guard = if registry.get(&agent_id).is_ok() {
             registry.enter(&agent_id, false).await.ok()
@@ -1244,6 +1287,7 @@ impl Thread {
             let Some(session) = state.session.take() else {
                 return Ok(());
             };
+            state.turn_baseline = None;
             state.generation += 1;
             if !state.queue.is_empty() {
                 state.queue.clear();
@@ -1261,6 +1305,15 @@ impl Thread {
             state.changed_without_bump(&core);
             (session, state.summary.id.clone())
         };
+        let reason = match (force, idle) {
+            (true, _) => "shutdown",
+            (false, Some(idle)) if idle.is_zero() => "history edit",
+            (false, Some(_)) => "idle",
+            (false, None) => "user detach",
+        };
+        core.home.log(&format!(
+            "Released {id} ({reason}); {background} background process(es) were running"
+        ));
         session.detach().await;
         self.persist_log(&core, &id, &session);
         registry.request_release(&agent_id);
@@ -1348,6 +1401,7 @@ impl Timeline {
             last_activity: Instant::now(),
             last_access: Instant::now(),
             raw_saved_at: None,
+            turn_baseline: None,
             pending: HashMap::new(),
             queue: VecDeque::new(),
             queue_seq: 0,

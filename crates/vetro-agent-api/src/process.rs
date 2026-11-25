@@ -48,6 +48,9 @@ impl SpawnSpec {
 
 pub type Stdout = mpsc::Receiver<io::Result<String>>;
 
+/// A live process identity: its id and a platform start marker that guards against id reuse.
+pub type ProcessIdentity = (u32, u64);
+
 struct WriteLine {
     text: String,
     done: oneshot::Sender<io::Result<()>>,
@@ -127,6 +130,16 @@ impl Process {
 
     pub fn has_exited(&self) -> bool {
         self.exited.borrow().is_some()
+    }
+
+    /// Processes the agent started that are still alive, excluding the agent itself.
+    pub fn descendants(&self) -> Vec<ProcessIdentity> {
+        if self.has_exited() {
+            return Vec::new();
+        }
+        let mut members = self.tree.members(self.pid);
+        members.retain(|(pid, _)| *pid != self.pid);
+        members
     }
 
     pub fn wire_log(&self) -> Arc<WireLog> {

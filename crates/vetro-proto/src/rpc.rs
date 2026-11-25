@@ -39,6 +39,8 @@ pub enum ErrorCode {
     /// The thread is read-only history that the agent cannot continue.
     NotResumable,
     Busy,
+    /// Processes started by the thread are still running; retry with `force` to end them.
+    BackgroundWork,
     Internal,
 }
 
@@ -308,6 +310,16 @@ pub struct ThreadOpenResult {
 #[ts(export)]
 pub struct ThreadIdParams {
     pub thread_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, optional_fields)]
+pub struct ThreadDetachParams {
+    pub thread_id: String,
+    /// Detach even when processes started during the latest turn are still running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub force: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

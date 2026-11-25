@@ -804,6 +804,10 @@ impl Session for Live {
     fn wire_log(&self) -> Arc<WireLog> {
         self.log.clone()
     }
+
+    fn descendants(&self) -> Vec<vetro_agent_api::process::ProcessIdentity> {
+        self.app.peer.descendants()
+    }
 }
 
 fn status(state: &State, native: &Value) -> ThreadStatus {

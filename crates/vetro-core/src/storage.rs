@@ -4,7 +4,7 @@ use rusqlite::{
     params, Connection, ErrorCode, OptionalExtension, Row, Transaction, TransactionBehavior,
 };
 use vetro_agent_api::{session_is_internal, Result};
-use vetro_proto::{rpc::SearchHit, ThreadParent, ThreadStatus, ThreadSummary};
+use vetro_proto::{rpc::SearchHit, ThreadParent, ThreadSource, ThreadStatus, ThreadSummary};
 
 use crate::{
     history::Mark,
@@ -276,8 +276,9 @@ impl Index {
         {
             affected.extend(dependents(&tx, &thread.id)?);
         }
-        let internal_flag = classified(chosen)
-            || (chosen.live && (classified(thread) || old.as_ref().is_some_and(classified)));
+        let internal_flag = chosen.source != ThreadSource::Vetro
+            && (classified(chosen)
+                || (chosen.live && (classified(thread) || old.as_ref().is_some_and(classified))));
         save(&tx, chosen, internal_flag)?;
         if native.is_none() && projection.is_none() {
             if thread.live {
@@ -396,6 +397,14 @@ impl Index {
         }
         tx.commit().map_err(internal)?;
         Ok(changes)
+    }
+
+    pub fn created_in_vetro(&self) -> Result<Vec<String>> {
+        let conn = self.0.lock().unwrap();
+        let mut stmt = conn
+            .prepare_cached("SELECT id FROM threads WHERE source='vetro'")
+            .map_err(internal)?;
+        collect(&mut stmt, [], |row| row.get(0))
     }
 
     pub fn links(&self) -> Result<Vec<(String, ThreadParent)>> {
@@ -534,6 +543,26 @@ fn migrate_internal(conn: &mut Connection) -> rusqlite::Result<()> {
         }
         tx.pragma_update(None, "user_version", 3)?;
     }
+    if version < 4 {
+        let existing_children = {
+            let mut read = tx.prepare("SELECT child FROM links ORDER BY child")?;
+            let children = read.query_map([], |row| row.get::<_, String>(0))?;
+            children.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        tx.execute_batch(
+            "DELETE FROM call_sessions WHERE EXISTS(
+                 SELECT 1 FROM calls c WHERE c.parent=call_sessions.parent
+                 AND c.call=call_sessions.call AND c.target IS NULL
+             );
+             DELETE FROM calls WHERE target IS NULL;
+             UPDATE threads SET mark=NULL, indexed=NULL;",
+        )?;
+        let mut changed = HashSet::new();
+        for child in existing_children {
+            relink(&tx, &child, &mut changed)?;
+        }
+        tx.pragma_update(None, "user_version", 4)?;
+    }
     tx.commit()
 }
 
@@ -585,21 +614,29 @@ fn dependents(conn: &Connection, id: &str) -> Result<Vec<String>> {
            ON s.child=':' || lower(substr(t.id,instr(t.id,':')+1))
            WHERE s.parent=?1 AND s.child LIKE ':%' UNION
          SELECT t.id FROM threads t JOIN (SELECT DISTINCT target FROM calls WHERE parent=?1) c
-           ON t.agent=c.target WHERE t.source IN ('exec','unknown')",
+         ON t.agent=c.target WHERE t.source IN ('exec','unknown') UNION
+         SELECT t.id FROM threads t JOIN calls c ON c.parent=?1 AND c.target IS NULL
+           AND c.evidence->>'launch' WHERE t.source IN ('exec','unknown')
+           AND t.summary->>'createdAt' BETWEEN c.evidence->>'start'
+           AND c.evidence->>'start' + ?2",
         )
         .map_err(internal)?;
-    collect(&mut stmt, [id], |row| row.get(0))
+    collect(&mut stmt, params![id, links::LAUNCH_WINDOW], |row| {
+        row.get(0)
+    })
 }
 
 fn relink(tx: &Transaction<'_>, id: &str, changed: &mut HashSet<String>) -> rusqlite::Result<()> {
     let Some((summary, hint, prompt)) = tx
         .query_row(
-            "SELECT t.summary,h.id,t.prompt FROM threads t
+            "SELECT t.summary,h.id,t.prompt,t.internal FROM threads t
              LEFT JOIN threads h ON h.id=t.hint AND h.id<>t.id WHERE t.id=?1",
             [id],
             |row| {
+                let mut summary = decode::<ThreadSummary>(row, 0)?;
+                summary.internal = row.get(3)?;
                 Ok((
-                    decode::<ThreadSummary>(row, 0)?,
+                    summary,
                     row.get::<_, Option<String>>(1)?,
                     row.get::<_, Option<String>>(2)?,
                 ))
@@ -618,25 +655,27 @@ fn relink(tx: &Transaction<'_>, id: &str, changed: &mut HashSet<String>) -> rusq
     )?;
     let matching = if known_exact || hint.is_some() || links::eligible(&summary) {
         let mut stmt = tx.prepare_cached(
-            "SELECT DISTINCT c.parent,p.summary->>'createdAt',c.evidence
+            "SELECT DISTINCT c.parent,c.evidence
              FROM calls c JOIN threads p ON p.id=c.parent WHERE c.parent<>?1 AND
-             (c.target=?2 OR (c.target IS NOT NULL AND c.parent=?3) OR (c.target IS NULL AND EXISTS(
+             (c.target=?2 OR (c.target IS NOT NULL AND c.parent=?3) OR (c.target IS NULL AND (EXISTS(
                SELECT 1 FROM call_sessions s WHERE s.child=?4 AND s.parent=c.parent AND s.call=c.call
-             )))",
+             ) OR (c.evidence->>'launch' AND ?5 BETWEEN c.evidence->>'start'
+               AND c.evidence->>'start' + ?6))))",
         )?;
-        let calls = stmt.query_map(params![id, summary.agent_id, hint, untyped], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, Option<i64>>(1)?,
-                decode::<Call>(row, 2)?,
-            ))
-        })?;
+        let calls = stmt.query_map(
+            params![
+                id,
+                summary.agent_id,
+                hint,
+                untyped,
+                summary.created_at,
+                links::LAUNCH_WINDOW
+            ],
+            |row| Ok((row.get::<_, String>(0)?, decode::<Call>(row, 1)?)),
+        )?;
         let mut best = links::Matcher::new(&summary, hint.as_deref(), prompt.as_deref());
         for call in calls {
-            let (parent, created_at, mut call) = call?;
-            if call.targets.is_empty() {
-                call.start = call.start.or(created_at);
-            }
+            let (parent, call) = call?;
             best.consider(parent, &call);
         }
         best.finish()
@@ -1096,20 +1135,60 @@ mod tests {
         assert!(parent(&snapshot, "claude:desktop").unwrap().is_some());
         for _ in 0..2 {
             let index = Index::open(dir.path()).unwrap();
-            assert_eq!(
-                index.links().unwrap(),
-                vec![("claude:valid".into(), link.clone())]
-            );
+            assert!(index.links().unwrap().is_empty());
             let version: u32 = index
                 .0
                 .lock()
                 .unwrap()
                 .pragma_query_value(None, "user_version", |row| row.get(0))
                 .unwrap();
-            assert_eq!(version, 3);
+            assert_eq!(version, 4);
         }
         assert!(parent(&snapshot, "claude:desktop").unwrap().is_some());
         snapshot.commit().unwrap();
         assert!(parent(&reader, "claude:desktop").unwrap().is_none());
+    }
+
+    #[test]
+    fn migrates_v3_by_scheduling_transcript_reindexing_without_prompt_heuristics() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = Index::open(dir.path()).unwrap();
+        let thread = crate::service::summary(
+            "kiro",
+            vetro_agent_api::SessionRecord {
+                native_id: "sess_automated".into(),
+                title: "Descriptive catalog title".into(),
+                preview: None,
+                cwd: None,
+                created_at: None,
+                updated_at: 42,
+                source: vetro_proto::ThreadSource::Unknown,
+                origin: None,
+                model: None,
+                resumable: true,
+                parent_native_id: None,
+                internal: false,
+            },
+        );
+        index.mark(&thread, None, "catalog", &thread.title).unwrap();
+        {
+            let conn = index.0.lock().unwrap();
+            conn.execute(
+                "UPDATE threads SET prompt=?2,indexed=mark WHERE id=?1",
+                params![
+                    thread.id,
+                    "  <caller_constraints>delegated</caller_constraints>"
+                ],
+            )
+            .unwrap();
+            conn.pragma_update(None, "user_version", 3).unwrap();
+        }
+        drop(index);
+
+        let index = Index::open(dir.path()).unwrap();
+        let migrated = index.get(&thread.id).unwrap().unwrap();
+        assert!(!migrated.internal);
+        assert_eq!(migrated.source, vetro_proto::ThreadSource::Unknown);
+        assert_eq!(index.marks("kiro").unwrap(), [(thread.id, None, None)]);
     }
 }

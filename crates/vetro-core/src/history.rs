@@ -281,7 +281,12 @@ impl Core {
         }
         let mut entries: Vec<_> = entries.into_values().collect();
         entries.sort_unstable_by_key(|entry| std::cmp::Reverse(entry.thread.updated_at));
-        for entry in entries {
+        for mut entry in entries {
+            if self.created_here(&entry.thread.id) {
+                entry.thread.source = vetro_proto::ThreadSource::Vetro;
+                entry.thread.internal = false;
+                entry.mark.push_str("|vetro");
+            }
             let previous = known.remove(&entry.thread.id).unwrap_or_default();
             if previous.0.as_ref() != Some(&entry.mark) {
                 let title = self.overlay(entry.thread.clone()).title;
@@ -315,11 +320,8 @@ impl Core {
             }
         }
         self.publish_history(changes);
-        let may_read = id != "devin" || agent.process_auth() == Some(vetro_proto::AuthState::Ok);
-        if may_read {
-            if !pending.is_empty() {
-                self.progress(id, scanned, total, false);
-            }
+        if !pending.is_empty() {
+            self.progress(id, scanned, total, false);
             pending.sort_unstable_by_key(|(thread, _)| {
                 (
                     self.sessions.get(&thread.id).is_none(),
@@ -386,8 +388,10 @@ impl Core {
                     Ok(Err(error)) => {
                         failed += 1;
                         if failed <= 3 {
-                            self.home
-                                .log(&format!("Indexing {} failed: {:?}", thread.id, error.code));
+                            self.home.log(&format!(
+                                "Indexing {} failed ({:?}): {error}",
+                                thread.id, error.code
+                            ));
                         }
                     }
                     Err(_) => failed += 1,
@@ -410,7 +414,7 @@ impl Core {
         allow_protocol: bool,
     ) -> Result<Option<Transcript>> {
         if agent.id() == "devin" && agent.process_auth() != Some(vetro_proto::AuthState::Ok) {
-            return Ok(None);
+            return agent.read_without_runtime(&summary.native_id).await;
         }
         if allow_protocol || agent.id() == "claude" {
             return self.read_history_items(agent, summary).await.map(Some);

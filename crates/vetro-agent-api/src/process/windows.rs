@@ -20,8 +20,9 @@ use windows_sys::Win32::{
     Globalization::{CompareStringOrdinal, CSTR_EQUAL, CSTR_GREATER_THAN, CSTR_LESS_THAN},
     System::{
         JobObjects::{
-            CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
-            TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+            CreateJobObjectW, JobObjectBasicProcessIdList, JobObjectExtendedLimitInformation,
+            QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
+            JOBOBJECT_BASIC_PROCESS_ID_LIST, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
             JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
         },
         Threading::{
@@ -43,6 +44,28 @@ pub(super) struct Tree(OwnedHandle);
 impl Tree {
     pub(super) fn terminate(&self) -> io::Result<()> {
         checked(unsafe { TerminateJobObject(self.0.as_raw_handle(), 1) })
+    }
+
+    pub(super) fn members(&self, _leader: u32) -> Vec<(u32, u64)> {
+        const CAPACITY: usize = 1024;
+        let header = size_of::<JOBOBJECT_BASIC_PROCESS_ID_LIST>() - size_of::<usize>();
+        let mut buffer = vec![0usize; header.div_ceil(size_of::<usize>()) + CAPACITY];
+        let queried = unsafe {
+            QueryInformationJobObject(
+                self.0.as_raw_handle(),
+                JobObjectBasicProcessIdList,
+                buffer.as_mut_ptr().cast(),
+                (buffer.len() * size_of::<usize>()) as u32,
+                null_mut(),
+            )
+        };
+        if queried == 0 {
+            return Vec::new();
+        }
+        let list = unsafe { &*buffer.as_ptr().cast::<JOBOBJECT_BASIC_PROCESS_ID_LIST>() };
+        let count = (list.NumberOfProcessIdsInList as usize).min(CAPACITY);
+        let ids = unsafe { std::slice::from_raw_parts(list.ProcessIdList.as_ptr(), count) };
+        ids.iter().map(|pid| (*pid as u32, 0)).collect()
     }
 }
 

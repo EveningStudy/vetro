@@ -4,11 +4,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use vetro_agent_api::ItemDraft;
 use vetro_proto::{
-    ContentBlock, ItemKind, LinkConfidence, ThreadParent, ThreadSource, ThreadSummary, ToolContent,
-    ToolKind, ToolStatus,
+    ContentBlock, ItemKind, LinkConfidence, ThreadParent, ThreadSource, ThreadSummary, ToolCall,
+    ToolContent, ToolKind, ToolStatus,
 };
 
 use crate::files;
+
+const LAUNCH_MIN_RUN: i64 = 10_000;
+pub(crate) const LAUNCH_WINDOW: i64 = 60_000;
 
 #[derive(Default)]
 pub(crate) struct Projection {
@@ -28,6 +31,8 @@ pub(crate) struct Call {
     end: Option<i64>,
     #[serde(default)]
     activity: bool,
+    #[serde(default)]
+    launch: bool,
 }
 
 impl Projection {
@@ -39,7 +44,10 @@ impl Projection {
         let mut projection = Self::default();
         let mut next = None;
         let mut calls = Vec::new();
+        let mut shell_reads = Vec::new();
+        let mut position = 0;
         for (kind, timestamp, turn) in items.rev() {
+            position += 1;
             match kind {
                 ItemKind::UserMessage { content } => {
                     let text = content
@@ -57,6 +65,15 @@ impl Projection {
                 }
                 ItemKind::AgentMessage { text, .. } if !text.trim().is_empty() => {
                     projection.messages.push(text.clone());
+                }
+                ItemKind::ToolCall(tool) if shell_reference(tool).is_some() => {
+                    if let Some(shell) = shell_reference(tool) {
+                        let mut ids = Vec::new();
+                        output_ids(tool, false, &mut ids);
+                        if !ids.is_empty() {
+                            shell_reads.push((position, shell, ids));
+                        }
+                    }
                 }
                 ItemKind::ToolCall(tool)
                     if matches!(tool.kind, ToolKind::Execute | ToolKind::Agent) =>
@@ -97,19 +114,30 @@ impl Projection {
                     targets.dedup();
                     let allow_bare = !targets.is_empty();
                     let mut ids = Vec::new();
-                    if let Some(output) = &tool.output {
-                        collect_ids(output, false, allow_bare, &mut ids);
-                    }
-                    for content in &tool.content {
-                        match content {
-                            ToolContent::Text { text }
-                            | ToolContent::Terminal { output: text, .. } => {
-                                text_ids(text, allow_bare, &mut ids);
-                            }
-                            _ => {}
-                        }
-                    }
-                    if allow_bare || (tool.kind == ToolKind::Execute && !ids.is_empty()) {
+                    output_ids(tool, allow_bare, &mut ids);
+                    let shell = (tool.kind == ToolKind::Execute)
+                        .then(|| background_shell(tool))
+                        .flatten();
+                    let start = input["startedAtMs"].as_i64().or(timestamp);
+                    let end = if shell.is_some() {
+                        None
+                    } else {
+                        input["completedAtMs"].as_i64().or_else(|| {
+                            matches!(tool.status, ToolStatus::Completed | ToolStatus::Failed).then(
+                                || {
+                                    next.filter(|(next_turn, _)| *next_turn == turn)
+                                        .map_or(summary.updated_at, |(_, ts)| ts)
+                                },
+                            )
+                        })
+                    };
+                    let launch = tool.kind == ToolKind::Execute
+                        && targets.is_empty()
+                        && start.is_some_and(|start| {
+                            shell.is_some()
+                                || end.is_none_or(|end| end.saturating_sub(start) >= LAUNCH_MIN_RUN)
+                        });
+                    if allow_bare || !ids.is_empty() || shell.is_some() || launch {
                         let cwd = terminal
                             .and_then(|(_, cwd)| cwd)
                             .or_else(|| {
@@ -133,26 +161,18 @@ impl Projection {
                         }
                         ids.sort_unstable();
                         ids.dedup();
-                        let end = input["completedAtMs"].as_i64().or_else(|| {
-                            matches!(tool.status, ToolStatus::Completed | ToolStatus::Failed).then(
-                                || {
-                                    next.filter(|(next_turn, _)| *next_turn == turn)
-                                        .map_or(summary.updated_at, |(_, ts)| ts)
-                                },
-                            )
-                        });
-                        calls.push(Call {
+                        let call = Call {
                             id: tool.call_id.clone(),
                             targets,
                             ids,
                             command: command.chars().take(32_768).collect(),
                             cwd,
-                            start: timestamp
-                                .or(input["startedAtMs"].as_i64())
-                                .or_else(|| (!allow_bare).then_some(summary.created_at).flatten()),
+                            start,
                             end,
                             activity,
-                        });
+                            launch,
+                        };
+                        calls.push((position, shell, call));
                     }
                 }
                 _ => {}
@@ -161,8 +181,28 @@ impl Projection {
                 next = Some((turn, timestamp));
             }
         }
-        calls.reverse();
-        for call in calls {
+        let mut launches = HashMap::new();
+        for (index, (position, shell, _)) in calls.iter().enumerate() {
+            if let Some(shell) = shell {
+                launches
+                    .entry(*shell)
+                    .and_modify(|launch| *launch = None)
+                    .or_insert(Some((*position, index)));
+            }
+        }
+        for (position, shell, ids) in shell_reads {
+            if let Some(Some((launch, index))) = launches.get(shell) {
+                if position < *launch {
+                    calls[*index].2.ids.extend(ids);
+                }
+            }
+        }
+        for (_, _, mut call) in calls.into_iter().rev() {
+            if call.targets.is_empty() && call.ids.is_empty() && !call.launch {
+                continue;
+            }
+            call.ids.sort_unstable();
+            call.ids.dedup();
             if let Some(existing) = projection
                 .calls
                 .iter_mut()
@@ -185,6 +225,54 @@ impl Projection {
             None,
         )
     }
+}
+
+fn text_output(tool: &ToolCall) -> impl Iterator<Item = &str> {
+    tool.output
+        .as_ref()
+        .and_then(Value::as_str)
+        .into_iter()
+        .chain(tool.content.iter().filter_map(|content| match content {
+            ToolContent::Text { text } | ToolContent::Terminal { output: text, .. } => {
+                Some(text.as_str())
+            }
+            _ => None,
+        }))
+}
+
+fn output_ids(tool: &ToolCall, allow_bare: bool, ids: &mut Vec<String>) {
+    if let Some(output) = &tool.output {
+        collect_ids(output, false, allow_bare, ids);
+    }
+    for text in text_output(tool) {
+        text_ids(text, allow_bare, ids);
+    }
+}
+
+fn shell_reference(tool: &ToolCall) -> Option<&str> {
+    string(
+        tool.input.as_ref()?,
+        &["shell_id", "shellId", "bash_id", "task_id", "taskId"],
+    )
+    .filter(|id| valid_handle(id))
+}
+
+fn background_shell(tool: &ToolCall) -> Option<&str> {
+    tool.output
+        .as_ref()
+        .and_then(|output| string(output, &["shell_id", "shellId"]))
+        .or_else(|| {
+            text_output(tool).find_map(|text| {
+                text.trim()
+                    .strip_prefix("Command running in background with ID: ")
+                    .map(str::trim)
+            })
+        })
+        .filter(|id| valid_handle(id))
+}
+
+fn valid_handle(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 128 && id.chars().all(id_character)
 }
 
 fn string<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {
@@ -420,7 +508,7 @@ fn invocations(command: &str) -> Vec<String> {
 }
 
 pub(crate) fn eligible(summary: &ThreadSummary) -> bool {
-    summary.source == ThreadSource::Exec || summary.source == ThreadSource::Unknown
+    matches!(summary.source, ThreadSource::Exec | ThreadSource::Unknown)
 }
 
 pub(crate) struct Matcher<'a> {
@@ -513,22 +601,9 @@ fn score(
             || matches!(
                 child.source,
                 ThreadSource::Exec | ThreadSource::Cli | ThreadSource::Unknown
-            ))
+            ) && (!call.targets.is_empty() || child.created_at.zip(call.start).is_some()))
     {
         return Some((if call.activity { 4 } else { 5 }, LinkConfidence::Exact));
-    }
-    if call.targets.is_empty() || (!explicit && !eligible(child)) {
-        return None;
-    }
-    if prompt.is_some_and(|prompt| {
-        normalized(&call.command).contains(prompt)
-            || stdin.is_some_and(|input| normalized(input).contains(prompt))
-    }) {
-        return Some(if explicit {
-            (3, LinkConfidence::Exact)
-        } else {
-            (2, LinkConfidence::Prompt)
-        });
     }
     let cwd_matches = child
         .cwd
@@ -541,6 +616,35 @@ fn score(
                 left == right
             }
         });
+    if call.targets.is_empty() {
+        let launched = call.launch
+            && cwd_matches
+            && child
+                .created_at
+                .zip(call.start)
+                .is_some_and(|(created, start)| {
+                    created <= start.saturating_add(LAUNCH_WINDOW)
+                        && call.end.is_none_or(|end| created <= end)
+                });
+        return match (launched, explicit) {
+            (true, true) => Some((3, LinkConfidence::Exact)),
+            (true, false) if eligible(child) => Some((1, LinkConfidence::Heuristic)),
+            _ => None,
+        };
+    }
+    if !explicit && !eligible(child) {
+        return None;
+    }
+    if prompt.is_some_and(|prompt| {
+        normalized(&call.command).contains(prompt)
+            || stdin.is_some_and(|input| normalized(input).contains(prompt))
+    }) {
+        return Some(if explicit {
+            (3, LinkConfidence::Exact)
+        } else {
+            (2, LinkConfidence::Prompt)
+        });
+    }
     if (explicit || eligible(child))
         && cwd_matches
         && child
@@ -787,6 +891,7 @@ mod tests {
                 start: Some(start),
                 end: Some(30),
                 activity: false,
+                launch: false,
             };
             let result = score(
                 &child,
@@ -825,6 +930,7 @@ mod tests {
                     start: None,
                     end: None,
                     activity: false,
+                    launch: false,
                 };
                 assert_eq!(
                     score(
@@ -852,6 +958,7 @@ mod tests {
             start: None,
             end: None,
             activity: false,
+            launch: false,
         };
         let mut matcher = Matcher::new(&child, Some("claude:parent"), None);
         matcher.consider("claude:wrong-parent".into(), &call);
@@ -900,6 +1007,7 @@ mod tests {
             start: Some(20),
             end: Some(30),
             activity: false,
+            launch: false,
         };
         let exact = Call {
             id: "exact".into(),
@@ -929,13 +1037,13 @@ mod tests {
         desktop.id = "claude:323efdf0-b5a9-4d11-ad39-7505985a78ac".into();
         desktop.native_id = "323efdf0-b5a9-4d11-ad39-7505985a78ac".into();
         desktop.source = ThreadSource::Desktop;
-        desktop.created_at = Some(210);
+        desktop.created_at = Some(240);
 
         let mut older_exec = child("claude");
         older_exec.id = "claude:11111111-2222-3333-4444-555555555555".into();
         older_exec.native_id = "11111111-2222-3333-4444-555555555555".into();
         older_exec.source = ThreadSource::Exec;
-        older_exec.created_at = Some(100);
+        older_exec.created_at = Some(210);
 
         let items = [ItemKind::ToolCall(vetro_proto::ToolCall {
             call_id: "inspect".into(),
@@ -954,20 +1062,179 @@ mod tests {
             locations: Vec::new(),
             child_thread_ids: Vec::new(),
         })];
-        let projection =
-            Projection::from_items(&parent, items.iter().map(|kind| (kind, None, None)), None);
-        assert_eq!(projection.calls[0].start, Some(200));
-
         let index = crate::storage::Index::temporary();
         for existing in [&desktop, &older_exec] {
             index
                 .index(existing, None, &Projection::default(), &existing.title)
                 .unwrap();
         }
-        index
-            .index(&parent, None, &projection, &parent.title)
-            .unwrap();
-        assert!(index.get(&desktop.id).unwrap().unwrap().parent.is_none());
-        assert!(index.get(&older_exec.id).unwrap().unwrap().parent.is_none());
+        for time in [None, Some(225)] {
+            let projection =
+                Projection::from_items(&parent, items.iter().map(|kind| (kind, time, None)), None);
+            assert_eq!(projection.calls[0].start, time);
+            index
+                .index(&parent, None, &projection, &parent.title)
+                .unwrap();
+            assert!(index.get(&desktop.id).unwrap().unwrap().parent.is_none());
+            assert!(index.get(&older_exec.id).unwrap().unwrap().parent.is_none());
+        }
+    }
+
+    #[test]
+    fn background_receipts_link_the_launch_exactly() {
+        let mut parent = child("devin");
+        parent.created_at = Some(1);
+        let command = |id: &str, kind, input, output: &str| {
+            ItemKind::ToolCall(ToolCall {
+                call_id: id.into(),
+                kind,
+                name: None,
+                title: id.into(),
+                status: ToolStatus::Completed,
+                input: Some(input),
+                output: Some(Value::String(output.into())),
+                content: Vec::new(),
+                locations: Vec::new(),
+                child_thread_ids: Vec::new(),
+            })
+        };
+        let mut target = child("kiro");
+        target.source = ThreadSource::Unknown;
+        target.created_at = Some(110);
+        let receipt = format!(
+            "status=ok
+session_id={}",
+            target.native_id
+        );
+        let items = [
+            (
+                command(
+                    "launch",
+                    ToolKind::Execute,
+                    serde_json::json!({"command":"any-wrapper.ps1 task.md","timeout":0}),
+                    "Command running in background with ID: job-1",
+                ),
+                100,
+            ),
+            (
+                command(
+                    "unrelated",
+                    ToolKind::Read,
+                    serde_json::json!({"shellId":"other-job"}),
+                    "session_id=not-the-child",
+                ),
+                101,
+            ),
+            (
+                command(
+                    "poll",
+                    ToolKind::Other,
+                    serde_json::json!({"shell_id":"job-1"}),
+                    &receipt,
+                ),
+                200,
+            ),
+        ];
+        let projection = Projection::from_items(
+            &parent,
+            items.iter().map(|(item, time)| (item, Some(*time), None)),
+            None,
+        );
+        assert_eq!(projection.calls.len(), 1);
+        let launch = &projection.calls[0];
+        assert_eq!(launch.id, "launch");
+        assert!(launch.targets.is_empty());
+        assert!(launch.launch);
+        assert_eq!(launch.end, None);
+        assert_eq!(launch.ids, [target.native_id.to_ascii_lowercase()]);
+        for first_parent in [false, true] {
+            let index = crate::storage::Index::temporary();
+            if first_parent {
+                index
+                    .index(&parent, None, &projection, &parent.title)
+                    .unwrap();
+            }
+            index
+                .index(&target, None, &Projection::default(), &target.title)
+                .unwrap();
+            if !first_parent {
+                index
+                    .index(&parent, None, &projection, &parent.title)
+                    .unwrap();
+            }
+            let linked = index.get(&target.id).unwrap().unwrap().parent.unwrap();
+            assert_eq!(linked.call_id.as_deref(), Some("launch"));
+            assert_eq!(linked.confidence, LinkConfidence::Exact);
+        }
+        for created in [None, Some(99)] {
+            target.created_at = created;
+            let mut matcher = Matcher::new(&target, None, None);
+            matcher.consider(parent.id.clone(), launch);
+            assert!(matcher.finish().is_none(), "{created:?}");
+        }
+    }
+
+    #[test]
+    fn launch_without_receipt_links_a_unique_recent_session_in_the_same_workspace() {
+        let mut candidate = child("codex");
+        candidate.created_at = Some(3_000);
+        let call = Call {
+            id: "launch".into(),
+            targets: Vec::new(),
+            ids: Vec::new(),
+            command: "any-wrapper task.md".into(),
+            cwd: candidate.cwd.clone(),
+            start: Some(2_000),
+            end: None,
+            activity: false,
+            launch: true,
+        };
+        let mut matcher = Matcher::new(&candidate, None, None);
+        matcher.consider("acp:parent".into(), &call);
+        assert_eq!(
+            matcher.finish().unwrap().confidence,
+            LinkConfidence::Heuristic
+        );
+        let mut matcher = Matcher::new(&candidate, None, None);
+        matcher.consider("acp:parent".into(), &call);
+        matcher.consider("claude:parent".into(), &call);
+        assert!(matcher.finish().is_none());
+        let short = Call {
+            launch: false,
+            ..call.clone()
+        };
+        let finished_early = Call {
+            end: Some(2_500),
+            ..call.clone()
+        };
+        for (candidate, call) in [
+            (
+                ThreadSummary {
+                    cwd: Some("unrelated".into()),
+                    ..candidate.clone()
+                },
+                &call,
+            ),
+            (
+                ThreadSummary {
+                    created_at: Some(2_000 + LAUNCH_WINDOW + 1),
+                    ..candidate.clone()
+                },
+                &call,
+            ),
+            (
+                ThreadSummary {
+                    source: ThreadSource::Desktop,
+                    ..candidate.clone()
+                },
+                &call,
+            ),
+            (candidate.clone(), &short),
+            (candidate.clone(), &finished_early),
+        ] {
+            let mut matcher = Matcher::new(&candidate, None, None);
+            matcher.consider("acp:parent".into(), call);
+            assert!(matcher.finish().is_none(), "{call:?} {candidate:?}");
+        }
     }
 }

@@ -595,6 +595,10 @@ impl Session for ClaudeSession {
     fn wire_log(&self) -> Arc<WireLog> {
         self.process.wire_log()
     }
+
+    fn descendants(&self) -> Vec<vetro_agent_api::process::ProcessIdentity> {
+        self.process.descendants()
+    }
 }
 
 impl State {
