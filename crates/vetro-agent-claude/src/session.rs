@@ -931,25 +931,37 @@ impl State {
 
     fn rate_limit(&mut self, row: &Value, events: &mut Vec<SessionEvent>) {
         let rate = &row["rate_limit_info"];
-        let Some(label) = string(rate, "rateLimitType") else {
-            return;
+        let windows: Vec<(&str, &Value)> = match rate["unifiedWindows"].as_object() {
+            Some(windows) => windows
+                .iter()
+                .map(|(label, window)| (label.as_str(), window))
+                .collect(),
+            None => string(rate, "rateLimitType")
+                .map(|label| vec![(label, rate)])
+                .unwrap_or_default(),
         };
-        let Some(used_percent) = rate["utilization"]
-            .as_f64()
-            .map(|fraction| fraction.clamp(0.0, 1.0) * 100.0)
-            .or_else(|| (rate["status"] == "rejected").then_some(100.0))
-        else {
-            return;
-        };
-        self.usage.rate_limits.retain(|entry| entry.label != label);
-        self.usage.rate_limits.push(RateLimit {
-            label: label.into(),
-            used_percent,
-            resets_at: rate["resetsAt"]
-                .as_i64()
-                .map(|seconds| seconds.saturating_mul(1000)),
-        });
-        events.push(SessionEvent::Usage(self.usage.clone()));
+        let mut changed = false;
+        for (label, window) in windows {
+            let Some(used_percent) = window["utilization"]
+                .as_f64()
+                .map(|fraction| fraction.clamp(0.0, 1.0) * 100.0)
+                .or_else(|| (window["status"] == "rejected").then_some(100.0))
+            else {
+                continue;
+            };
+            self.usage.rate_limits.retain(|entry| entry.label != label);
+            self.usage.rate_limits.push(RateLimit {
+                label: label.into(),
+                used_percent,
+                resets_at: window["resetsAt"]
+                    .as_i64()
+                    .map(|seconds| seconds.saturating_mul(1000)),
+            });
+            changed = true;
+        }
+        if changed {
+            events.push(SessionEvent::Usage(self.usage.clone()));
+        }
     }
 }
 
@@ -1131,5 +1143,44 @@ pub(crate) fn add_tokens(left: Option<u64>, right: Option<u64>) -> Option<u64> {
     match (left, right) {
         (Some(left), Some(right)) => Some(left.saturating_add(right)),
         _ => left.or(right),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rate_limit_reads_every_unified_window() {
+        let row = serde_json::json!({"type":"rate_limit_event","rate_limit_info":{
+        "status":"allowed","resetsAt":1795615800,"rateLimitType":"five_hour",
+        "overageStatus":"rejected","isUsingOverage":false,
+        "unifiedWindows":{
+            "five_hour":{"utilization":0.18,"resetsAt":1795615800,"status":"allowed"},
+            "seven_day":{"utilization":0.74,"resetsAt":1795698000,"status":"allowed"}
+        }}});
+        let mut state = State::default();
+        let mut events = Vec::new();
+        state.rate_limit(&row, &mut events);
+        assert_eq!(events.len(), 1);
+        let limits: Vec<_> = state
+            .usage
+            .rate_limits
+            .iter()
+            .map(|limit| {
+                (
+                    limit.label.as_str(),
+                    limit.used_percent.round() as i64,
+                    limit.resets_at,
+                )
+            })
+            .collect();
+        assert_eq!(
+            limits,
+            [
+                ("five_hour", 18, Some(1_795_615_800_000)),
+                ("seven_day", 74, Some(1_795_698_000_000))
+            ]
+        );
     }
 }

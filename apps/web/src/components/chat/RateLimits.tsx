@@ -64,6 +64,13 @@ export function snapshotAge(updatedAt: number | null, now: number, t: Translate)
 export function shortLimitLabel(label: string) {
   const inner = (/^[a-z0-9_-]+\s*\(([^)]+)\)$/i.exec(label.trim())?.[1] ?? label).trim();
   const lower = inner.toLowerCase();
+  const worded = /^(one|two|three|four|five|six|seven|eight|nine|ten|twelve|\d+)[_\s-](hour|day|week)s?(?:[_\s-](.+))?$/.exec(lower);
+  if (worded) {
+    const numbers: Record<string, number> = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, twelve: 12 };
+    const count = numbers[worded[1]!] ?? Number(worded[1]);
+    const scope = worded[3] ? ` ${worded[3].replace(/_/g, " ")}` : "";
+    return `${count}${worded[2]![0]}${scope}`;
+  }
   if (lower === "weekly") return "7d";
   if (lower === "daily") return "1d";
   const span = /^(\d+)\s*-?\s*(m|mins?|minutes?|h|hrs?|hours?|d|days?|w|wks?|weeks?)$/.exec(lower);
