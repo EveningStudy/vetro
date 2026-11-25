@@ -491,32 +491,20 @@ export function Composer(props: ComposerProps) {
             }}
           />
           {!props.readOnly ? <VoiceButton disabled={sending} onTranscript={insertTranscript} /> : null}
-          {showStop && !hasContent ? (
-            <Tip label={t("composer.stop")}>
-              <button
-                type="button"
-                aria-label={t("composer.stop")}
-                onClick={props.onStop}
-                className="inline-flex h-8 shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-full bg-destructive/90 px-3 text-xs font-medium text-white shadow-xs shadow-destructive/24 transition-colors hover:bg-destructive"
-              >
-                {stopIcon}
-                <span>{t("composer.stop")}</span>
-              </button>
-            </Tip>
-          ) : (
-            <div className="flex shrink-0 items-center gap-1.5">
-              {showStop ? (
-                <Tip label={t("composer.stop")}>
-                  <button
-                    type="button"
-                    aria-label={t("composer.stop")}
-                    onClick={props.onStop}
-                    className="flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full bg-destructive/90 text-white shadow-xs shadow-destructive/24 inset-shadow-[0_1px_rgb(255_255_255/16%)] transition-colors hover:bg-destructive"
-                  >
-                    {stopIcon}
-                  </button>
-                </Tip>
-              ) : null}
+          <div className="flex shrink-0 items-center gap-1.5">
+            {showStop ? (
+              <Tip label={t("composer.stop")}>
+                <button
+                  type="button"
+                  aria-label={t("composer.stop")}
+                  onClick={props.onStop}
+                  className="flex size-9 shrink-0 cursor-pointer items-center justify-center rounded-full bg-destructive/90 text-white shadow-xs shadow-destructive/24 inset-shadow-[0_1px_rgb(255_255_255/16%)] transition-colors hover:bg-destructive sm:size-8"
+                >
+                  {stopIcon}
+                </button>
+              </Tip>
+            ) : null}
+            {!showStop || hasContent ? (
               <Tip label={props.sendBlocked ?? (props.running ? (props.midTurnInput ? t("composer.steer") : t("composer.queue")) : t("composer.send"))}>
                 <button
                   type="button"
@@ -534,8 +522,8 @@ export function Composer(props: ComposerProps) {
                   )}
                 </button>
               </Tip>
-            </div>
-          )}
+            ) : null}
+          </div>
         </div>
       </div>
       {props.below || contextVisible || limitsVisible ? (

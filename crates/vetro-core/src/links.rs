@@ -147,7 +147,9 @@ impl Projection {
                             ids,
                             command: command.chars().take(32_768).collect(),
                             cwd,
-                            start: timestamp.or(input["startedAtMs"].as_i64()),
+                            start: timestamp
+                                .or(input["startedAtMs"].as_i64())
+                                .or_else(|| (!allow_bare).then_some(summary.created_at).flatten()),
                             end,
                             activity,
                         });
@@ -507,6 +509,11 @@ fn score(
         .ids
         .iter()
         .any(|id| id.eq_ignore_ascii_case(&child.native_id))
+        && (explicit
+            || matches!(
+                child.source,
+                ThreadSource::Exec | ThreadSource::Cli | ThreadSource::Unknown
+            ))
     {
         return Some((if call.activity { 4 } else { 5 }, LinkConfidence::Exact));
     }
@@ -908,5 +915,59 @@ mod tests {
         matcher.consider("claude:second".into(), &call);
         matcher.consider("claude:exact".into(), &exact);
         assert_eq!(matcher.finish().unwrap().confidence, LinkConfidence::Exact);
+    }
+
+    #[test]
+    fn ignores_desktop_and_older_sessions_printed_in_tool_output() {
+        let mut parent = child("devin");
+        parent.id = "devin:cool-syrup".into();
+        parent.native_id = "cool-syrup".into();
+        parent.created_at = Some(200);
+        parent.updated_at = 250;
+
+        let mut desktop = child("claude");
+        desktop.id = "claude:323efdf0-b5a9-4d11-ad39-7505985a78ac".into();
+        desktop.native_id = "323efdf0-b5a9-4d11-ad39-7505985a78ac".into();
+        desktop.source = ThreadSource::Desktop;
+        desktop.created_at = Some(210);
+
+        let mut older_exec = child("claude");
+        older_exec.id = "claude:11111111-2222-3333-4444-555555555555".into();
+        older_exec.native_id = "11111111-2222-3333-4444-555555555555".into();
+        older_exec.source = ThreadSource::Exec;
+        older_exec.created_at = Some(100);
+
+        let items = [ItemKind::ToolCall(vetro_proto::ToolCall {
+            call_id: "inspect".into(),
+            kind: ToolKind::Execute,
+            name: None,
+            title: "python inspect.py".into(),
+            status: ToolStatus::Completed,
+            input: None,
+            output: None,
+            content: vec![ToolContent::Text {
+                text: format!(
+                    "session_id={}\nsession_id={}",
+                    desktop.native_id, older_exec.native_id
+                ),
+            }],
+            locations: Vec::new(),
+            child_thread_ids: Vec::new(),
+        })];
+        let projection =
+            Projection::from_items(&parent, items.iter().map(|kind| (kind, None, None)), None);
+        assert_eq!(projection.calls[0].start, Some(200));
+
+        let index = crate::storage::Index::temporary();
+        for existing in [&desktop, &older_exec] {
+            index
+                .index(existing, None, &Projection::default(), &existing.title)
+                .unwrap();
+        }
+        index
+            .index(&parent, None, &projection, &parent.title)
+            .unwrap();
+        assert!(index.get(&desktop.id).unwrap().unwrap().parent.is_none());
+        assert!(index.get(&older_exec.id).unwrap().unwrap().parent.is_none());
     }
 }
