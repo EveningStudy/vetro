@@ -525,6 +525,7 @@ function ThreadComposer({ thread }: { thread: OpenThread }) {
       readOnly={!summary.resumable}
       placeholder={summary.resumable ? t("composer.placeholder", { agent: agentName }) : t("composer.readOnly")}
       usage={thread.usage}
+      agent={agent}
       autoFocus
     />
     </>

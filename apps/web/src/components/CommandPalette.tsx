@@ -165,7 +165,7 @@ export function CommandPalette() {
         title: t("sidebar.settings"),
         run: () => {
           close();
-          actions.navigate({ view: "settings", section: "agents" });
+          actions.navigate({ view: "settings", section: "general" });
         },
       },
       {

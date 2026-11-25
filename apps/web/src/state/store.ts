@@ -45,7 +45,9 @@ export type Route =
   | { view: "new"; projectPath: string | null; agentId: string | null }
   | { view: "settings"; section: SettingsSection };
 
-export type SettingsSection = "agents" | "voice" | "remote" | "appearance" | "about";
+export type SettingsSection = "general" | "threads" | "appearance" | "agents" | "voice" | "remote" | "about";
+
+export const SETTINGS_SECTIONS: readonly SettingsSection[] = ["general", "threads", "appearance", "agents", "voice", "remote", "about"];
 
 export type RightDrawer =
   | { kind: "raw" }
@@ -92,8 +94,8 @@ export function routeFromLocation(): Route {
   if (path === "/new") return { view: "new", projectPath: query.get("project"), agentId: query.get("agent") };
   const settings = /^\/settings(?:\/(\w+))?$/.exec(path);
   if (settings) {
-    const section = (settings[1] ?? "agents") as SettingsSection;
-    return { view: "settings", section: ["agents", "voice", "remote", "appearance", "about"].includes(section) ? section : "agents" };
+    const section = (settings[1] ?? "general") as SettingsSection;
+    return { view: "settings", section: SETTINGS_SECTIONS.includes(section) ? section : "general" };
   }
   return { view: "empty" };
 }

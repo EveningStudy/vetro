@@ -2,17 +2,19 @@ import {
   BotIcon,
   ChevronDownIcon,
   DownloadIcon,
+  GlobeIcon,
   InfoIcon,
   KeyRoundIcon,
+  MessageSquareIcon,
   MicIcon,
   MonitorIcon,
   MoonIcon,
   PaletteIcon,
   RefreshCwIcon,
+  SlidersHorizontalIcon,
   SmartphoneIcon,
   SunIcon,
   Trash2Icon,
-  WifiIcon,
 } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 import { client } from "~/api/client";
@@ -29,8 +31,11 @@ import {
   type SidebarOrder,
   type SidebarScope,
   type ThemePref,
+  type UsageDisplay,
   setBypassMemoryScope,
   setChatWidth,
+  setComposerShowContext,
+  setComposerShowLimits,
   setFontScale,
   setFontStyle,
   setHideDisabledAgentHistory,
@@ -40,6 +45,7 @@ import {
   setSidebarOrder,
   setSidebarScope,
   setTheme,
+  setUsageDisplay,
   usePrefs,
 } from "~/state/prefs";
 import { type SettingsSection, actions, useStore } from "~/state/store";
@@ -48,6 +54,7 @@ import { AgentIcon } from "../AgentIcon";
 import { BUILTIN_AGENT_IDS, CustomAgents } from "./CustomAgents";
 import { SignInMethods } from "../SignIn";
 import { voiceModelDescription, voiceModelLabel } from "../chat/VoiceButton";
+import { limitBarTone, limitTone, resetLabel, shownPercent, snapshotAge } from "../chat/RateLimits";
 import { QrCodeSvg } from "../QrCode";
 import { MobileSidebarButton } from "../Shell";
 import { useHeaderChromeClass, useWindowDragProps } from "../WindowChrome";
@@ -59,10 +66,12 @@ import { Badge, Input, Label, Spinner, Switch, Textarea } from "../ui/primitives
 import { Segmented } from "../ui/segmented";
 
 const SECTIONS: { id: SettingsSection; icon: typeof BotIcon }[] = [
+  { id: "general", icon: SlidersHorizontalIcon },
+  { id: "threads", icon: MessageSquareIcon },
+  { id: "appearance", icon: PaletteIcon },
   { id: "agents", icon: BotIcon },
   { id: "voice", icon: MicIcon },
-  { id: "remote", icon: WifiIcon },
-  { id: "appearance", icon: PaletteIcon },
+  { id: "remote", icon: GlobeIcon },
   { id: "about", icon: InfoIcon },
 ];
 
@@ -96,10 +105,12 @@ export function SettingsView({ section }: { section: SettingsSection }) {
         </nav>
         <div className="min-h-0 flex-1 overflow-y-auto">
           <div className="mx-auto w-full max-w-2xl px-(--workspace-gutter) pt-2 pb-16 md:pt-0">
+            {section === "general" ? <GeneralSection /> : null}
+            {section === "threads" ? <ThreadsSection /> : null}
+            {section === "appearance" ? <AppearanceSection /> : null}
             {section === "agents" ? <AgentsSection /> : null}
             {section === "voice" ? <VoiceSection /> : null}
             {section === "remote" ? <RemoteSection /> : null}
-            {section === "appearance" ? <AppearanceSection /> : null}
             {section === "about" ? <AboutSection /> : null}
           </div>
         </div>
@@ -171,7 +182,6 @@ function AgentsSection() {
   const { settings, update } = useSettings();
   const [refreshing, setRefreshing] = useState(false);
   const remoteClient = useStore((s) => s.app?.remoteClient ?? false);
-  const bypassMemoryScope = usePrefs((s) => s.bypassMemoryScope);
   const isCustom = (id: string) => !BUILTIN_AGENT_IDS.includes(id) && (settings?.customAcpAgents.some((c) => c.id === id) ?? false);
   const listed = agents.filter((agent, index) => agents.findIndex((other) => other.id === agent.id) === index);
   return (
@@ -203,18 +213,6 @@ function AgentsSection() {
           <AgentCard key={agent.id} agent={agent} settings={settings?.agents[agent.id]} custom={isCustom(agent.id)} onSave={update} readOnly={remoteClient} />
         ))}
       </div>
-      <Group className="mt-4">
-        <Row label={t("settings.bypassMemory")} hint={t("settings.bypassMemoryHint")}>
-          <Segmented<BypassMemoryScope>
-            value={bypassMemoryScope}
-            onChange={setBypassMemoryScope}
-            options={[
-              { value: "project", label: t("settings.bypassMemory.project") },
-              { value: "global", label: t("settings.bypassMemory.global") },
-            ]}
-          />
-        </Row>
-      </Group>
       <CustomAgents
         settings={settings}
         readOnly={remoteClient}
@@ -313,6 +311,7 @@ function AgentCard({
         </div>
         <Switch checked={current.enabled} disabled={readOnly} aria-label={t("settings.enabled")} onCheckedChange={(enabled) => void onSave({ agents: { [agent.id]: { ...current, enabled } } })} />
       </div>
+      {agent.installed && agent.rateLimits && agent.rateLimits.length > 0 ? <AgentRateLimits agent={agent} /> : null}
       {agent.installed && agent.auth.state !== "ok" && agent.auth.methods.length > 0 ? (
         <div className={cn("flex flex-col gap-2 px-4 py-2.5", agent.auth.state === "required" && "bg-warning-surface/50")}>
           <span className="text-xs text-muted-foreground">{t(agent.auth.state === "required" ? "composer.signInHint" : "settings.signInOptional", { agent: agent.name })}</span>
@@ -355,6 +354,42 @@ function AgentCard({
         </div>
       ) : null}
     </Group>
+  );
+}
+
+function AgentRateLimits({ agent }: { agent: AgentInfo }) {
+  const t = useT();
+  const display = usePrefs((s) => s.usageDisplay);
+  const now = useNow(30_000);
+  const limits = agent.rateLimits ?? [];
+  const age = snapshotAge(agent.rateLimitsUpdatedAt ?? null, now, t);
+  const provider = agent.auth.provider;
+  return (
+    <div className="flex flex-col gap-1.5 px-4 py-2.5">
+      {limits.map((limit) => {
+        const percent = shownPercent(limit, display);
+        const reset = resetLabel(limit, now, t);
+        return (
+          <div key={limit.label} className="flex items-center gap-3 text-xs tabular-nums">
+            <span className="w-14 shrink-0 truncate text-muted-foreground" title={limit.label}>
+              {limit.label}
+            </span>
+            <div className="h-1 min-w-0 flex-1 overflow-hidden rounded-full bg-muted">
+              <div className={cn("h-full rounded-full", limitBarTone(limit))} style={{ width: `${percent}%` }} />
+            </div>
+            <span className={cn("w-20 shrink-0 text-right", limitTone(limit))}>
+              {t(display === "used" ? "usage.used" : "usage.remaining", { n: percent })}
+            </span>
+            <span className="w-28 shrink-0 truncate text-right text-muted-foreground/80">{reset ?? ""}</span>
+          </div>
+        );
+      })}
+      {age || provider ? (
+        <div className="text-[11px] text-muted-foreground/80">
+          {[age, provider ? t("usage.viaLocal", { provider }) : null].filter(Boolean).join(" · ")}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -759,15 +794,33 @@ function EditorSelect({ value, disabled, onChange }: { value: string | null; dis
   );
 }
 
-function WorkspaceSettings() {
+function GeneralSection() {
   const t = useT();
+  const language = usePrefs((s) => s.language);
   const { settings, update } = useSettings();
   const remoteClient = useStore((s) => s.app?.remoteClient ?? false);
+  const [idle, setIdle] = useState<string>("");
+  useEffect(() => {
+    if (settings) setIdle(String(settings.idleReleaseMinutes));
+  }, [settings]);
   return (
-    <>
-      <h3 className="mt-6 mb-2 text-sm font-medium text-muted-foreground">{t("settings.workspaceNotifications")}</h3>
-      {remoteClient ? <p className="mb-2 text-xs text-muted-foreground">{t("settings.desktopOnly")}</p> : null}
+    <section>
+      <SectionTitle title={t("settings.general")} />
       <Group>
+        <Row label={t("settings.language")}>
+          <Segmented<LanguagePref>
+            value={language}
+            onChange={setLanguage}
+            options={[
+              { value: "system", label: t("settings.languageSystem") },
+              { value: "en", label: "English" },
+              { value: "zh", label: "简体中文" },
+            ]}
+          />
+        </Row>
+      </Group>
+      {remoteClient ? <p className="mt-4 mb-2 text-xs text-muted-foreground">{t("settings.desktopOnly")}</p> : null}
+      <Group className={remoteClient ? undefined : "mt-4"}>
         <Row label={t("settings.externalEditor")} hint={t("settings.externalEditorHint")}>
           <EditorSelect value={settings?.externalEditor ?? null} disabled={remoteClient || !settings} onChange={(externalEditor) => void update({ externalEditor })} />
         </Row>
@@ -779,19 +832,115 @@ function WorkspaceSettings() {
             onCheckedChange={(notificationsEnabled) => void update({ notificationsEnabled })}
           />
         </Row>
+        <Row label={t("settings.idleRelease")} hint={t("settings.idleReleaseHint")}>
+          <Input
+            type="number"
+            min={0}
+            disabled={remoteClient || !settings}
+            value={idle}
+            aria-label={t("settings.idleRelease")}
+            onChange={(event) => setIdle(event.target.value)}
+            onBlur={() => {
+              const minutes = Math.max(0, Math.round(Number(idle) || 0));
+              if (settings && minutes !== settings.idleReleaseMinutes) void update({ idleReleaseMinutes: minutes });
+              else if (settings) setIdle(String(settings.idleReleaseMinutes));
+            }}
+            className="w-20 text-right tabular-nums"
+          />
+        </Row>
       </Group>
-    </>
+    </section>
+  );
+}
+
+function SubTitle({ children, first }: { children: ReactNode; first?: boolean }) {
+  return <h3 className={cn("mb-2 text-sm font-medium text-muted-foreground", !first && "mt-6")}>{children}</h3>;
+}
+
+function ThreadsSection() {
+  const t = useT();
+  const showLimits = usePrefs((s) => s.composerShowLimits);
+  const usageDisplay = usePrefs((s) => s.usageDisplay);
+  const showContext = usePrefs((s) => s.composerShowContext);
+  const scope = usePrefs((s) => s.sidebarScope);
+  const sidebarOrder = usePrefs((s) => s.sidebarOrder);
+  const hideDisabled = usePrefs((s) => s.hideDisabledAgentHistory);
+  const showInternal = useStore((s) => s.filters.showInternal);
+  const bypassMemoryScope = usePrefs((s) => s.bypassMemoryScope);
+  return (
+    <section>
+      <SectionTitle title={t("settings.threads")} />
+      <SubTitle first>{t("settings.usageLimits")}</SubTitle>
+      <Group>
+        <Row label={t("settings.composerShowLimits")} hint={t("settings.composerShowLimitsHint")}>
+          <Switch checked={showLimits} aria-label={t("settings.composerShowLimits")} onCheckedChange={setComposerShowLimits} />
+        </Row>
+        <Row label={t("settings.usageDisplay")}>
+          <Segmented<UsageDisplay>
+            value={usageDisplay}
+            onChange={setUsageDisplay}
+            options={[
+              { value: "remaining", label: t("settings.usageDisplay.remaining") },
+              { value: "used", label: t("settings.usageDisplay.used") },
+            ]}
+          />
+        </Row>
+        <Row label={t("settings.composerShowContext")}>
+          <Switch checked={showContext} aria-label={t("settings.composerShowContext")} onCheckedChange={setComposerShowContext} />
+        </Row>
+      </Group>
+      <SubTitle>{t("settings.sidebarHistory")}</SubTitle>
+      <Group>
+        <Row label={t("settings.sidebarScope")} hint={t("settings.sidebarScopeHint")}>
+          <Segmented<SidebarScope>
+            value={scope}
+            onChange={setSidebarScope}
+            options={[
+              { value: "all", label: t("sidebar.scopeAll") },
+              { value: "vetro", label: t("sidebar.scopeVetro") },
+            ]}
+          />
+        </Row>
+        <Row label={t("settings.sidebarOrder")}>
+          <Segmented<SidebarOrder>
+            value={sidebarOrder}
+            onChange={setSidebarOrder}
+            options={[
+              { value: "projects", label: t("settings.sidebarOrder.projects") },
+              { value: "quickChats", label: t("settings.sidebarOrder.quickChats") },
+            ]}
+          />
+        </Row>
+        <Row label={t("settings.activityWindow")} hint={t("settings.activityWindowHint")}>
+          <ActivityWindow />
+        </Row>
+        <Row label={t("settings.hideDisabledHistory")} hint={t("settings.hideDisabledHistoryHint")}>
+          <Switch checked={hideDisabled} aria-label={t("settings.hideDisabledHistory")} onCheckedChange={setHideDisabledAgentHistory} />
+        </Row>
+        <Row label={t("settings.showInternal")} hint={t("settings.showInternalHint")}>
+          <Switch checked={showInternal} aria-label={t("settings.showInternal")} onCheckedChange={(checked) => actions.setFilters({ showInternal: checked })} />
+        </Row>
+      </Group>
+      <SubTitle>{t("settings.permissions")}</SubTitle>
+      <Group>
+        <Row label={t("settings.bypassMemory")} hint={t("settings.bypassMemoryHint")}>
+          <Segmented<BypassMemoryScope>
+            value={bypassMemoryScope}
+            onChange={setBypassMemoryScope}
+            options={[
+              { value: "project", label: t("settings.bypassMemory.project") },
+              { value: "global", label: t("settings.bypassMemory.global") },
+            ]}
+          />
+        </Row>
+      </Group>
+    </section>
   );
 }
 
 function AppearanceSection() {
   const t = useT();
   const theme = usePrefs((s) => s.theme);
-  const language = usePrefs((s) => s.language);
-  const scope = usePrefs((s) => s.sidebarScope);
-  const sidebarOrder = usePrefs((s) => s.sidebarOrder);
-  const hideDisabled = usePrefs((s) => s.hideDisabledAgentHistory);
-  const showInternal = useStore((s) => s.filters.showInternal);
   const fontStyle = usePrefs((s) => s.fontStyle);
   const fontScale = usePrefs((s) => s.fontScale);
   const chatWidth = usePrefs((s) => s.chatWidth);
@@ -811,20 +960,9 @@ function AppearanceSection() {
             ]}
           />
         </Row>
-        <Row label={t("settings.language")}>
-          <Segmented<LanguagePref>
-            value={language}
-            onChange={setLanguage}
-            options={[
-              { value: "system", label: t("settings.languageSystem") },
-              { value: "en", label: "English" },
-              { value: "zh", label: "简体中文" },
-            ]}
-          />
-        </Row>
       </Group>
       <ThemeGallery />
-      <h3 className="mt-6 mb-2 text-sm font-medium text-muted-foreground">{t("settings.readingLayout")}</h3>
+      <SubTitle>{t("settings.readingLayout")}</SubTitle>
       <Group>
         <Row label={t("settings.fontStyle")} hint={t("settings.fontStyleHint")}>
           <Segmented<FontStyle>
@@ -863,39 +1001,6 @@ function AppearanceSection() {
           <Switch checked={paperGrain} aria-label={t("settings.paperGrain")} onCheckedChange={setPaperGrain} />
         </Row>
       </Group>
-      <h3 className="mt-6 mb-2 text-sm font-medium text-muted-foreground">{t("settings.sidebarHistory")}</h3>
-      <Group>
-        <Row label={t("settings.sidebarScope")} hint={t("settings.sidebarScopeHint")}>
-          <Segmented<SidebarScope>
-            value={scope}
-            onChange={setSidebarScope}
-            options={[
-              { value: "all", label: t("sidebar.scopeAll") },
-              { value: "vetro", label: t("sidebar.scopeVetro") },
-            ]}
-          />
-        </Row>
-        <Row label={t("settings.sidebarOrder")}>
-          <Segmented<SidebarOrder>
-            value={sidebarOrder}
-            onChange={setSidebarOrder}
-            options={[
-              { value: "projects", label: t("settings.sidebarOrder.projects") },
-              { value: "quickChats", label: t("settings.sidebarOrder.quickChats") },
-            ]}
-          />
-        </Row>
-        <Row label={t("settings.activityWindow")} hint={t("settings.activityWindowHint")}>
-          <ActivityWindow />
-        </Row>
-        <Row label={t("settings.hideDisabledHistory")} hint={t("settings.hideDisabledHistoryHint")}>
-          <Switch checked={hideDisabled} aria-label={t("settings.hideDisabledHistory")} onCheckedChange={setHideDisabledAgentHistory} />
-        </Row>
-        <Row label={t("settings.showInternal")} hint={t("settings.showInternalHint")}>
-          <Switch checked={showInternal} aria-label={t("settings.showInternal")} onCheckedChange={(checked) => actions.setFilters({ showInternal: checked })} />
-        </Row>
-      </Group>
-      <WorkspaceSettings />
     </section>
   );
 }
@@ -903,47 +1008,25 @@ function AppearanceSection() {
 function AboutSection() {
   const t = useT();
   const app = useStore((s) => s.app);
-  const { settings, update } = useSettings();
-  const remoteClient = app?.remoteClient ?? false;
-  const [idle, setIdle] = useState<string>("");
-  useEffect(() => {
-    if (settings) setIdle(String(settings.idleReleaseMinutes));
-  }, [settings]);
   return (
-    <section className="flex flex-col gap-6">
-      <div>
-        <SectionTitle title={t("settings.about")} />
-        <Group>
-          <Row label={t("settings.version")}>
-            <span className="font-mono text-xs text-muted-foreground">{app?.version}</span>
-          </Row>
-          <Row label={t("settings.dataDir")}>
-            <span className="max-w-xs truncate font-mono text-xs text-muted-foreground">{app?.dataDir}</span>
-          </Row>
-          <Row label={t("settings.host")}>
-            <span className="font-mono text-xs text-muted-foreground">
-              {app?.hostname} · {app?.platform}
-            </span>
-          </Row>
-          <Row label={t("settings.protocol")}>
-            <span className="font-mono text-xs text-muted-foreground">v{app?.protocolVersion}</span>
-          </Row>
-          <Row label={t("settings.idleRelease")} hint={t("settings.idleReleaseHint")}>
-            <Input
-              type="number"
-              min={0}
-              disabled={remoteClient}
-              value={idle}
-              onChange={(event) => setIdle(event.target.value)}
-              onBlur={() => {
-                const minutes = Math.max(0, Math.round(Number(idle) || 0));
-                if (settings && minutes !== settings.idleReleaseMinutes) void update({ idleReleaseMinutes: minutes });
-              }}
-              className="w-20 text-right tabular-nums"
-            />
-          </Row>
-        </Group>
-      </div>
+    <section>
+      <SectionTitle title={t("settings.about")} />
+      <Group>
+        <Row label={t("settings.version")}>
+          <span className="font-mono text-xs text-muted-foreground">{app?.version}</span>
+        </Row>
+        <Row label={t("settings.dataDir")}>
+          <span className="max-w-xs truncate font-mono text-xs text-muted-foreground">{app?.dataDir}</span>
+        </Row>
+        <Row label={t("settings.host")}>
+          <span className="font-mono text-xs text-muted-foreground">
+            {app?.hostname} · {app?.platform}
+          </span>
+        </Row>
+        <Row label={t("settings.protocol")}>
+          <span className="font-mono text-xs text-muted-foreground">v{app?.protocolVersion}</span>
+        </Row>
+      </Group>
     </section>
   );
 }

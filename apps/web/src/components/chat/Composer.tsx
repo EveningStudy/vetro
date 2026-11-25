@@ -1,15 +1,17 @@
 import { FileIcon, ImagePlusIcon, SlashIcon, SlidersHorizontalIcon, XIcon } from "lucide-react";
 import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { client } from "~/api/client";
-import type { ConfigOption, ContentBlock, QueuedMessage, SlashCommand, ThreadUsage } from "~/api/types";
+import type { AgentInfo, ConfigOption, ContentBlock, QueuedMessage, SlashCommand, ThreadUsage } from "~/api/types";
 import { useT } from "~/i18n";
 import { formatTokens } from "~/lib/format";
 import { cn } from "~/lib/utils";
+import { usePrefs } from "~/state/prefs";
 import { actions, useStore } from "~/state/store";
 import { errorMessage, toast } from "~/state/toast";
 import { Popover, PopoverPopup, PopoverTrigger, Tip } from "../ui/overlay";
 import { Spinner } from "../ui/primitives";
 import { OptionPicker, composerControlClass, isDangerChoice } from "./OptionPicker";
+import { RateLimitBadge, rateLimitSource } from "./RateLimits";
 import { VoiceButton } from "./VoiceButton";
 
 interface Attachment {
@@ -86,6 +88,8 @@ export interface ComposerProps {
   leading?: ReactNode;
   below?: ReactNode;
   usage?: ThreadUsage | null;
+  /** Supplies the stored rate-limit snapshot and routing provider when the thread has no live data. */
+  agent?: AgentInfo | null;
   autoFocus?: boolean;
 }
 
@@ -221,6 +225,9 @@ export function Composer(props: ComposerProps) {
   const showStop = props.running && !hasContent && props.onStop;
   const contextUsed = props.usage?.lastTurn?.contextUsed ?? props.usage?.lastTurn?.input ?? null;
   const contextWindow = props.usage?.lastTurn?.contextWindow ?? props.usage?.total?.contextWindow ?? null;
+  const showContext = usePrefs((s) => s.composerShowContext);
+  const showLimits = usePrefs((s) => s.composerShowLimits);
+  const limits = useMemo(() => rateLimitSource(props.usage, props.agent), [props.usage, props.agent]);
 
   const queuedPreview = (content: ContentBlock[]) => {
     const text = content
@@ -435,7 +442,10 @@ export function Composer(props: ComposerProps) {
               event.target.value = "";
             }}
           />
-          {contextUsed && contextWindow ? <ContextMeter used={contextUsed} window={contextWindow} usage={props.usage ?? null} /> : null}
+          {showLimits && limits.limits.length > 0 ? <RateLimitBadge source={limits} /> : null}
+          {showContext && contextUsed && contextUsed > 0 && contextWindow && contextWindow > 0 ? (
+            <ContextMeter used={contextUsed} window={contextWindow} />
+          ) : null}
           {!props.readOnly ? <VoiceButton disabled={sending} onTranscript={insertTranscript} /> : null}
           {showStop ? (
             <Tip label={t("composer.stop")}>
@@ -476,23 +486,13 @@ export function Composer(props: ComposerProps) {
   );
 }
 
-function ContextMeter({ used, window, usage }: { used: number; window: number; usage: ThreadUsage | null }) {
+function ContextMeter({ used, window }: { used: number; window: number }) {
   const t = useT();
   const ratio = Math.min(1, used / window);
   const radius = 7;
   const circumference = 2 * Math.PI * radius;
-  const label = (
-    <div className="flex flex-col gap-0.5">
-      <span>{t("composer.context", { used: formatTokens(used), window: formatTokens(window) })}</span>
-      {usage?.rateLimits.map((limit) => (
-        <span key={limit.label} className="text-muted-foreground">
-          {limit.label}: {Math.round(limit.usedPercent)}%
-        </span>
-      ))}
-    </div>
-  );
   return (
-    <Tip label={label}>
+    <Tip label={t("composer.context", { used: formatTokens(used), window: formatTokens(window) })}>
       <span className="me-1 hidden h-7 shrink-0 items-center gap-1.5 rounded-md px-1.5 text-xs tabular-nums text-muted-foreground sm:inline-flex">
         <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden className="-rotate-90">
           <circle cx="8" cy="8" r={radius} fill="none" strokeWidth="2" className="stroke-foreground/12" />

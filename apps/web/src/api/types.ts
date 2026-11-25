@@ -32,6 +32,7 @@ export type { ThreadSource } from "./bindings/ThreadSource";
 export type { ThreadStatus } from "./bindings/ThreadStatus";
 export type { ThreadSummary } from "./bindings/ThreadSummary";
 export type { ThreadUsage } from "./bindings/ThreadUsage";
+export type { RateLimit } from "./bindings/RateLimit";
 export type { TokenUsage } from "./bindings/TokenUsage";
 export type { ToolCall } from "./bindings/ToolCall";
 export type { ToolContent } from "./bindings/ToolContent";

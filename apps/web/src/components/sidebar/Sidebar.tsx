@@ -1185,7 +1185,7 @@ export function SidebarContent() {
         <footer className="flex shrink-0 items-center justify-between gap-2 border-t border-sidebar-border/70 px-2.5 pt-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))]">
           <button
             type="button"
-            onClick={() => actions.navigate({ view: "settings", section: "agents" })}
+            onClick={() => actions.navigate({ view: "settings", section: "general" })}
             className={cn(
               "inline-flex h-7 cursor-pointer select-none items-center gap-2 rounded-md px-2 text-xs text-sidebar-muted-foreground outline-none transition-colors hover:bg-sidebar-row-hover hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
               route.view === "settings" && "bg-sidebar-row-active text-sidebar-foreground",

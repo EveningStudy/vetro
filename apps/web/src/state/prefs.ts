@@ -21,6 +21,7 @@ export type FontStyle = "sans" | "serif" | "mono";
 export type FontScale = "compact" | "default" | "large";
 export type ChatWidth = "standard" | "wide" | "full";
 export type BypassMemoryScope = "project" | "global";
+export type UsageDisplay = "remaining" | "used";
 
 export interface Filters {
   agentIds: string[];
@@ -84,6 +85,12 @@ export interface PrefsData {
   themeBg?: string;
   /** Where dangerous/bypass permission modes are remembered: per project (default) or globally per agent. */
   bypassMemoryScope?: BypassMemoryScope;
+  /** Show the agent's rate-limit windows in the composer footer. */
+  composerShowLimits?: boolean;
+  /** Show the context-window ring in the composer footer. */
+  composerShowContext?: boolean;
+  /** Whether rate limits read as percent remaining (default) or percent used. */
+  usageDisplay?: UsageDisplay;
   /** Remembered non-default options per agent id. */
   agentOptions?: Record<string, AgentOptionMemory>;
 }
@@ -213,6 +220,9 @@ interface UiPrefs {
   chatWidth: ChatWidth;
   paperGrain: boolean;
   bypassMemoryScope: BypassMemoryScope;
+  composerShowLimits: boolean;
+  composerShowContext: boolean;
+  usageDisplay: UsageDisplay;
   systemDark: boolean;
 }
 
@@ -243,6 +253,9 @@ function derived(prefs: PrefsData): UiPrefs {
     chatWidth: pick(prefs.chatWidth, CHAT_WIDTHS, "standard", null),
     paperGrain: prefs.paperGrain === true,
     bypassMemoryScope: prefs.bypassMemoryScope === "global" ? "global" : "project",
+    composerShowLimits: prefs.composerShowLimits !== false,
+    composerShowContext: prefs.composerShowContext !== false,
+    usageDisplay: prefs.usageDisplay === "used" ? "used" : "remaining",
     systemDark: media.matches,
   };
 }
@@ -428,6 +441,21 @@ export function setDrawerWidth(width: number) {
 export function setBypassMemoryScope(bypassMemoryScope: BypassMemoryScope) {
   savePrefs({ bypassMemoryScope });
   usePrefs.setState({ bypassMemoryScope });
+}
+
+export function setComposerShowLimits(composerShowLimits: boolean) {
+  savePrefs({ composerShowLimits });
+  usePrefs.setState({ composerShowLimits });
+}
+
+export function setComposerShowContext(composerShowContext: boolean) {
+  savePrefs({ composerShowContext });
+  usePrefs.setState({ composerShowContext });
+}
+
+export function setUsageDisplay(usageDisplay: UsageDisplay) {
+  savePrefs({ usageDisplay });
+  usePrefs.setState({ usageDisplay });
 }
 
 function normCwd(cwd: string | null | undefined) {

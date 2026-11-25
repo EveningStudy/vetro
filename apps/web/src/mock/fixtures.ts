@@ -33,6 +33,11 @@ export const agents: AgentInfo[] = [
     auth: { state: "ok", methods: [], account: "Claude Pro" },
     capabilities: { imageInput: true, midTurnInput: false, resume: true, listSessions: true, fork: { whole: true, atTurn: false } },
     error: null,
+    rateLimits: [
+      { label: "5h", usedPercent: 28, resetsAt: now + 50 * MIN },
+      { label: "7d", usedPercent: 15, resetsAt: now + 4 * DAY },
+    ],
+    rateLimitsUpdatedAt: now - 6 * MIN,
   },
   {
     id: "codex",
@@ -44,6 +49,11 @@ export const agents: AgentInfo[] = [
     auth: { state: "ok", methods: [], account: "ChatGPT Plus", provider: "litellm", endpoint: "http://127.0.0.1:4000" },
     capabilities: { imageInput: true, midTurnInput: true, resume: true, listSessions: true, fork: { whole: true, atTurn: true } },
     error: null,
+    rateLimits: [
+      { label: "5h", usedPercent: 84, resetsAt: now + 50 * MIN },
+      { label: "Weekly", usedPercent: 61, resetsAt: now + 3 * DAY },
+    ],
+    rateLimitsUpdatedAt: now - 12 * MIN,
   },
   {
     id: "antigravity",

@@ -256,6 +256,7 @@ export function NewThread({ projectPath, agentId: routeAgent }: { projectPath: s
             await actions.start(agent.id, effectiveCwd ?? "", content, changed);
           }}
           imageInput={agent?.capabilities.imageInput ?? false}
+          agent={agent}
           readOnly={!agent}
           sendBlocked={needsSignIn ? t("composer.needsSignIn") : unknownFolder ? t("remote.knownProject") : null}
           placeholder={t("composer.placeholderNew", { agent: agentName || t("composer.agent") })}
