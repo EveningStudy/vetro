@@ -149,7 +149,7 @@ fn fake(scenario: &str) {
         let id = &message["id"];
         let params = &message["params"];
         assert_eq!(message["jsonrpc"], "2.0");
-        if scenario == "devin-locked" {
+        if matches!(scenario, "devin-locked" | "devin-load-error") {
             assert!(matches!(
                 message["method"].as_str(),
                 Some("initialize" | "session/load" | "session/resume")
@@ -212,12 +212,17 @@ fn fake(scenario: &str) {
                 json!({"sessions":[{"sessionId":"stored","cwd":cwd,"title":"Saved","updatedAt":"2026-11-23T00:00:00.250Z"}]})
             }
             Some("session/load" | "session/resume") => {
-                if scenario == "devin-locked" {
-                    assert_eq!(params["sessionId"], "cool-syrup");
+                if matches!(scenario, "devin-locked" | "devin-load-error") {
+                    assert_eq!(params["sessionId"], "stored");
+                    let data = if scenario == "devin-locked" {
+                        "session initialization failed: Failed to lock session 'stored': Access is denied. (os error 5)"
+                    } else {
+                        "session initialization failed"
+                    };
                     output(json!({"id":id,"error":{
                         "code":-32603,
                         "message":"Internal error",
-                        "data":"session initialization failed: Failed to lock session 'cool-syrup': Access is denied. (os error 5)"
+                        "data":data
                     }}));
                     continue;
                 }
@@ -420,19 +425,22 @@ async fn until_end(
     }
 }
 
-async fn devin_locked_history() {
+async fn devin_history_replay() {
     let temp = tempfile::tempdir().unwrap();
     let mut spec = SpawnSpec::new(env::current_exe().unwrap());
     spec.args = vec!["--agent".into(), "devin-locked".into()];
     spec.env
         .insert("APPDATA".into(), temp.path().as_os_str().to_owned());
-    let agent = AcpAgent::new("devin", "Devin", spec);
+    let locked = AcpAgent::new("devin", "Devin", spec.clone());
     let cwd = env::current_dir().unwrap();
-    let error = agent.read("cool-syrup", Some(&cwd)).await.unwrap_err();
+    let error = locked.read("stored", Some(&cwd)).await.unwrap_err();
     assert_eq!(error.code, ErrorCode::Busy);
-    assert!(error
-        .message
-        .contains("Failed to lock session 'cool-syrup'"));
+    assert!(error.message.contains("Failed to lock session 'stored'"));
+
+    spec.args[1] = "devin".into();
+    let devin = AcpAgent::new("devin", "Devin", spec.clone());
+    spec.args[1] = "devin-load-error".into();
+    let failed = AcpAgent::new("devin", "Devin", spec);
 
     let root = temp.path().join("Devin/cli");
     std::fs::create_dir_all(&root).unwrap();
@@ -449,7 +457,7 @@ async fn devin_locked_history() {
             session_id TEXT, tool_call_id TEXT, tool_call_json TEXT,
             tool_call_update_json TEXT, PRIMARY KEY (session_id, tool_call_id)
          );
-         INSERT INTO sessions VALUES ('cool-syrup', 4);",
+         INSERT INTO sessions VALUES ('stored', 4);",
     )
     .unwrap();
     let nodes = [
@@ -490,14 +498,14 @@ async fn devin_locked_history() {
     ];
     for (node_id, parent, message) in nodes {
         db.execute(
-            "INSERT INTO message_nodes VALUES ('cool-syrup', ?1, ?2, ?3, 10)",
+            "INSERT INTO message_nodes VALUES ('stored', ?1, ?2, ?3, 10)",
             rusqlite::params![node_id, parent, message.to_string()],
         )
         .unwrap();
     }
     let output = "x".repeat(123_943);
     db.execute(
-        "INSERT INTO tool_call_state VALUES ('cool-syrup', 'tool-id', ?1, ?2)",
+        "INSERT INTO tool_call_state VALUES ('stored', 'tool-id', ?1, ?2)",
         [
             json!({"title":"Long output","kind":"execute"}).to_string(),
             json!({
@@ -509,36 +517,55 @@ async fn devin_locked_history() {
     )
     .unwrap();
 
-    let transcript = agent.read("cool-syrup", Some(&cwd)).await.unwrap();
-    let [user, tool, answer] = transcript.items.as_slice() else {
-        panic!("expected user, tool and assistant items");
-    };
-    assert!(matches!(&user.kind, ItemKind::UserMessage { content } if
-        matches!(content.as_slice(), [
-            ContentBlock::Text { text },
-            ContentBlock::Image { data: Some(first), .. },
-            ContentBlock::Image { data: Some(second), .. },
-        ] if text == "two attachments" && first == "aW1hZ2Ux" && second == "aW1hZ2Uy")
+    for agent in [&locked, &devin] {
+        let transcript = agent.read("stored", Some(&cwd)).await.unwrap();
+        let [user, tool, answer] = transcript.items.as_slice() else {
+            panic!("expected user, tool and assistant items");
+        };
+        assert!(matches!(&user.kind, ItemKind::UserMessage { content } if
+            matches!(content.as_slice(), [
+                ContentBlock::Text { text },
+                ContentBlock::Image { data: Some(first), .. },
+                ContentBlock::Image { data: Some(second), .. },
+            ] if text == "two attachments" && first == "aW1hZ2Ux" && second == "aW1hZ2Uy")
+        ));
+        assert!(matches!(&tool.kind, ItemKind::ToolCall(tool) if
+            tool.status == ToolStatus::Completed
+                && tool.content == [vetro_proto::ToolContent::Text { text: output.clone() }]
+        ));
+        assert!(
+            matches!(&answer.kind, ItemKind::AgentMessage { text, streaming: false }
+            if text == "saved response")
+        );
+    }
+    assert_eq!(devin.process_auth(), Some(AuthState::Required));
+    devin.authenticate("devin-browser").await.unwrap();
+    let transcript = devin.read("stored", Some(&cwd)).await.unwrap();
+    assert!(matches!(
+        &transcript.items[0].kind,
+        ItemKind::UserMessage { content } if *content == [text("old prompt")]
     ));
-    assert!(matches!(&tool.kind, ItemKind::ToolCall(tool) if
-        tool.status == ToolStatus::Completed
-            && tool.content == [vetro_proto::ToolContent::Text { text: output }]
-    ));
-    assert!(
-        matches!(&answer.kind, ItemKind::AgentMessage { text, streaming: false }
-        if text == "saved response")
+    assert!(transcript.items.iter().any(|item| {
+        matches!(&item.kind, ItemKind::AgentMessage { text, streaming: false }
+            if text == &DEVIN_CHUNKS.concat())
+    }));
+    assert_eq!(
+        failed.read("stored", Some(&cwd)).await.unwrap_err().code,
+        ErrorCode::Internal
     );
 
     let (sink, _) = mpsc::unbounded_channel();
     assert!(matches!(
-        agent.attach("cool-syrup", Some(&cwd), sink).await,
+        locked.attach("stored", Some(&cwd), sink).await,
         Err(error) if error.code == ErrorCode::Busy
     ));
-    agent.shutdown().await;
+    locked.shutdown().await;
+    devin.shutdown().await;
+    failed.shutdown().await;
 }
 
 async fn suites() {
-    devin_locked_history().await;
+    devin_history_replay().await;
     let silent = agent("cancel-timeout");
     let (sink, mut events) = mpsc::unbounded_channel();
     let session = silent

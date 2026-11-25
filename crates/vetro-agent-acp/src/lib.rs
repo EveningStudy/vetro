@@ -521,11 +521,6 @@ impl Agent for AcpAgent {
     }
 
     async fn read(&self, native_id: &str, cwd: Option<&Path>) -> Result<Transcript> {
-        if self.id == "devin" {
-            if let Some(transcript) = devin_history::read(&self.spec, native_id).await {
-                return Ok(transcript);
-            }
-        }
         let runtime = self.runtime(cwd).await?;
         if !runtime.capabilities.load {
             return Err(AgentError::new(
@@ -534,7 +529,7 @@ impl Agent for AcpAgent {
             ));
         }
         let cwd = self.stored_cwd(&runtime, native_id, cwd).await?;
-        let _lifecycle = runtime.connection.lifecycle.lock().await;
+        let lifecycle = runtime.connection.lifecycle.lock().await;
         let session = AcpSession::new(
             Arc::clone(&runtime.connection),
             native_id.to_owned(),
@@ -562,12 +557,19 @@ impl Agent for AcpAgent {
             )
             .await;
         runtime.connection.observe_auth("session/load", &reply);
-        if reply.is_ok() {
-            runtime.close_session(native_id).await;
-        } else {
+        if let Err(error) = reply {
             runtime.connection.unregister(native_id);
+            drop(lifecycle);
+            let error = session_error(error, &self.id, native_id);
+            if self.id == "devin" && matches!(error.code, ErrorCode::Busy | ErrorCode::AuthRequired)
+            {
+                if let Some(snapshot) = devin_history::read(&self.spec, native_id).await {
+                    return Ok(snapshot);
+                }
+            }
+            return Err(error);
         }
-        reply.map_err(|error| session_error(error, &self.id, native_id))?;
+        runtime.close_session(native_id).await;
         let result = transcript.lock().unwrap().take().unwrap_or_default();
         Ok(result)
     }
