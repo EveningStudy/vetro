@@ -4,6 +4,7 @@ import { client } from "~/api/client";
 import type { AgentInfo, ConfigOption, ContentBlock, QueuedMessage, SlashCommand, ThreadUsage } from "~/api/types";
 import { useT } from "~/i18n";
 import { formatTokens } from "~/lib/format";
+import { getDesktopChrome, listenFileDrops, pickSystemFiles } from "~/lib/desktopChrome";
 import { cn } from "~/lib/utils";
 import { usePrefs } from "~/state/prefs";
 import { actions, useStore } from "~/state/store";
@@ -32,8 +33,10 @@ function findTrigger(text: string, caret: number): Trigger | null {
   return null;
 }
 
+const IMAGE_NAME = /\.(png|jpe?g|gif|webp|bmp|avif)$/i;
+
 function isImageFile(file: File) {
-  return file.type.startsWith("image/") || (file.type === "" && /\.(png|jpe?g|gif|webp|bmp|avif)$/i.test(file.name));
+  return file.type.startsWith("image/") || (file.type === "" && IMAGE_NAME.test(file.name));
 }
 
 function readImage(file: File): Promise<Omit<Attachment, "id">> {
@@ -208,8 +211,69 @@ export function Composer(props: ComposerProps) {
     else openTrigger(`/${draft}`, 1);
   };
 
+  const mentionPaths = (paths: string[]) => {
+    if (paths.length === 0) return;
+    const current = useStore.getState().drafts[props.draftKey] ?? "";
+    const separator = current === "" || /\s$/.test(current) ? "" : " ";
+    setDraft(`${current}${separator}${paths.map((path) => `@${path}`).join(" ")} `);
+    setMentioned((list) => [...list, ...paths.filter((path) => !list.includes(path))]);
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  };
+
+  const addPaths = async (paths: string[]) => {
+    const images = props.imageInput ? paths.filter((path) => IMAGE_NAME.test(path)) : [];
+    const read = await Promise.all(
+      images.map((path) =>
+        client()
+          .request("workspace.readFile", { cwd: "", path })
+          .then((result) => (result.content.kind === "image" ? { path, content: result.content } : null))
+          .catch(() => null),
+      ),
+    );
+    const inline = read.flatMap((entry) => (entry ? [entry] : []));
+    if (inline.length > 0) {
+      setAttachments((current) => [
+        ...current,
+        ...inline.map(({ content }) => ({
+          id: ++attachmentSeq,
+          mimeType: content.mimeType,
+          data: content.base64,
+          url: `data:${content.mimeType};base64,${content.base64}`,
+        })),
+      ]);
+    }
+    const inlined = new Set(inline.map((entry) => entry.path));
+    mentionPaths(paths.filter((path) => !inlined.has(path)));
+  };
+
+  const attach = () => {
+    if (getDesktopChrome().chrome === "web") {
+      fileInputRef.current?.click();
+      return;
+    }
+    void pickSystemFiles().then((paths) => addPaths(paths));
+  };
+
+  const addPathsRef = useRef(addPaths);
+  addPathsRef.current = addPaths;
+  useEffect(() => {
+    if (props.readOnly) return;
+    return (
+      listenFileDrops((event) => {
+        if (event.kind === "drop") {
+          setDragging(false);
+          void addPathsRef.current(event.paths);
+        } else {
+          setDragging(event.kind === "over");
+        }
+      }) ?? undefined
+    );
+  }, [props.readOnly]);
+
   const addFiles = async (list: FileList | File[]) => {
-    const images = [...list].filter(isImageFile);
+    const all = [...list];
+    const images = all.filter(isImageFile);
+    if (images.length < all.length) toast.info(t("composer.filesNeedDesktop"));
     if (images.length === 0) return;
     if (!props.imageInput) {
       toast.info(t("composer.noImages", { agent: props.agentName }));
@@ -420,7 +484,7 @@ export function Composer(props: ComposerProps) {
                 </MenuTrigger>
               </Tip>
               <MenuPopup side="top" align="start" className="w-56" finalFocus={textareaRef}>
-                <MenuItem disabled={!props.imageInput || props.readOnly} onClick={() => fileInputRef.current?.click()}>
+                <MenuItem disabled={props.readOnly} onClick={attach}>
                   <ImagePlusIcon />
                   <span className="flex min-w-0 flex-col">
                     <span className="truncate">{t("composer.attach")}</span>
@@ -482,7 +546,6 @@ export function Composer(props: ComposerProps) {
           <input
             ref={fileInputRef}
             type="file"
-            accept="image/*"
             multiple
             hidden
             onChange={(event) => {
