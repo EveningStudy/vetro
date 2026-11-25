@@ -16,7 +16,6 @@ use vetro_proto::{rpc::ErrorCode, ThreadSource};
 
 use crate::wire::{timestamp_ms, Msg};
 
-pub mod sqlite;
 pub mod steps;
 #[cfg(test)]
 mod store_tests;
@@ -24,6 +23,7 @@ mod util;
 pub mod wire;
 
 pub use util::file_uri_to_path;
+pub use vetro_store_sqlite as sqlite;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoreKind {

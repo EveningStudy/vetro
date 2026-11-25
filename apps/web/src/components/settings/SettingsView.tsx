@@ -54,7 +54,7 @@ import { AgentIcon } from "../AgentIcon";
 import { BUILTIN_AGENT_IDS, CustomAgents } from "./CustomAgents";
 import { SignInMethods } from "../SignIn";
 import { voiceModelDescription, voiceModelLabel } from "../chat/VoiceButton";
-import { limitBarTone, limitTone, resetLabel, shownPercent, snapshotAge } from "../chat/RateLimits";
+import { limitBarTone, limitTone, resetLabel, shortLimitLabel, shownPercent, snapshotAge } from "../chat/RateLimits";
 import { QrCodeSvg } from "../QrCode";
 import { MobileSidebarButton } from "../Shell";
 import { useHeaderChromeClass, useWindowDragProps } from "../WindowChrome";
@@ -371,8 +371,8 @@ function AgentRateLimits({ agent }: { agent: AgentInfo }) {
         const reset = resetLabel(limit, now, t);
         return (
           <div key={limit.label} className="flex items-center gap-3 text-xs tabular-nums">
-            <span className="w-14 shrink-0 truncate text-muted-foreground" title={limit.label}>
-              {limit.label}
+            <span className="w-16 shrink-0 truncate text-muted-foreground" title={limit.label}>
+              {shortLimitLabel(limit.label)}
             </span>
             <div className="h-1 min-w-0 flex-1 overflow-hidden rounded-full bg-muted">
               <div className={cn("h-full rounded-full", limitBarTone(limit))} style={{ width: `${percent}%` }} />

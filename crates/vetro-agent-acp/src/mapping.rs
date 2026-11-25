@@ -466,6 +466,21 @@ pub fn command(value: &Value) -> Option<SlashCommand> {
     })
 }
 
+pub fn new_tool(call_id: String) -> ToolCall {
+    ToolCall {
+        call_id,
+        kind: ToolKind::Other,
+        name: None,
+        title: String::new(),
+        status: ToolStatus::Pending,
+        input: None,
+        output: None,
+        content: Vec::new(),
+        locations: Vec::new(),
+        child_thread_ids: Vec::new(),
+    }
+}
+
 pub fn patch_tool(tool: &mut ToolCall, value: &Value) {
     if let Some(kind) = value["kind"].as_str() {
         tool.kind = match kind {

@@ -19,7 +19,6 @@ use vetro_agent_api::{
 use vetro_proto::{
     rpc::ErrorCode, ConfigCategory, ConfigOption, ContentBlock, ItemKind, NoticeLevel, PlanEntry,
     PlanStatus, RequestResolution, SlashCommand, StopReason, ThreadStatus, ThreadUsage, TokenUsage,
-    ToolCall, ToolKind, ToolStatus,
 };
 
 use crate::{
@@ -856,21 +855,7 @@ impl State {
             self.end_message();
         }
         let mut draft = previous.unwrap_or_else(|| {
-            self.draft(
-                id.clone(),
-                ItemKind::ToolCall(ToolCall {
-                    call_id,
-                    kind: ToolKind::Other,
-                    name: None,
-                    title: String::new(),
-                    status: ToolStatus::Pending,
-                    input: None,
-                    output: None,
-                    content: Vec::new(),
-                    locations: Vec::new(),
-                    child_thread_ids: Vec::new(),
-                }),
-            )
+            self.draft(id.clone(), ItemKind::ToolCall(mapping::new_tool(call_id)))
         });
         draft.ts = draft.ts.or_else(|| mapping::timestamp(&value["timestamp"]));
         if let ItemKind::ToolCall(tool) = &mut draft.kind {

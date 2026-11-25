@@ -19,6 +19,7 @@ use vetro_proto::{
 
 pub use vetro_agent_api::process::SpawnSpec;
 
+mod devin_history;
 mod interaction;
 mod mapping;
 mod session;
@@ -26,7 +27,7 @@ mod wire;
 
 use mapping::{array, string};
 use session::AcpSession;
-use wire::{agent_error, Connection};
+use wire::{agent_error, session_error, Connection};
 
 pub struct AcpAgent {
     id: String,
@@ -520,6 +521,11 @@ impl Agent for AcpAgent {
     }
 
     async fn read(&self, native_id: &str, cwd: Option<&Path>) -> Result<Transcript> {
+        if self.id == "devin" {
+            if let Some(transcript) = devin_history::read(&self.spec, native_id).await {
+                return Ok(transcript);
+            }
+        }
         let runtime = self.runtime(cwd).await?;
         if !runtime.capabilities.load {
             return Err(AgentError::new(
@@ -561,7 +567,7 @@ impl Agent for AcpAgent {
         } else {
             runtime.connection.unregister(native_id);
         }
-        reply.map_err(agent_error)?;
+        reply.map_err(|error| session_error(error, &self.id, native_id))?;
         let result = transcript.lock().unwrap().take().unwrap_or_default();
         Ok(result)
     }
@@ -660,7 +666,7 @@ impl Agent for AcpAgent {
         runtime.connection.observe_auth(method, &reply);
         if let Err(error) = reply {
             runtime.connection.unregister(native_id);
-            return Err(agent_error(error));
+            return Err(session_error(error, &self.id, native_id));
         }
         self.remember(native_id, &cwd);
         Ok(session)

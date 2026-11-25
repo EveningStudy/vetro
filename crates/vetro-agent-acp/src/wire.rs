@@ -393,6 +393,27 @@ pub(crate) fn agent_error(error: Error) -> AgentError {
     AgentError::new(code, error.to_string())
 }
 
+pub(crate) fn session_error(error: Error, agent: &str, id: &str) -> AgentError {
+    if let Error::Remote(remote) = &error {
+        if agent == "devin"
+            && remote.code == -32603
+            && remote
+                .data
+                .as_ref()
+                .and_then(Value::as_str)
+                .is_some_and(|detail| {
+                    detail
+                        .strip_prefix("session initialization failed: Failed to lock session '")
+                        .and_then(|detail| detail.split_once("':"))
+                        .is_some_and(|(locked, _)| locked == id)
+                })
+        {
+            return AgentError::new(ErrorCode::Busy, error.to_string());
+        }
+    }
+    agent_error(error)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

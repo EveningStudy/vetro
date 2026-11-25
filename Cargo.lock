@@ -5262,10 +5262,13 @@ version = "0.2.0"
 dependencies = [
  "humantime",
  "percent-encoding",
+ "rusqlite",
  "serde_json",
+ "tempfile",
  "tokio",
  "vetro-agent-api",
  "vetro-proto",
+ "vetro-store-sqlite",
 ]
 
 [[package]]
@@ -5392,6 +5395,14 @@ dependencies = [
  "serde_json",
  "vetro-agent-api",
  "vetro-proto",
+ "vetro-store-sqlite",
+]
+
+[[package]]
+name = "vetro-store-sqlite"
+version = "0.2.0"
+dependencies = [
+ "rusqlite",
 ]
 
 [[package]]

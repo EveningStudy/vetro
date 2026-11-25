@@ -12,3 +12,4 @@ rusqlite = { version = "0.43", default-features = false, features = ["bundled"] 
 serde_json.workspace = true
 vetro-agent-api = { path = "../vetro-agent-api" }
 vetro-proto = { path = "../vetro-proto" }
+vetro-store-sqlite = { version = "0.2.0", path = "../vetro-store-sqlite" }

@@ -89,7 +89,7 @@ Four readers produce `ThreadSummary` rows for the index and items on demand:
 | Claude Code | scan `~/.claude/projects/**/*.jsonl` | parse the JSONL | `--resume <id>` |
 | Antigravity (CLI/ACP store) | ACP `session/list` | ACP `session/load` | same session |
 | Antigravity (desktop app store) | `~/.gemini/antigravity/conversation_summaries.db` | `conversations/<id>.db` (`steps` protobuf, decoded best-effort; text from the FTS tables) | read-only unless ACP can load it |
-| Devin | ACP `session/list` | ACP `session/load` | same session |
+| Devin | ACP `session/list` | Read-only local SQLite history on Windows, with ACP `session/load` when local history is unavailable | same session via ACP |
 
 Foreign SQLite readers take no write or exclusive locks and create no files. A WAL database is read with `mode=ro`, using a shared read mark for the duration of one short batch in the Antigravity store. An unavailable WAL is retried on a subsequent scan. A database without a WAL can be opened with `immutable=1`. The index stores summaries and searchable text only and can be deleted at any time. A file watcher keeps threads that are being written by other apps fresh. Watching must not keep files locked on Windows.
 

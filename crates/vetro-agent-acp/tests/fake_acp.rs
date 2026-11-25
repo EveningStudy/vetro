@@ -149,6 +149,12 @@ fn fake(scenario: &str) {
         let id = &message["id"];
         let params = &message["params"];
         assert_eq!(message["jsonrpc"], "2.0");
+        if scenario == "devin-locked" {
+            assert!(matches!(
+                message["method"].as_str(),
+                Some("initialize" | "session/load" | "session/resume")
+            ));
+        }
         let result = match message["method"].as_str() {
             Some("initialize") => {
                 assert_eq!(
@@ -206,6 +212,15 @@ fn fake(scenario: &str) {
                 json!({"sessions":[{"sessionId":"stored","cwd":cwd,"title":"Saved","updatedAt":"2026-11-23T00:00:00.250Z"}]})
             }
             Some("session/load" | "session/resume") => {
+                if scenario == "devin-locked" {
+                    assert_eq!(params["sessionId"], "cool-syrup");
+                    output(json!({"id":id,"error":{
+                        "code":-32603,
+                        "message":"Internal error",
+                        "data":"session initialization failed: Failed to lock session 'cool-syrup': Access is denied. (os error 5)"
+                    }}));
+                    continue;
+                }
                 if scenario == "devin" && !authenticated {
                     output(
                         json!({"id":id,"error":{"code":-32000,"message":"Authentication required"}}),
@@ -405,7 +420,125 @@ async fn until_end(
     }
 }
 
+async fn devin_locked_history() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut spec = SpawnSpec::new(env::current_exe().unwrap());
+    spec.args = vec!["--agent".into(), "devin-locked".into()];
+    spec.env
+        .insert("APPDATA".into(), temp.path().as_os_str().to_owned());
+    let agent = AcpAgent::new("devin", "Devin", spec);
+    let cwd = env::current_dir().unwrap();
+    let error = agent.read("cool-syrup", Some(&cwd)).await.unwrap_err();
+    assert_eq!(error.code, ErrorCode::Busy);
+    assert!(error
+        .message
+        .contains("Failed to lock session 'cool-syrup'"));
+
+    let root = temp.path().join("Devin/cli");
+    std::fs::create_dir_all(&root).unwrap();
+    let db = rusqlite::Connection::open(root.join("sessions.db")).unwrap();
+    db.execute_batch(
+        "PRAGMA journal_mode=WAL;
+         PRAGMA wal_autocheckpoint=0;
+         CREATE TABLE sessions (id TEXT PRIMARY KEY, main_chain_id INTEGER);
+         CREATE TABLE message_nodes (
+            session_id TEXT, node_id INTEGER, parent_node_id INTEGER,
+            chat_message TEXT, created_at INTEGER, PRIMARY KEY (session_id, node_id)
+         );
+         CREATE TABLE tool_call_state (
+            session_id TEXT, tool_call_id TEXT, tool_call_json TEXT,
+            tool_call_update_json TEXT, PRIMARY KEY (session_id, tool_call_id)
+         );
+         INSERT INTO sessions VALUES ('cool-syrup', 4);",
+    )
+    .unwrap();
+    let nodes = [
+        (
+            0,
+            None,
+            json!({"role":"system","content":"private context"}),
+        ),
+        (
+            1,
+            Some(0),
+            json!({
+                "role":"user","content":"two attachments",
+                "images":[
+                    {"mime_type":"image/png","base64_data":"aW1hZ2Ux"},
+                    {"mime_type":"image/png","base64_data":"aW1hZ2Uy"}
+                ],
+                "metadata":{"is_user_input":true,"extensions":{
+                    "chisel/acp-content-blocks":[{"type":"text","text":"two attachments"}]
+                }}
+            }),
+        ),
+        (
+            2,
+            Some(1),
+            json!({"role":"assistant","content":"off the main chain"}),
+        ),
+        (
+            3,
+            Some(1),
+            json!({"role":"assistant","tool_calls":[{"id":"tool-id","name":"test"}]}),
+        ),
+        (
+            4,
+            Some(3),
+            json!({"role":"assistant","content":"saved response"}),
+        ),
+    ];
+    for (node_id, parent, message) in nodes {
+        db.execute(
+            "INSERT INTO message_nodes VALUES ('cool-syrup', ?1, ?2, ?3, 10)",
+            rusqlite::params![node_id, parent, message.to_string()],
+        )
+        .unwrap();
+    }
+    let output = "x".repeat(123_943);
+    db.execute(
+        "INSERT INTO tool_call_state VALUES ('cool-syrup', 'tool-id', ?1, ?2)",
+        [
+            json!({"title":"Long output","kind":"execute"}).to_string(),
+            json!({
+                "status":"completed",
+                "content":[{"type":"content","content":{"type":"text","text":output}}]
+            })
+            .to_string(),
+        ],
+    )
+    .unwrap();
+
+    let transcript = agent.read("cool-syrup", Some(&cwd)).await.unwrap();
+    let [user, tool, answer] = transcript.items.as_slice() else {
+        panic!("expected user, tool and assistant items");
+    };
+    assert!(matches!(&user.kind, ItemKind::UserMessage { content } if
+        matches!(content.as_slice(), [
+            ContentBlock::Text { text },
+            ContentBlock::Image { data: Some(first), .. },
+            ContentBlock::Image { data: Some(second), .. },
+        ] if text == "two attachments" && first == "aW1hZ2Ux" && second == "aW1hZ2Uy")
+    ));
+    assert!(matches!(&tool.kind, ItemKind::ToolCall(tool) if
+        tool.status == ToolStatus::Completed
+            && tool.content == [vetro_proto::ToolContent::Text { text: output }]
+    ));
+    assert!(
+        matches!(&answer.kind, ItemKind::AgentMessage { text, streaming: false }
+        if text == "saved response")
+    );
+
+    let (sink, _) = mpsc::unbounded_channel();
+    assert!(matches!(
+        agent.attach("cool-syrup", Some(&cwd), sink).await,
+        Err(error) if error.code == ErrorCode::Busy
+    ));
+    agent.shutdown().await;
+}
+
 async fn suites() {
+    devin_locked_history().await;
     let silent = agent("cancel-timeout");
     let (sink, mut events) = mpsc::unbounded_channel();
     let session = silent
@@ -428,6 +561,7 @@ async fn suites() {
     );
     let mut spec = SpawnSpec::new(env::current_exe().unwrap());
     spec.args = vec!["--agent".into(), "devin".into()];
+    spec.env.insert("APPDATA".into(), "".into());
     let devin = AcpAgent::new("devin", "Devin", spec);
     assert_eq!(devin.info().await.auth.state, AuthState::Required);
     assert!(!devin.recover_auth().await.unwrap());
@@ -446,6 +580,7 @@ async fn suites() {
 
     let mut spec = SpawnSpec::new(env::current_exe().unwrap());
     spec.args = vec!["--agent".into(), "devin".into()];
+    spec.env.insert("APPDATA".into(), "".into());
     spec.env
         .insert("VETRO_FAKE_DEVIN_LOGGED_IN".into(), "1".into());
     let devin = AcpAgent::new("devin", "Devin", spec);

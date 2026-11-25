@@ -1,4 +1,4 @@
-//! Opening Antigravity's SQLite files without leaving a trace.
+//! Opening agents' SQLite stores without leaving a trace.
 //!
 //! SQLite's `mode=ro` still creates `-wal` and `-shm` files next to a WAL database when they are
 //! missing. A small VFS shim on top of the platform VFS refuses to create, write or delete any
@@ -7,7 +7,7 @@
 
 use std::{
     ffi::{c_char, c_int, CStr},
-    path::Path,
+    path::{Path, PathBuf},
     sync::OnceLock,
 };
 
@@ -123,6 +123,12 @@ fn uri(path: &Path, query: &str) -> String {
     out
 }
 
+fn sibling(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(suffix);
+    path.with_file_name(name)
+}
+
 /// Open a foreign SQLite database strictly read-only.
 ///
 /// A database with a `-wal` file is opened as a normal reader so committed frames that have
@@ -148,7 +154,7 @@ pub fn open_readonly(path: &Path) -> rusqlite::Result<Connection> {
             Some(format!("{} does not exist", path.display())),
         ));
     }
-    let wal = super::sibling(path, "-wal");
+    let wal = sibling(path, "-wal");
     if !wal.try_exists().unwrap_or(true) {
         let immutable = open("immutable=1");
         if !wal.try_exists().unwrap_or(true) {
@@ -161,7 +167,7 @@ pub fn open_readonly(path: &Path) -> rusqlite::Result<Connection> {
             Some(format!("{}: WAL unavailable: {detail}", path.display())),
         )
     };
-    if !super::sibling(path, "-shm").is_file() {
+    if !sibling(path, "-shm").is_file() {
         return Err(busy("shared memory file missing"));
     }
     open("mode=ro&readonly_shm=1").map_err(|error| busy(&error.to_string()))
