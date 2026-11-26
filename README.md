@@ -29,12 +29,13 @@ Vetro passes your input unchanged to the native agent and uses its existing conf
 
 Every change to Vetro has to keep these rules (see [AGENTS.md](AGENTS.md)):
 
-1. **Zero injection.** The agent receives exactly what you typed. Vetro adds no system prompts, developer instructions, skills, MCP servers, tools, wrapper text or replayed history. Model, mode and thinking-level choices go through the agent's own switches, and only when you change them.
-2. **Zero footprint.** Vetro writes only under `~/.vetro`. It never creates, modifies or deletes anything in `~/.claude`, `~/.codex`, `~/.gemini`, `~/.agents`, Devin's folders or your projects. Other tools' databases are opened read-only. (The agents still write their own sessions and logs, as they do in the terminal.)
-3. **Native runtimes only.** Vetro launches the binaries it finds on your machine. It never downloads an agent and never reads, copies, forwards or stores credentials. You sign in through each agent's own flow.
-4. **No orphans.** Every child process dies when Vetro exits: a Job Object on Windows; on macOS and Linux a watchdog that kills the process group and the descendants it tracks.
-5. **Light.** One Rust process. No Node, no Electron and no bundled browser at runtime. Idle agent processes are released and resumed when you need them again.
-6. **Same rules for every agent.** No agent gets special restrictions or special features in the UI.
+1. **Zero injection.** The agent receives exactly what you typed. Vetro adds no system prompts, developer instructions, skills, MCP servers, tools, wrapper text, or replayed history. Model, mode, and thinking-level choices go through the agent's own switches, and only when you change them.
+2. **Zero footprint.** Vetro stores its own data only under `~/.vetro`. It never creates, modifies, or deletes anything in `~/.claude`, `~/.codex`, `~/.gemini`, `~/.agents`, Devin's folders, or other tools' stores, and opens their databases read-only. It never silently writes hidden config into your projects; only explicit actions you trigger (such as creating a folder) touch the workspace. (The agents still write their own sessions and logs, as they do in the terminal.)
+3. **Native runtimes only.** Vetro launches the official agent binaries it finds on your machine. It never downloads an agent and never reads, copies, forwards, or stores credentials. You sign in through each agent's own flow.
+4. **No orphans.** Every managed child process dies when Vetro exits: a Job Object on Windows; on macOS and Linux a watchdog that kills the process group and tracked descendants. While running, Vetro warns before closing or releasing a session with active background work.
+5. **Light — in runtime and scope.** One Rust process, system WebView, no Node, no Electron, and no bundled browser at runtime. Idle agent processes are released and resumed on demand. Vetro stays a thin client for conversation, approvals, history, read-only diffs, and remote access — not a built-in IDE, terminal, or workflow orchestrator.
+6. **Capability-driven, not privileged.** Every agent shares the same UI skeleton and rules, with no artificial restrictions or favoritism. Useful capabilities exposed by an agent's native protocol (such as rate limits, steering, fork, or multi-dimensional permissions) appear through unified UI slots.
+7. **Progressive disclosure.** The primary canvas focuses on user intent, items needing human action, and final answers. Intermediate reasoning, tool logs, code diffs, linked child sessions, internal sessions, and raw protocol traffic stay collapsed or in on-demand drawers by default.
 
 ## How each agent is connected
 
