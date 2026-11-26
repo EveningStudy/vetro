@@ -41,67 +41,6 @@ pub(crate) fn directory(path: &Path) -> Result<PathBuf> {
     Ok(normalize(path))
 }
 
-pub fn mkdir(parent: &Path, name: &str) -> Result<PathBuf> {
-    let parent = directory(parent)?;
-    let name = name.trim();
-    if name.is_empty() || name == "." || name == ".." {
-        return Err(bad_request("Folder name cannot be empty, '.' or '..'"));
-    }
-    if name.contains(['/', '\\', '\0']) || name.chars().any(char::is_control) {
-        return Err(bad_request("Folder name cannot contain path separators"));
-    }
-    #[cfg(windows)]
-    {
-        if name.ends_with(['.', ' ']) || name.contains(['<', '>', ':', '"', '|', '?', '*']) {
-            return Err(bad_request(
-                "Folder name contains invalid Windows characters",
-            ));
-        }
-        let stem = name.split('.').next().unwrap_or(name).to_ascii_uppercase();
-        if matches!(
-            stem.as_str(),
-            "CON"
-                | "PRN"
-                | "AUX"
-                | "NUL"
-                | "COM1"
-                | "COM2"
-                | "COM3"
-                | "COM4"
-                | "COM5"
-                | "COM6"
-                | "COM7"
-                | "COM8"
-                | "COM9"
-                | "LPT1"
-                | "LPT2"
-                | "LPT3"
-                | "LPT4"
-                | "LPT5"
-                | "LPT6"
-                | "LPT7"
-                | "LPT8"
-                | "LPT9"
-        ) {
-            return Err(bad_request("Folder name is reserved on Windows"));
-        }
-    }
-    let target = parent.join(name);
-    if target.exists() {
-        return Err(bad_request(
-            "A file or folder with that name already exists",
-        ));
-    }
-    fs::create_dir(&target).map_err(|error| {
-        if error.kind() == std::io::ErrorKind::AlreadyExists {
-            bad_request("A file or folder with that name already exists")
-        } else {
-            bad_request(format!("Could not create folder: {error}"))
-        }
-    })?;
-    Ok(normalize(&target))
-}
-
 pub fn list(path: &Path) -> Result<FsListResult> {
     #[cfg(windows)]
     if path.as_os_str().is_empty() {
@@ -204,26 +143,4 @@ fn subsequence(candidate: &str, query: &str) -> Option<usize> {
         last = index;
     }
     Some(last - first.unwrap_or(last))
-}
-
-#[cfg(test)]
-#[test]
-fn mkdir_creates_single_level_folder_and_rejects_invalid_names() {
-    let root = tempfile::tempdir().unwrap();
-    let created = mkdir(root.path(), "my-project").unwrap();
-    assert!(created.is_dir());
-    assert!(mkdir(root.path(), "my-project").is_err());
-    for bad in ["", " ", ".", "..", "a/b", r"a\b"] {
-        assert!(
-            mkdir(root.path(), bad).is_err(),
-            "expected error for {bad:?}"
-        );
-    }
-    #[cfg(windows)]
-    for bad in ["CON", "nul.txt", "bad:name", "trail."] {
-        assert!(
-            mkdir(root.path(), bad).is_err(),
-            "expected error for {bad:?}"
-        );
-    }
 }

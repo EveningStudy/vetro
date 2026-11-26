@@ -278,11 +278,12 @@ impl Core {
                 } else {
                     scanned += 1;
                 }
-            } else if let Some(path) = file.path {
+            } else if !file.paths.is_empty() {
                 let source = id.to_owned();
                 let mark = file.mark;
+                let paths = file.paths;
                 if let Some(record) =
-                    blocking(move || native::file_record(&source, &path, native_id)).await?
+                    blocking(move || native::file_record(&source, &paths, native_id)).await?
                 {
                     insert(&mut entries, id, record, file.archived, mark);
                 }
@@ -854,6 +855,8 @@ mod tests {
                 cwd: root.path().to_string_lossy().into_owned(),
                 options: BTreeMap::new(),
                 content: Vec::new(),
+                client_message_id: None,
+                recover_only: None,
             })
             .await
             .unwrap();
@@ -975,6 +978,8 @@ mod tests {
                     cwd: root.path().to_string_lossy().into_owned(),
                     options: BTreeMap::new(),
                     content: Vec::new(),
+                    client_message_id: None,
+                    recover_only: None,
                 })
                 .await
                 .unwrap();
@@ -1010,6 +1015,26 @@ mod tests {
                 matches!(&*event, ServerEvent::ThreadsRemoved { thread_ids } if thread_ids == std::slice::from_ref(&deleted))
             }));
         }
+    }
+
+    #[tokio::test]
+    async fn requested_release_keeps_other_sessions_and_active_calls() {
+        let agent = Arc::new(InventoryAgent {
+            id: "devin",
+            auth: Mutex::new(Some(AuthState::Ok)),
+            initial_usage: None,
+            listing: Mutex::new(Ok(SessionPage::default())),
+        });
+        let registry = Registry::new([agent.clone() as Arc<dyn Agent>]).unwrap();
+        let active_call = registry.enter("devin", true).await.unwrap();
+        registry.request_release("devin");
+        registry.release_requested("devin", || false).await;
+        assert_eq!(agent.process_auth(), Some(AuthState::Ok));
+        drop(active_call);
+        registry.release_requested("devin", || true).await;
+        assert_eq!(agent.process_auth(), Some(AuthState::Ok));
+        registry.release_idle(|_| false, None).await;
+        assert_eq!(agent.process_auth(), None);
     }
 
     #[tokio::test]
@@ -1074,6 +1099,8 @@ mod tests {
                 cwd: root.path().to_string_lossy().into_owned(),
                 options: BTreeMap::new(),
                 content: Vec::new(),
+                client_message_id: None,
+                recover_only: None,
             })
             .await
             .unwrap();

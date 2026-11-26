@@ -20,6 +20,9 @@ enum Command {
         port: Option<u16>,
         #[arg(long)]
         open: bool,
+        /// Allow device pairing through this HTTPS reverse proxy origin.
+        #[arg(long, value_name = "HTTPS_ORIGIN", requires = "port")]
+        remote_url: Option<String>,
     },
     Agents,
     Probe(probe::Args),
@@ -59,8 +62,15 @@ async fn run(cli: Cli) -> Result<()> {
     let registry = Registry::from_settings(&home.settings())?;
     let core = Core::new(home, registry);
     let result = match cli.command {
-        Command::Serve { port, open } => {
-            let server = Server::bind(core, port).await?;
+        Command::Serve {
+            port,
+            open,
+            remote_url,
+        } => {
+            let mut server = Server::bind(core, port).await?;
+            if let Some(origin) = remote_url {
+                server.enable_remote_proxy(&origin)?;
+            }
             let url = server.local_url();
             println!("{url}");
             if open {

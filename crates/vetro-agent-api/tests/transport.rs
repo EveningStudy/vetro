@@ -48,6 +48,7 @@ fn main() {
             child.wait().unwrap();
         }
         Some("fixture-leaf") => thread::sleep(Duration::from_secs(60)),
+        Some("fixture-background") => background_fixture(),
         Some("fixture-host") => runtime().block_on(async {
             let mode = args.next().unwrap_or_else(|| "fixture-tree".into());
             let (process, mut stdout) = spawn(&mode, Arc::default());
@@ -61,6 +62,8 @@ fn main() {
                 json_rpc(Version::V2).await;
                 json_rpc(Version::Bare).await;
                 println!("JSON-RPC with and without version field ... ok");
+                background_work_spans_turns().await;
+                println!("background process tracking across turns ... ok");
                 tree_shutdown(TreeShutdown::Drop, "fixture-tree").await;
                 tree_shutdown(TreeShutdown::Kill, "fixture-tree").await;
                 tree_shutdown(TreeShutdown::Stop, "fixture-tree").await;
@@ -119,6 +122,60 @@ fn echo(args: Vec<String>) {
         emit(line.unwrap());
     }
     emit("stdin closed");
+}
+
+fn background_fixture() {
+    let mut children = Vec::new();
+    for line in io::stdin().lock().lines() {
+        match line.unwrap().as_str() {
+            "start" => {
+                let child = Command::new(env::current_exe().unwrap())
+                    .arg("fixture-leaf")
+                    .spawn()
+                    .unwrap();
+                emit(child.id());
+                children.push(child);
+            }
+            "stop" => {
+                let mut child = children.pop().unwrap();
+                child.kill().unwrap();
+                child.wait().unwrap();
+                emit("stopped");
+            }
+            command => panic!("unexpected command: {command}"),
+        }
+    }
+    for mut child in children {
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+}
+
+async fn background_work_spans_turns() {
+    let (process, mut stdout) = spawn("fixture-background", Arc::default());
+    process.send_line("start").await.unwrap();
+    let helper_pid: u32 = line(&mut stdout).await.parse().unwrap();
+    assert!(process
+        .descendants()
+        .iter()
+        .any(|(pid, _)| *pid == helper_pid));
+    process.begin_user_work();
+    assert_eq!(process.background_processes(), 0);
+
+    process.send_line("start").await.unwrap();
+    let task_pid: u32 = line(&mut stdout).await.parse().unwrap();
+    assert!(process
+        .descendants()
+        .iter()
+        .any(|(pid, _)| *pid == task_pid));
+    assert_eq!(process.background_processes(), 1);
+    process.begin_user_work();
+    assert_eq!(process.background_processes(), 1);
+
+    process.send_line("stop").await.unwrap();
+    assert_eq!(line(&mut stdout).await, "stopped");
+    assert_eq!(process.background_processes(), 0);
+    assert!(process.stop().await.unwrap().success());
 }
 
 async fn round_trip() {

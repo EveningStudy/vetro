@@ -10,7 +10,6 @@ use vetro_proto::rpc::TailscaleStatus;
 use crate::{bad_request, internal};
 
 const PORT: &str = "8443";
-pub(super) const HTTPS_PORT: u16 = 8443;
 const TIMEOUT: Duration = Duration::from_secs(10);
 const FLAGS: &[&str] = &["serve", "--https=8443"];
 

@@ -28,7 +28,7 @@ pub(super) fn inventory(root: &Path) -> Result<Inventory> {
             {
                 mark.push_str(":compressed");
             }
-            insert_file(&mut inventory.files, id, &parts[0], mark, archived);
+            insert_file(&mut inventory.files, id, parts, mark, archived);
         }
     }
     let mut web_ids = HashSet::new();
@@ -109,18 +109,23 @@ fn read_state(
         }
         .classify("codex");
         let file = files.remove(&id);
-        let path = file.as_ref().and_then(|file| file.path.clone()).or(rollout);
-        let disk_mark = file.map(|file| file.mark).unwrap_or_default();
+        let (mut paths, disk_mark) = file.map(|file| (file.paths, file.mark)).unwrap_or_default();
+        if paths.is_empty() {
+            paths.extend(rollout);
+        }
         let mark = format!(
             "{archived}{}{disk_mark}{}",
             record_mark(&record),
-            path.as_deref().and_then(file_mark).unwrap_or_default()
+            paths
+                .first()
+                .and_then(|path| file_mark(path))
+                .unwrap_or_default()
         );
         files.insert(
             id,
             NativeFile {
                 record: Some(record),
-                path,
+                paths,
                 mark,
                 archived,
             },
@@ -159,7 +164,7 @@ fn read_projection_inventory(path: &Path, files: &mut HashMap<String, NativeFile
                 record: Some(record.classify("codex")),
                 mark: format!("projection:{ordinal}"),
                 archived: false,
-                path: None,
+                paths: Vec::new(),
             },
         );
     }
@@ -216,7 +221,7 @@ fn read_catalog(path: &Path, files: &mut HashMap<String, NativeFile>) -> Result<
             NativeFile {
                 mark: record_mark(&record),
                 record: Some(record),
-                path: None,
+                paths: Vec::new(),
                 archived: false,
             },
         );
@@ -283,10 +288,10 @@ fn rollout_id(path: &Path) -> Option<&str> {
     name.get(20..56).filter(|id| uuid(id))
 }
 
-pub(super) fn rollout_record(path: &Path, id: String) -> Result<Option<SessionRecord>> {
-    let mut record = blank(id, path, "Codex thread");
+pub(super) fn rollout_record(parts: &[PathBuf], id: String) -> Result<Option<SessionRecord>> {
+    let mut record = blank(id, &parts[0], "Codex thread");
     record.resumable = true;
-    for row in json_lines(path)?.take(64) {
+    for row in json_lines::<Value>(&parts[0])?.take(64) {
         let payload = &row["payload"];
         match row["type"].as_str() {
             Some("session_meta") => {
@@ -317,7 +322,21 @@ pub(super) fn rollout_record(path: &Path, id: String) -> Result<Option<SessionRe
             _ => {}
         }
     }
+    let mut latest = record.created_at;
+    let mut modified = record.updated_at;
+    for path in parts {
+        modified = modified.max(modified_ms(path));
+        for row in json_lines::<RolloutTimestamp>(path)? {
+            latest = latest.max(row.timestamp.as_deref().and_then(timestamp_text));
+        }
+    }
+    record.updated_at = latest.unwrap_or(modified);
     Ok(Some(record.classify("codex")))
+}
+
+#[derive(serde::Deserialize)]
+struct RolloutTimestamp {
+    timestamp: Option<String>,
 }
 
 fn source_kind(source: &Value, origin: Option<&str>) -> ThreadSource {
@@ -342,7 +361,9 @@ fn parent(source: &Value) -> Option<String> {
         .or_else(|| string(&source["subAgent"]["threadSpawn"], "parentThreadId"))
 }
 
-fn json_lines(path: &Path) -> Result<impl Iterator<Item = Value>> {
+fn json_lines<Record: serde::de::DeserializeOwned>(
+    path: &Path,
+) -> Result<impl Iterator<Item = Record>> {
     let file = File::open(path).map_err(internal)?;
     let reader: Box<dyn Read> = if path.extension().is_some_and(|ext| ext == "zst") {
         Box::new(zstd::Decoder::new(file).map_err(internal)?)
@@ -352,7 +373,7 @@ fn json_lines(path: &Path) -> Result<impl Iterator<Item = Value>> {
     Ok(BufReader::new(reader)
         .split(b'\n')
         .map_while(std::io::Result::ok)
-        .filter_map(|line| serde_json::from_slice::<Value>(&line).ok()))
+        .filter_map(|line| serde_json::from_slice::<Record>(&line).ok()))
 }
 
 pub(in crate::history) fn fallback(root: &Path, id: &str) -> Result<Option<Transcript>> {
@@ -438,7 +459,7 @@ fn read_rollouts(parts: &[PathBuf], id: &str, include_items: bool) -> Result<Tra
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or_default();
-        for (index, row) in json_lines(path)?.enumerate() {
+        for (index, row) in json_lines::<Value>(path)?.enumerate() {
             let payload = &row["payload"];
             if row["type"] == "event_msg" && payload["type"] == "token_count" {
                 if let Some(snapshot) = rollout_usage(&payload["info"]) {
@@ -887,6 +908,47 @@ mod tests {
             })
             .collect();
         assert_eq!(actual, ["first segment", "second segment"]);
+    }
+
+    #[test]
+    fn rollout_activity_uses_the_latest_native_timestamp_across_segments() {
+        let root = tempfile::tempdir().unwrap();
+        let first = root.path().join("first.jsonl");
+        let second = root.path().join("second.jsonl.zst");
+        fs::write(
+            &first,
+            concat!(
+                r#"{"type":"session_meta","payload":{"timestamp":"2026-09-07T00:00:00Z","source":"cli"}}"#,
+                "\n",
+                r#"{"type":"event_msg","timestamp":"2026-09-07T00:01:00Z","payload":{"type":"user_message","message":"First prompt"}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        let tail = concat!(
+            r#"{"type":"event_msg","timestamp":"2026-09-07T00:05:00Z","payload":{"type":"task_complete"}}"#,
+            "\n",
+            r#"{"type":"event_msg","timestamp":"2026-09-07T00:04:00Z"}"#,
+            "\n",
+            r#"{"type":"metadata","payload":{"title":"Renamed"}}"#,
+            "\n",
+        );
+        fs::write(&second, zstd::encode_all(tail.as_bytes(), 1).unwrap()).unwrap();
+        let id = "01a07c95-7d45-7983-a759-ad414c92947e";
+        let record = rollout_record(&[first.clone(), second], id.into())
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.title, "First prompt");
+        assert_eq!(
+            Some(record.updated_at),
+            timestamp_text("2026-09-07T00:05:00Z")
+        );
+
+        fs::write(&first, "{\"type\":\"metadata\"}\n").unwrap();
+        let record = rollout_record(std::slice::from_ref(&first), id.into())
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.updated_at, modified_ms(&first));
     }
 
     #[test]

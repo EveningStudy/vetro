@@ -6,7 +6,7 @@
 
 <p align="center">
   用一个干净的窗口，使用你电脑上已经装好的编程代理。<br>
-  Claude Code、Codex、Antigravity、Devin 以及任何 ACP 代理，每一个都和在终端里运行时完全一样。
+  支持 Claude Code、Codex、Kiro、Antigravity、Devin 和自定义 ACP 代理。
 </p>
 
 <p align="center">
@@ -15,7 +15,7 @@
 
 ![Vetro 中的一个 Codex 会话（深色主题）](docs/images/thread-dark.png)
 
-Vetro 是意大利语里的“玻璃”。它是一个轻量、干净的统一入口，用来使用你电脑上已经装好的编程代理：**Claude Code、Codex、Antigravity 和 Devin**，也可以在设置里加入任何支持 [Agent Client Protocol](https://agentclientprotocol.com)（ACP）的代理。Vetro 启动的是各家官方、未经修改的程序，把它们的所有会话放进同一个界面，除此之外什么都不多做。
+Vetro 是意大利语里的“玻璃”。它为本机安装的编程代理提供一个轻量的统一入口，启动各家的官方程序，并显示其本地存储和协议提供的会话。你还可以在设置里加入其他支持 [Agent Client Protocol](https://agentclientprotocol.com)（ACP）的代理。
 
 Vetro 提供 Windows、macOS 和 Linux 桌面应用；同一套界面也能在浏览器里打开，还有一套手机布局，方便远程使用。界面参照了 [T3 Code](https://github.com/pingdotgg/t3code)。
 
@@ -23,7 +23,7 @@ Vetro 提供 Windows、macOS 和 Linux 桌面应用；同一套界面也能在�
 
 同时用好几个编程代理的人，往往会想要一个统一的前端。这类工具已经有不少，其中一些界面做得很好。但为了把代理接进自己的工作流，很多工具也顺手改动了代理本身：往提示词里注入指令，额外注册 MCP 工具，往 `~/.claude` 之类的目录里写入 skills，自带一个很重的运行时，或者关掉之后还留着进程。对于一个 agent harness 来说，这些都是合理的设计；可这样一来，你对话的那个代理，就不再完全是你装的那个了。
 
-Vetro 的承诺正好相反：通过 Vetro 使用一个代理，输入、输出、上下文、额度消耗和能力，都应该和直接运行它时一模一样。Vetro 只是一个薄客户端，永远不做 agent harness。
+Vetro 原样转发你的输入，由原生代理使用自己的配置和登录状态。窗口里可用的功能取决于已安装版本通过客户端协议提供的能力。
 
 ## 规则
 
@@ -38,7 +38,7 @@ Vetro 的每一处改动都必须遵守下面这些规则（见 [AGENTS.md](AGEN
 
 ## 每个代理怎么接入
 
-每个代理都通过它的厂商为这类客户端提供的接口来驱动，所以你原有的配置照常生效。
+Vetro 通过代理的原生接口运行。界面上的选项和操作取决于你安装的代理版本。已验证的版本、平台和操作见[代理能力验收表](docs/ACCEPTANCE.md#native-smoke-runs)。
 
 | 代理 | Vetro 的启动方式 | 照常生效的内容 |
 |---|---|---|
@@ -46,19 +46,20 @@ Vetro 的每一处改动都必须遵守下面这些规则（见 [AGENTS.md](AGEN
 | Claude Code | `claude -p`，输入输出都用 stream-json，也就是官方 Agent SDK 使用的协议 | 真正的 Claude Code 系统提示词、`CLAUDE.md`、hooks、skills、插件和 MCP 服务器，和在终端里一样 |
 | Antigravity | `agy acp`，Google 为 ACP 客户端提供的官方接入方式（[详细说明](docs/agents/antigravity.md)） | Antigravity 自己的工具、设置和登录 |
 | Devin | `devin acp` | Devin 自己的工具、设置和登录 |
+| Kiro | `kiro-cli acp` | 当前 CLI 引擎提供的工具、设置和登录 |
 | 任意 ACP 代理 | 你配置的命令，走 stdio | 该代理自己提供的一切 |
 
 Vetro 从不经手凭据。代理需要登录时，Vetro 列出代理自己提供的登录方式，由代理去完成。技术细节见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)（英文）。
 
 ## 功能
 
-- **一个侧边栏，列出所有会话。** 每个代理保存过的会话都会出现在这里，包括你在各家桌面应用和命令行里创建的会话。代理允许时可以接着聊，否则以只读方式打开。
+- **在同一个侧边栏浏览会话。** 支持读取 Vetro、各家桌面应用和 CLI 提供的本地历史。原生代理支持恢复时，可以直接接着聊。
 - **全文搜索**：搜索标题和消息内容，中文、英文都支持。
 - **代理之间的关联。** 一个代理调用另一个代理的命令行时（比如 Claude Code 执行 `codex exec`），子会话会显示在发起它的那次工具调用下面，并实时更新。
 - **原始日志。** 每个会话都能查看 Vetro 发给代理进程的内容和收到的内容，包括启动代理时的完整命令行。日志有大小上限，超出后先丢最旧的记录。
 - **权限请求和提问**：代理发来的请求，直接在会话里回答。
 - **模型、模式和思考强度选择器**：选项都来自代理本身。
-- **远程访问**：通过你自己的 Tailscale 网络访问，需要配对设备。服务只监听 `127.0.0.1`。
+- **远程访问**：通过 Tailscale Serve 或自己的 HTTPS 反向代理配对设备。服务只监听 `127.0.0.1`。见[配置指南](docs/remote.md)。
 - **无窗口模式**：`vetro serve` 运行同一个核心，不开窗口，在浏览器里使用界面。
 - 界面支持简体中文和英文，有浅色和深色主题。
 
@@ -109,23 +110,24 @@ Vetro 从不经手凭据。代理需要登录时，Vetro 列出代理自己提�
 <!-- STATUS:BEGIN -->
 ## 当前状态
 
-0.1.0 是第一个构建版本，尚未发布。以下是 2026-11-23 的实测情况：
+[0.2.0](https://github.com/EveningStudy/vetro/releases/tag/v0.2.0) 已于 2026 年 11 月 24 日发布。下表记录截至 2026 年 11 月 26 日对当前源码的验证。测试范围和待验证项目见[验收清单](docs/ACCEPTANCE.md)。
 
 | 平台或代理 | 已验证 |
 |---|---|
-| Windows 11 桌面版 | Codex、Claude Code 和 Devin 的实时会话；四个代理的已存历史；Claude Code 会话里运行 `codex exec` 时，子会话挂在对应的工具调用下；安装包可以构建。 |
-| Antigravity | 通过 `agy acp` 连接、会话列表、桌面版和命令行的已存历史。实时回复尚未验证：测试账号的额度已用完（HTTP 429），界面按代理返回的内容显示了这个错误。 |
-| 远程访问 | 一台 Mac 经 Tailscale 连到 Windows 主机：配对、列表，以及对远程设备的限制。还没有在手机上试过。 |
-| macOS（Apple 芯片） | 应用可以构建和运行；Codex 已实测；强制结束后没有残留子进程。测试用的 Mac 上只装了 Codex。窗口本身没有检查过。 |
-| Linux（x86_64） | deb 和 AppImage 可以构建；核心用一个测试用的 ACP 代理跑通了完整会话，强制结束后没有残留子进程。测试机上没有安装任何厂商的代理，窗口没有检查过。 |
-| 尚未验证 | 设备码登录、图片输入、真实代理发起的提问、Intel Mac、ARM Linux。 |
+| Windows 11 桌面版 | NSIS 安装、WebView 启动、系统文件选择器、麦克风输入，以及 Codex、Claude Code、Kiro 和 Devin 的实时会话。 |
+| Antigravity | ACP 握手、会话列表，以及桌面版和命令行的已存历史。 |
+| 远程访问 | Mac 经 Tailscale 连接 Windows 主机，另用 HTTPS 反代测试生产浏览器。覆盖配对、审批、中途插话、重连和撤销。 |
+| macOS（Apple 芯片） | DMG 启动、原生 WebView、系统文件夹选择器、从 Dock 恢复、应用退出及内置麦克风录音。 |
+| Linux（x86_64） | 在 WSL 的 Ubuntu 24.04 中用 X11 启动 AppImage 和 deb，验证内嵌界面、原生关窗、系统 Python ACP 和系统文件打开器。 |
+
+已发布的 0.2.0 AppImage 需要 glibc 2.43。Ubuntu 24.04 用户可以从源码构建。当前发版流程以 Ubuntu 24.04 为 Linux 构建和测试基线。
 <!-- STATUS:END -->
 
 ## 开始使用
 
 你的电脑上至少要装好一个受支持的代理，并且已经登录。Vetro 会在 `PATH` 和各代理常见的安装位置里查找它们；在“设置 → 代理”里，可以指定别的程序路径，或者追加启动参数和环境变量。
 
-0.1.0 发布后，安装包会放在本仓库的 Releases 页面：Windows 的 NSIS 安装程序、macOS 的 `.dmg`、Linux 的 `.deb` 和 AppImage，以及无窗口版的 `vetro` 程序。在那之前，请从源码构建。
+前往 [Releases](https://github.com/EveningStudy/vetro/releases) 下载桌面安装包或无窗口版 `vetro` 程序。桌面包包括 Windows 的 NSIS 安装程序、macOS 的磁盘镜像，以及 Linux 的 `.deb` 和 AppImage。
 
 ## 从源码构建
 

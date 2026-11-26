@@ -6,7 +6,7 @@ use std::ffi::OsStr;
 use std::path::PathBuf;
 #[cfg(target_os = "windows")]
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, Weak};
 use std::time::Duration;
 
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
@@ -20,7 +20,7 @@ use tauri::{
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
 use tokio::sync::broadcast::error::RecvError;
-use vetro_core::WindowTheme;
+use vetro_core::{Core, WindowTheme};
 
 use crate::core::{CoreHandle, ShutdownHandle};
 
@@ -47,24 +47,26 @@ pub fn run() -> Result<()> {
             let tag = tag.as_deref();
             let handle_app = app.handle().clone();
             let core = tauri::async_runtime::block_on(crate::core::start());
-            let close_to_tray = core
-                .as_ref()
-                .map(|handle| handle.close_to_tray)
-                .unwrap_or(false);
-            let window = match core {
+            match core {
                 Ok(mut handle) => {
                     app.manage(CoreShutdown(Mutex::new(handle.shutdown.take())));
-                    core_window(&handle_app, handle, tag)?
+                    core_window(&handle_app, handle, tag)?;
                 }
-                Err(err) => error_window(&handle_app, &format!("{err:#}"), tag)?,
-            };
-            watch_window_close(&window, close_to_tray);
+                Err(err) => {
+                    error_window(&handle_app, &format!("{err:#}"), tag)?;
+                }
+            }
             build_tray(&handle_app, tag)?;
             Ok(())
         })
         .build(tauri::generate_context!())?;
-    app.run(|app, event| {
-        if let RunEvent::ExitRequested { api, code, .. } = event {
+    app.run(|app, event| match event {
+        #[cfg(target_os = "macos")]
+        RunEvent::Reopen {
+            has_visible_windows: false,
+            ..
+        } => show_main_window(app),
+        RunEvent::ExitRequested { api, code, .. } => {
             if let Some(state) = app.try_state::<CoreShutdown>() {
                 if let Some(shutdown) = state.0.lock().unwrap().take() {
                     api.prevent_exit();
@@ -76,6 +78,7 @@ pub fn run() -> Result<()> {
                 }
             }
         }
+        _ => {}
     });
     Ok(())
 }
@@ -168,9 +171,10 @@ fn core_window(
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     let (platform, chrome) = (std::env::consts::OS, "native");
 
+    let embedded_core = handle.embedded_core.strong_count() > 0;
     let window = builder
         .initialization_script(format!(
-            r#"window.__VETRO_DESKTOP__ = {{ platform: "{platform}", chrome: "{chrome}", maximized: false }};"#
+            r#"window.__VETRO_DESKTOP__ = {{ platform: "{platform}", chrome: "{chrome}", maximized: false, embeddedCore: {embedded_core} }};"#
         ))
         .on_navigation({
             let app = app.clone();
@@ -193,6 +197,7 @@ fn core_window(
             }
         })
         .build()?;
+    watch_window_close(&window, handle.embedded_core);
     #[cfg(target_os = "windows")]
     {
         watch_window_maximized(&window);
@@ -316,11 +321,11 @@ fn vetro_home(app: &AppHandle) -> Option<PathBuf> {
     app.path().home_dir().ok().map(|home| home.join(".vetro"))
 }
 
-fn watch_window_close(window: &WebviewWindow, close_to_tray: bool) {
+fn watch_window_close(window: &WebviewWindow, core: Weak<Core>) {
     let w = window.clone();
     window.clone().on_window_event(move |event| {
         if let WindowEvent::CloseRequested { api, .. } = event {
-            if close_to_tray {
+            if core.upgrade().is_some_and(|core| core.home.close_to_tray()) {
                 api.prevent_close();
                 let _ = w.hide();
             }

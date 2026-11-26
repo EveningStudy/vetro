@@ -1,5 +1,5 @@
 import { CheckIcon, CopyIcon, ExternalLinkIcon, LogInIcon, RefreshCwIcon } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { client } from "~/api/client";
 import type { AgentInfo, AuthenticateResult } from "~/api/types";
 import { useT } from "~/i18n";
@@ -17,6 +17,8 @@ export function SignInMethods({ agent, size = "sm", onDone }: { agent: AgentInfo
   const [result, setResult] = useState<AuthenticateResult | null>(null);
   const [checking, setChecking] = useState(false);
   const [copied, setCopied] = useState(false);
+  const refreshing = useRef<Promise<boolean> | null>(null);
+  const agentId = agent.id;
   const signedIn = agent.auth.state === "ok";
   const remoteClient = useStore((s) => s.app?.remoteClient ?? false);
 
@@ -27,16 +29,31 @@ export function SignInMethods({ agent, size = "sm", onDone }: { agent: AgentInfo
     }
   }, [signedIn, result, onDone]);
 
-  const refresh = () => {
+  const refresh = useCallback(() => {
+    if (refreshing.current) return refreshing.current;
     setChecking(true);
-    return client()
+    const request = client()
       .request("agents.refresh", {})
       .then((response) => {
         useStore.setState({ agents: response.agents });
-        return response.agents.find((a) => a.id === agent.id)?.auth.state === "ok";
+        return response.agents.find((a) => a.id === agentId)?.auth.state === "ok";
       })
-      .finally(() => setChecking(false));
-  };
+      .finally(() => {
+        refreshing.current = null;
+        setChecking(false);
+      });
+    refreshing.current = request;
+    return request;
+  }, [agentId]);
+
+  useEffect(() => {
+    if (!result || signedIn || remoteClient) return;
+    const checkOnReturn = () => {
+      void refresh().catch((error) => toast.error(errorMessage(error)));
+    };
+    window.addEventListener("focus", checkOnReturn);
+    return () => window.removeEventListener("focus", checkOnReturn);
+  }, [result, signedIn, remoteClient, refresh]);
 
   const start = (methodId: string) => {
     setPending(methodId);
@@ -44,13 +61,33 @@ export function SignInMethods({ agent, size = "sm", onDone }: { agent: AgentInfo
     client()
       .request("agents.authenticate", { agentId: agent.id, methodId })
       .then(async (response) => {
-        if (response.url || response.code || response.message) setResult(response);
+        const hasFollowUp = response.url || response.code || response.message;
+        if (hasFollowUp) setResult(response);
         const ok = await refresh();
-        if (ok && !(response.url || response.code)) onDone?.();
+        if (ok && !hasFollowUp) onDone?.();
       })
       .catch((error) => toast.error(errorMessage(error)))
       .finally(() => setPending(null));
   };
+
+  if (remoteClient) {
+    return (
+      <div className="flex min-w-0 flex-col items-start gap-2">
+        <p className="text-xs text-muted-foreground">{t("remote.signInLocal")}</p>
+        <Button
+          size={size}
+          variant="outline"
+          disabled={checking}
+          onClick={() => void refresh()
+            .then((ok) => { if (ok) onDone?.(); })
+            .catch((error) => toast.error(errorMessage(error)))}
+        >
+          {checking ? <Spinner className="size-3.5" /> : <RefreshCwIcon />}
+          {t("signin.check")}
+        </Button>
+      </div>
+    );
+  }
 
   return (
     <div className="flex min-w-0 flex-col gap-2.5">
@@ -60,8 +97,8 @@ export function SignInMethods({ agent, size = "sm", onDone }: { agent: AgentInfo
             key={method.id}
             size={size}
             variant={index === 0 ? "default" : "outline"}
-            disabled={pending !== null || remoteClient}
-            title={remoteClient ? t("remote.signInLocal") : (method.description ?? undefined)}
+            disabled={pending !== null}
+            title={method.description ?? undefined}
             onClick={() => start(method.id)}
           >
             {pending === method.id ? <Spinner className="size-3.5" /> : <LogInIcon />}
@@ -69,7 +106,6 @@ export function SignInMethods({ agent, size = "sm", onDone }: { agent: AgentInfo
           </Button>
         ))}
       </div>
-      {remoteClient ? <p className="text-xs text-muted-foreground">{t("remote.signInLocal")}</p> : null}
       {result ? (
         <div className="flex flex-col gap-2 rounded-lg border bg-background/70 px-3 py-2.5 text-sm">
           {result.message ? <p className="text-muted-foreground">{result.message}</p> : null}
@@ -100,7 +136,8 @@ export function SignInMethods({ agent, size = "sm", onDone }: { agent: AgentInfo
           <div className={cn("flex items-center gap-2 text-xs text-muted-foreground")}>
             <Spinner className="size-3" />
             <span className="flex-1">{t("signin.waiting", { agent: agent.name })}</span>
-            <Button size="xs" variant="ghost-muted" disabled={checking} onClick={() => void refresh()}>
+            <Button size="xs" variant="ghost-muted" disabled={checking}
+              onClick={() => void refresh().catch((error) => toast.error(errorMessage(error)))}>
               <RefreshCwIcon />
               {t("signin.check")}
             </Button>

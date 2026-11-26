@@ -32,6 +32,7 @@ Read `docs/ARCHITECTURE.md` before changing the core, and `docs/API.md` before t
 ## Conventions
 
 - English in code, comments, docs and commit messages. Chinese only in `README.zh-CN.md` and UI translations.
+- Promptly clean up unused build artifacts when doing so will not disrupt development. Keep active builds and binaries in use.
 - No comments unless the code cannot show why.
 - Handle errors at real boundaries; do not wrap every line.
 - New dependencies: add with `cargo add` / `pnpm add`, prefer versions published more than 7 days ago, keep the tree small. The core must stay light.

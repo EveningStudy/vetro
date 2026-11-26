@@ -6,7 +6,7 @@
 
 <p align="center">
   One clean window for the coding agents you already have installed.<br>
-  Claude Code, Codex, Antigravity, Devin and any ACP agent, each running exactly as it does in your terminal.
+  Claude Code, Codex, Kiro, Antigravity, Devin and custom ACP agents.
 </p>
 
 <p align="center">
@@ -15,7 +15,7 @@
 
 ![A Codex thread in Vetro, dark theme](docs/images/thread-dark.png)
 
-Vetro means "glass" in Italian. It is a lightweight, unified entry point for the coding agents already installed on your machine: **Claude Code, Codex, Antigravity and Devin**, plus any [Agent Client Protocol](https://agentclientprotocol.com) agent you add in the settings. It starts the official, unmodified agent programs, shows all their sessions in one interface, and otherwise stays out of the way.
+Vetro means "glass" in Italian. It is a lightweight, unified entry point for the coding agents already installed on your machine. It starts the official agent programs and shows the sessions their local stores and protocols expose. You can add other [Agent Client Protocol](https://agentclientprotocol.com) agents in Settings.
 
 It ships as a desktop app for Windows, macOS and Linux. The same UI also runs in a browser, and there is a phone layout for remote use. The interface is modelled on [T3 Code](https://github.com/pingdotgg/t3code).
 
@@ -23,7 +23,7 @@ It ships as a desktop app for Windows, macOS and Linux. The same UI also runs in
 
 Unified front-ends for coding agents already exist, and several of them are very good interfaces. To fit the agents into their own workflow, many also change the agents: they inject instructions into the prompt, register extra MCP tools, write skills into `~/.claude` and similar folders, bring a heavy runtime, or leave processes running after they close. Those are reasonable choices for an agent harness, but the agent you are talking to is then no longer quite the one you installed.
 
-Vetro makes the opposite promise. Running an agent through Vetro should give you the same input, the same output, the same context, the same quota use and the same abilities as running it natively. Vetro is a thin client, never an agent harness.
+Vetro passes your input unchanged to the native agent and uses its existing configuration and sign-in. The features available in the window depend on what the installed agent exposes through its client protocol.
 
 ## The rules
 
@@ -38,7 +38,7 @@ Every change to Vetro has to keep these rules (see [AGENTS.md](AGENTS.md)):
 
 ## How each agent is connected
 
-Each agent is driven through the interface its vendor provides for clients like this, so its own configuration keeps working.
+Each agent runs through its native client interface. The options and actions you see depend on your installed runtime. See [tested agent capabilities](docs/ACCEPTANCE.md#native-smoke-runs) for the versions, platforms, and interactions covered.
 
 | Agent | How Vetro runs it | What keeps working |
 |---|---|---|
@@ -46,19 +46,20 @@ Each agent is driven through the interface its vendor provides for clients like 
 | Claude Code | `claude -p` with stream-json in both directions, the protocol the official Agent SDK uses | The real Claude Code system prompt, `CLAUDE.md`, hooks, skills, plugins and MCP servers, as in the terminal |
 | Antigravity | `agy acp`, the integration Google documents for ACP clients ([details](docs/agents/antigravity.md)) | Antigravity's own tools, settings and sign-in |
 | Devin | `devin acp` | Devin's own tools, settings and sign-in |
+| Kiro | `kiro-cli acp` | The installed CLI engine's tools, settings and sign-in |
 | Any ACP agent | The command you configure, over stdio | Whatever that agent provides |
 
 Vetro never handles credentials. When an agent needs you to sign in, Vetro offers the agent's own sign-in methods and the agent runs them. The technical details are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Features
 
-- **One sidebar for every session.** Vetro lists every session each agent has stored, including sessions you created in the vendors' own desktop apps and CLIs. Continue a session where the agent allows it; otherwise it opens read-only.
+- **One sidebar for discoverable sessions.** Browse supported local history from Vetro, vendor desktop apps and CLIs. Continue a session where the native runtime supports it.
 - **Full-text search** across titles and messages, in English and Chinese.
 - **Links between agents.** When one agent runs another agent's CLI (for example, Claude Code calling `codex exec`), the child session appears under the tool call that started it and updates live.
 - **Raw log.** Each thread can show what Vetro sent to the agent process and what came back, including the command line used to start the agent. The log is kept up to a size limit; the oldest entries are dropped first.
 - **Permission requests and questions** from the agent, answered in place.
 - **Model, mode and thinking-level pickers** whose options come from the agent itself.
-- **Remote access** over your own Tailscale network, with device pairing. The server only listens on `127.0.0.1`.
+- **Remote access** with device pairing through Tailscale Serve or your own HTTPS reverse proxy. The server listens on `127.0.0.1`. See the [setup guide](docs/remote.md).
 - **Headless mode.** `vetro serve` runs the same core without a window and serves the UI to your browser.
 - English and Simplified Chinese interface, light and dark themes.
 
@@ -109,23 +110,24 @@ You do not have to take the rules on trust.
 <!-- STATUS:BEGIN -->
 ## Status
 
-Version 0.1.0 is the first build and has not been published yet. Checked on 2026-11-23:
+[Version 0.2.0](https://github.com/EveningStudy/vetro/releases/tag/v0.2.0) was published on November 24, 2026. The table reports checks on the current source tree through November 26, 2026. See the [acceptance checklist](docs/ACCEPTANCE.md) for scope and remaining checks.
 
 | Platform or agent | Verified |
 |---|---|
-| Windows 11 desktop | Live sessions with Codex, Claude Code and Devin; stored history of all four agents; a Claude Code session running `codex exec` shown as a linked child; installer builds. |
-| Antigravity | Connection over `agy acp`, session list, stored history of the desktop app and the CLI. A live reply has not been verified yet: the test account's quota was exhausted (HTTP 429), and the error was shown as the agent reported it. |
-| Remote access | A Mac reached the Windows host over Tailscale: pairing, listing and the limits for remote devices. Not yet tried on a phone. |
-| macOS (Apple Silicon) | The app builds and runs; Codex verified live; no child process left after a hard kill. Only Codex was installed on the test Mac. The window itself was not inspected. |
-| Linux (x86_64) | deb and AppImage build; the core ran a full session with a test ACP agent, and no child process was left after a hard kill. No vendor agent was installed on the test machine, and the window was not inspected. |
-| Not verified | Device-code sign-in, image input, questions asked by a real agent, Intel Macs, ARM Linux. |
+| Windows 11 desktop | NSIS installation and WebView launch, native file picker, microphone input, and live sessions with Codex, Claude Code, Kiro, and Devin. |
+| Antigravity | ACP handshake and session listing, plus saved history from the desktop app and the CLI. |
+| Remote access | Mac-to-Windows over Tailscale and production browser tests through an HTTPS reverse proxy. Checks include pairing, approvals, steering, reconnect, and revocation. |
+| macOS (Apple Silicon) | DMG launch, native WebView, system folder picker, Dock reopen, application quit, and built-in microphone recording. |
+| Linux (x86_64) | AppImage and Debian package launches on Ubuntu 24.04 under WSL with X11. Checked embedded UI, native window close, system Python ACP, and the system file opener. |
+
+The published v0.2.0 AppImage requires glibc 2.43. On Ubuntu 24.04, build from source. The current release workflow builds and tests its Linux packages against Ubuntu 24.04.
 <!-- STATUS:END -->
 
 ## Getting started
 
 You need at least one supported agent installed and signed in on your machine. Vetro finds the agents on your `PATH` and in their usual install locations. In Settings → Agents you can point it at a different binary, or add extra arguments and environment variables.
 
-Once version 0.1.0 is published, installers will be on this repository's Releases page: an NSIS installer for Windows, a `.dmg` for macOS, and a `.deb` and AppImage for Linux, plus the headless `vetro` binary. Until then, build from source.
+Download an installer or the headless `vetro` binary from [Releases](https://github.com/EveningStudy/vetro/releases). The desktop packages include an NSIS installer for Windows, disk images for macOS, and `.deb` and AppImage packages for Linux.
 
 ## Build from source
 

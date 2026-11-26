@@ -17,6 +17,13 @@ use vetro_proto::rpc::{
 
 use crate::{bad_request, files, internal};
 
+#[cfg(target_os = "linux")]
+mod system_open;
+#[cfg(not(target_os = "linux"))]
+use open::that_detached as open_in_system;
+#[cfg(target_os = "linux")]
+use system_open::open_in_system;
+
 const TEXT_LIMIT: usize = 256 * 1024;
 const IMAGE_LIMIT: usize = 4 * 1024 * 1024;
 const GIT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -107,6 +114,8 @@ impl Repository {
             .kill_on_drop(true);
         #[cfg(windows)]
         cmd.creation_flags(0x08000000);
+        #[cfg(target_os = "linux")]
+        vetro_agent_api::process::remove_appimage_environment(cmd.as_std_mut());
         let mut child = match cmd.spawn() {
             Ok(child) => child,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -476,41 +485,34 @@ fn valid_preview_path(path: &Path) -> bool {
         ) || path.is_absolute())
 }
 
+#[cfg(not(windows))]
 fn valid_preview_name(name: &str) -> bool {
-    if name.contains('\0') {
+    !name.contains('\0')
+}
+
+#[cfg(windows)]
+fn valid_preview_name(name: &str) -> bool {
+    if name.ends_with(['.', ' ']) || name.contains(['\0', ':', '<', '>', '"', '|', '?', '*']) {
         return false;
     }
-    #[cfg(windows)]
-    {
-        if name.ends_with(['.', ' ']) || name.contains([':', '<', '>', '"', '|', '?', '*']) {
-            return false;
-        }
-        let stem = name
-            .split('.')
-            .next()
-            .unwrap_or(name)
-            .trim_end()
-            .to_ascii_uppercase();
-        if matches!(
-            stem.as_str(),
-            "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
-        ) {
-            return false;
-        }
-        if stem
-            .strip_prefix("COM")
-            .or_else(|| stem.strip_prefix("LPT"))
-            .is_some_and(|suffix| {
-                matches!(
-                    suffix,
-                    "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
-                )
-            })
-        {
-            return false;
-        }
-    }
-    true
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or(name)
+        .trim_end()
+        .to_ascii_uppercase();
+    !matches!(
+        stem.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) && !stem
+        .strip_prefix("COM")
+        .or_else(|| stem.strip_prefix("LPT"))
+        .is_some_and(|suffix| {
+            matches!(
+                suffix,
+                "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+            )
+        })
 }
 
 fn check_preview_target(path: &Path, cwd: Option<&Path>) -> Result<()> {
@@ -909,7 +911,7 @@ pub(crate) fn open_external(params: OpenExternalParams, editor: Option<&str>) ->
                     "Refusing to launch an executable with the system opener; choose an editor in Settings",
                 ));
             }
-            open::that_detached(target).map_err(internal)
+            open_in_system(target).map_err(internal)
         }
     }
 }
@@ -1092,7 +1094,10 @@ fn open_terminal(cwd: &Path) -> io::Result<()> {
 }
 
 fn launch(program: &Path, args: &[OsString], cwd: &Path) -> io::Result<()> {
-    let child = Command::new(program)
+    let mut command = Command::new(program);
+    #[cfg(target_os = "linux")]
+    vetro_agent_api::process::remove_appimage_environment(&mut command);
+    let child = command
         .args(args)
         .current_dir(cwd)
         .stdin(Stdio::null())

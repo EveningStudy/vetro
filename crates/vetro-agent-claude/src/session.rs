@@ -450,6 +450,7 @@ impl Session for ClaudeSession {
             }
             self.emit(SessionEvent::Status(state.status()));
         }
+        self.process.begin_user_work();
         let sent = self
             .write(json!({
                 "type":"user","uuid":id,"session_id":self.id,"parent_tool_use_id":null,
@@ -597,8 +598,8 @@ impl Session for ClaudeSession {
         self.process.wire_log()
     }
 
-    fn descendants(&self) -> Vec<vetro_agent_api::process::ProcessIdentity> {
-        self.process.descendants()
+    fn background_processes(&self) -> usize {
+        self.process.background_processes()
     }
 }
 

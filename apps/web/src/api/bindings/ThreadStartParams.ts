@@ -8,4 +8,4 @@ export type ThreadStartParams = { agentId: string, cwd: string, content: Array<C
 /**
  * Option id to value, for options the user changed from the agent's defaults.
  */
-options: { [key in string]: string }, };
+options: { [key in string]: string }, clientMessageId?: string, recoverOnly?: boolean, };

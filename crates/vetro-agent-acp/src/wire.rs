@@ -73,8 +73,12 @@ impl Connection {
         self.process.wire_log()
     }
 
-    pub fn descendants(&self) -> Vec<vetro_agent_api::process::ProcessIdentity> {
-        self.process.descendants()
+    pub fn begin_user_work(&self) {
+        self.process.begin_user_work();
+    }
+
+    pub fn background_processes(&self) -> usize {
+        self.process.background_processes()
     }
 
     pub async fn startup_error(&self, error: Error) -> AgentError {
@@ -402,20 +406,29 @@ pub(crate) fn agent_error(error: Error) -> AgentError {
 
 pub(crate) fn session_error(error: Error, agent: &str, id: &str) -> AgentError {
     if let Error::Remote(remote) = &error {
-        if agent == "devin"
-            && remote.code == -32603
-            && remote
-                .data
-                .as_ref()
-                .and_then(Value::as_str)
-                .is_some_and(|detail| {
-                    detail
-                        .strip_prefix("session initialization failed: Failed to lock session '")
+        if let Some(data) = remote.data.as_ref().filter(|_| agent == "devin") {
+            let kind = data.get("cognition.ai/errorKind").and_then(Value::as_str);
+            let code = match (remote.code, kind) {
+                (-32015, Some("session_locked")) => Some(ErrorCode::Busy),
+                (-32016, Some("session_not_found")) => Some(ErrorCode::NotFound),
+                (-32603, _)
+                    if data
+                        .as_str()
+                        .and_then(|detail| {
+                            detail.strip_prefix(
+                                "session initialization failed: Failed to lock session '",
+                            )
+                        })
                         .and_then(|detail| detail.split_once("':"))
-                        .is_some_and(|(locked, _)| locked == id)
-                })
-        {
-            return AgentError::new(ErrorCode::Busy, error.to_string());
+                        .is_some_and(|(locked, _)| locked == id) =>
+                {
+                    Some(ErrorCode::Busy)
+                }
+                _ => None,
+            };
+            if let Some(code) = code {
+                return AgentError::new(code, error.to_string());
+            }
         }
     }
     agent_error(error)

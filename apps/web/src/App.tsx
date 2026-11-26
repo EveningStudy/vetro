@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { authApi } from "~/api/client";
 import { useLang, useT } from "~/i18n";
 import { PairingPage } from "./components/PairingPage";
@@ -9,34 +9,37 @@ import { startSync, useStore } from "./state/store";
 
 type AuthState = "checking" | "ok" | "pair" | "error";
 
-/** The desktop window receives a one-time local token as `/#token=...`; trade it for a cookie and
- * drop it from the address bar before anything else can read it. */
-async function exchangeDesktopToken() {
-  const match = /^#token=([^&]+)/.exec(location.hash);
-  if (!match) return;
-  history.replaceState(null, "", `${location.pathname}${location.search}`);
-  await authApi().local(decodeURIComponent(match[1]!));
-}
-
-export function App() {
+export function App({ pairingCode, localToken }: { pairingCode: string; localToken: string | null }) {
   const t = useT();
   const lang = useLang();
   const [auth, setAuth] = useState<AuthState>("checking");
   const authLost = useStore((s) => s.authLost);
+  const checking = useRef(false);
+  const bootstrap = useRef(localToken);
 
   useEffect(() => {
     document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
   }, [lang]);
 
-  const check = () => {
+  const check = async () => {
+    if (checking.current) return;
+    checking.current = true;
     setAuth("checking");
-    exchangeDesktopToken()
-      .then(() => authApi().session())
-      .then((session) => setAuth(session ? "ok" : "pair"))
-      .catch(() => setAuth("error"));
+    try {
+      const api = authApi();
+      if (bootstrap.current) {
+        await api.local(bootstrap.current);
+        bootstrap.current = null;
+      }
+      setAuth(await api.session() ? "ok" : "pair");
+    } catch {
+      setAuth("error");
+    } finally {
+      checking.current = false;
+    }
   };
 
-  useEffect(check, []);
+  useEffect(() => { void check(); }, []);
 
   useEffect(() => {
     if (auth === "ok") startSync();
@@ -48,7 +51,7 @@ export function App() {
         <Spinner className="text-muted-foreground" />
       </div>
     );
-  if (auth === "pair") return <PairingPage onPaired={() => setAuth("ok")} />;
+  if (auth === "pair") return <PairingPage initialCode={pairingCode} onPaired={() => setAuth("ok")} />;
   if (authLost) return <PairingPage onPaired={() => location.reload()} />;
   if (auth === "error")
     return (

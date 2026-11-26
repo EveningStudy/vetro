@@ -87,7 +87,12 @@ impl Index {
         Self(Mutex::new(conn), true)
     }
 
-    #[cfg(test)]
+    #[cfg(all(
+        test,
+        feature = "claude",
+        feature = "codex",
+        feature = "antigravity-store"
+    ))]
     pub fn suppress_workspace_reads(&mut self) {
         self.1 = false;
     }
@@ -219,6 +224,20 @@ impl Index {
             params![json(filter)?, overlays, limit as i64],
             row_summary,
         )
+    }
+
+    pub fn active_roots(&self) -> Result<Vec<ThreadSummary>> {
+        let conn = self.0.lock().unwrap();
+        let mut stmt = conn
+            .prepare_cached(&format!(
+                "SELECT a.summary, l.data, (SELECT count(*) FROM links WHERE parent=t.id), t.internal
+                 FROM attached a CROSS JOIN threads t ON t.id=a.id LEFT JOIN links l ON l.child=t.id
+                 WHERE l.parent IS NULL AND {VISIBLE_HISTORY}
+                   AND a.summary->>'status' IN ('running','awaiting_input')
+                 ORDER BY t.updated DESC,t.id"
+            ))
+            .map_err(internal)?;
+        collect(&mut stmt, [], row_summary)
     }
 
     pub fn marks(&self, agent: &str) -> Result<Vec<Mark>> {

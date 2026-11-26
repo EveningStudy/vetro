@@ -6,7 +6,7 @@ export interface RecordingSession {
 }
 
 /** Captures microphone audio and encodes it as 16 kHz mono 16-bit PCM WAV. */
-export async function startRecording(onLevel?: (level: number) => void): Promise<RecordingSession> {
+export async function startRecording(signal: AbortSignal, onLevel?: (level: number) => void): Promise<RecordingSession> {
   if (!navigator.mediaDevices?.getUserMedia) {
     throw new Error("Microphone recording is not available in this browser.");
   }
@@ -20,7 +20,19 @@ export async function startRecording(onLevel?: (level: number) => void): Promise
   });
 
   const AudioCtx = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-  const ctx = new AudioCtx();
+  let ctx: AudioContext | undefined;
+  try {
+    if (signal.aborted) throw new DOMException("Recording cancelled", "AbortError");
+    ctx = new AudioCtx();
+    return connectRecorder(stream, ctx, onLevel);
+  } catch (error) {
+    for (const track of stream.getTracks()) track.stop();
+    void ctx?.close().catch(() => undefined);
+    throw error;
+  }
+}
+
+function connectRecorder(stream: MediaStream, ctx: AudioContext, onLevel?: (level: number) => void): RecordingSession {
   const source = ctx.createMediaStreamSource(stream);
   const processor = ctx.createScriptProcessor(4096, 1, 1);
   const silentGain = ctx.createGain();

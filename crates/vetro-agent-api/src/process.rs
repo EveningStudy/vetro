@@ -1,10 +1,11 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     ffi::OsString,
+    future::Future,
     io,
     path::PathBuf,
     process::ExitStatus,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
 
@@ -17,6 +18,10 @@ use vetro_proto::RawDirection;
 
 use crate::WireLog;
 
+#[cfg(target_os = "linux")]
+mod appimage;
+#[cfg(target_os = "linux")]
+pub use appimage::remove_appimage_environment;
 #[cfg(unix)]
 #[path = "process/unix.rs"]
 mod platform;
@@ -64,6 +69,7 @@ pub struct Process {
     stderr: Arc<WireLog>,
     stderr_drained: watch::Receiver<bool>,
     log: Arc<WireLog>,
+    before_first_prompt: OnceLock<HashSet<ProcessIdentity>>,
 }
 
 impl Process {
@@ -119,6 +125,7 @@ impl Process {
                 stderr,
                 stderr_drained,
                 log,
+                before_first_prompt: OnceLock::new(),
             },
             lines,
         ))
@@ -140,6 +147,20 @@ impl Process {
         let mut members = self.tree.members(self.pid);
         members.retain(|(pid, _)| *pid != self.pid);
         members
+    }
+
+    pub fn begin_user_work(&self) {
+        self.before_first_prompt
+            .get_or_init(|| self.descendants().into_iter().collect());
+    }
+
+    pub fn background_processes(&self) -> usize {
+        self.before_first_prompt.get().map_or(0, |initial| {
+            self.descendants()
+                .into_iter()
+                .filter(|member| !initial.contains(member))
+                .count()
+        })
     }
 
     pub fn wire_log(&self) -> Arc<WireLog> {
@@ -194,18 +215,20 @@ impl Process {
     }
 
     /// Waits for the process status. Pipe readers may still be draining buffered output.
-    pub async fn wait(&self) -> io::Result<ExitStatus> {
+    pub fn wait(&self) -> impl Future<Output = io::Result<ExitStatus>> + Send + 'static {
         let mut exited = self.exited.clone();
-        let result = exited
-            .wait_for(Option::is_some)
-            .await
-            .map_err(io::Error::other)?;
-        match result.as_ref().unwrap() {
-            Ok(status) => Ok(*status),
-            Err(error) => Err(match error.raw_os_error() {
-                Some(code) => io::Error::from_raw_os_error(code),
-                None => io::Error::new(error.kind(), Arc::clone(error)),
-            }),
+        async move {
+            let result = exited
+                .wait_for(Option::is_some)
+                .await
+                .map_err(io::Error::other)?;
+            match result.as_ref().unwrap() {
+                Ok(status) => Ok(*status),
+                Err(error) => Err(match error.raw_os_error() {
+                    Some(code) => io::Error::from_raw_os_error(code),
+                    None => io::Error::new(error.kind(), Arc::clone(error)),
+                }),
+            }
         }
     }
 

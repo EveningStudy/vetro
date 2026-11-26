@@ -1,11 +1,12 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
+use tokio::sync::watch;
 use vetro_agent_api::{AgentError, Result};
 use vetro_proto::{rpc::*, PROTOCOL_VERSION};
 
@@ -28,6 +29,68 @@ pub(super) struct Connection {
 struct Subscription {
     thread: Arc<Thread>,
     seq: u64,
+}
+
+type MessageKey = (String, String);
+type StartOutcome = Option<Result<String>>;
+type StartReceipt = watch::Receiver<StartOutcome>;
+
+#[derive(Default)]
+pub(super) struct StartReceipts(Mutex<VecDeque<(MessageKey, StartReceipt)>>);
+
+impl StartReceipts {
+    fn reserve(
+        &self,
+        key: MessageKey,
+        recover_only: bool,
+    ) -> Result<(StartReceipt, Option<watch::Sender<StartOutcome>>)> {
+        const MAX_RECEIPTS: usize = 256;
+        let mut receipts = self.0.lock().unwrap();
+        if let Some((_, receipt)) = receipts.iter().find(|(existing, _)| existing == &key) {
+            return Ok((receipt.clone(), None));
+        }
+        if recover_only {
+            return Err(delivery_unknown());
+        }
+        if receipts.len() == MAX_RECEIPTS {
+            let finished = receipts
+                .iter()
+                .position(|(_, receipt)| {
+                    receipt.borrow().is_some() || receipt.has_changed().is_err()
+                })
+                .ok_or_else(|| {
+                    AgentError::new(ErrorCode::Busy, "Too many pending thread starts")
+                })?;
+            receipts.remove(finished);
+        }
+        let (sender, receipt) = watch::channel(None);
+        receipts.push_back((key, receipt.clone()));
+        Ok((receipt, Some(sender)))
+    }
+}
+
+fn delivery_unknown() -> AgentError {
+    AgentError::new(
+        ErrorCode::DeliveryUnknown,
+        "Vetro could not confirm delivery. Check the thread history before sending again.",
+    )
+}
+
+fn client_message_key(
+    client: &Client,
+    id: Option<String>,
+    recover_only: bool,
+) -> Result<Option<MessageKey>> {
+    let id = id.filter(|id| !id.is_empty());
+    if id.as_ref().is_some_and(|id| id.len() > 128) {
+        return Err(bad_request("Client message ID is too long"));
+    }
+    if recover_only && id.is_none() {
+        return Err(bad_request(
+            "A client message ID is required to recover delivery",
+        ));
+    }
+    Ok(id.map(|id| (client.device_key().to_owned(), id)))
 }
 
 impl Connection {
@@ -115,6 +178,7 @@ async fn call(
             connection.hello = true;
             output(core.app_info(client.remote()))
         }
+        "app.ping" => empty(),
         "agents.list" => output(AgentsResult {
             agents: core.agents(false).await,
         }),
@@ -156,6 +220,7 @@ async fn call(
         }
         "projects.update" => output(core.update_project(parse(params)?)?),
         "threads.list" => output(core.threads(parse(params)?)?),
+        "threads.active" => output(core.active_threads()?),
         "threads.open" => {
             let params: ThreadOpenParams = parse(params)?;
             let (snapshot, thread) = core.open(&params.thread_id, params.limit).await?;
@@ -174,10 +239,38 @@ async fn call(
         }
         "threads.start" => {
             let mut params: ThreadStartParams = parse(params)?;
-            if client.remote() && !params.cwd.trim().is_empty() {
+            let recover_only = params.recover_only.unwrap_or_default();
+            let key = client_message_key(client, params.client_message_id.take(), recover_only)?;
+            if !recover_only && client.remote() && !params.cwd.trim().is_empty() {
                 params.cwd = checked_cwd(state, &params.cwd)?;
             }
-            let (summary, thread) = core.start(params).await?;
+            let (summary, thread) = if let Some(key) = key {
+                let (mut receipt, sender) = state.starts.reserve(key, recover_only)?;
+                if let Some(sender) = sender {
+                    let core = core.clone();
+                    let mut stopping = state.stopping.clone();
+                    tokio::spawn(async move {
+                        let result = tokio::select! {
+                            biased;
+                            _ = stopping.wait_for(|stopping| *stopping) => {
+                                Err(AgentError::new(ErrorCode::Busy, "Vetro is shutting down"))
+                            }
+                            result = core.start(params) => result.map(|(summary, _)| summary.id),
+                        };
+                        sender.send_replace(Some(result));
+                    });
+                }
+                let outcome = receipt
+                    .wait_for(Option::is_some)
+                    .await
+                    .map_err(|_| delivery_unknown())?
+                    .clone();
+                let id = outcome.ok_or_else(delivery_unknown)??;
+                let thread = core.thread(&id).await?;
+                (thread.snapshot(Some(1)).thread, thread)
+            } else {
+                core.start(params).await?
+            };
             connection.subscribe(summary.id.clone(), thread, 0);
             output(ThreadResult { thread: summary })
         }
@@ -196,10 +289,37 @@ async fn call(
         "threads.rewindFiles" => output(core.rewind_thread_files(parse(params)?).await?),
         "threads.send" => {
             let params: ThreadSendParams = parse(params)?;
-            core.thread(&params.thread_id)
-                .await?
-                .send(params.content)
-                .await?;
+            let recover_only = params.recover_only.unwrap_or_default();
+            let key = client_message_key(client, params.client_message_id, recover_only)?;
+            if recover_only {
+                let thread = core
+                    .sessions
+                    .get(&params.thread_id)
+                    .ok_or_else(delivery_unknown)?;
+                let key = key.ok_or_else(delivery_unknown)?;
+                return if thread.confirm_send(&key).await {
+                    empty()
+                } else {
+                    Err(delivery_unknown())
+                };
+            }
+            let thread = core.thread(&params.thread_id).await?;
+            if let Some(key) = key {
+                let mut stopping = state.stopping.clone();
+                tokio::spawn(async move {
+                    tokio::select! {
+                        biased;
+                        _ = stopping.wait_for(|stopping| *stopping) => {
+                            Err(AgentError::new(ErrorCode::Busy, "Vetro is shutting down"))
+                        }
+                        result = thread.send(params.content, Some(key)) => result,
+                    }
+                })
+                .await
+                .map_err(internal)??;
+            } else {
+                thread.send(params.content, None).await?;
+            }
             empty()
         }
         "threads.cancelQueued" => {
@@ -287,18 +407,6 @@ async fn call(
                     .map_err(internal)??,
             )
         }
-        "fs.mkdir" => {
-            client.desktop()?;
-            let params: FsMkdirParams = parse(params)?;
-            let created = tokio::task::spawn_blocking(move || {
-                files::mkdir(Path::new(&params.parent), &params.name)
-            })
-            .await
-            .map_err(internal)??;
-            output(FsMkdirResult {
-                path: created.to_string_lossy().into_owned(),
-            })
-        }
         "workspace.gitStatus" => {
             let params: WorkspacePathParams = parse(params)?;
             let cwd = workspace_cwd(state, client, &params.cwd)?;
@@ -359,12 +467,14 @@ async fn call(
             output(core.update_settings(parse(params)?).await?)
         }
         "remote.status" => {
-            state.auth.refresh().await;
+            if !client.remote() {
+                state.auth.refresh(state).await;
+            }
             output(auth::status(state, Some(client)))
         }
         "remote.set" => {
             client.desktop()?;
-            state.auth.set(state.address, parse(params)?).await?;
+            state.auth.set(state, parse(params)?).await?;
             let status = auth::status(state, Some(client));
             core.publish(ServerEvent::RemoteUpdated {
                 status: status.clone(),
@@ -373,7 +483,11 @@ async fn call(
         }
         "remote.createPairing" => {
             client.desktop()?;
-            output(state.auth.create_pairing()?)
+            let pairing = state.auth.create_pairing()?;
+            core.publish(ServerEvent::RemoteUpdated {
+                status: auth::status(state, None),
+            });
+            output(pairing)
         }
         "remote.revokeDevice" => {
             let params: RemoteRevokeParams = parse(params)?;

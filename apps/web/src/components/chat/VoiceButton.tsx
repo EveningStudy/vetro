@@ -49,11 +49,12 @@ export function VoiceButton({
   const voice = useStore((s) => s.voice);
   const progress = useStore((s) => s.voiceProgress);
   const localDesktop = useIsLocalDesktop();
-  const [phase, setPhase] = useState<"idle" | "recording" | "transcribing">("idle");
+  const [phase, setPhase] = useState<"idle" | "starting" | "recording" | "transcribing">("idle");
   const [elapsed, setElapsed] = useState(0);
   const [level, setLevel] = useState(0);
   const [setupOpen, setSetupOpen] = useState(false);
   const recorderRef = useRef<RecordingSession | null>(null);
+  const requestRef = useRef<AbortController | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const stopTimer = useCallback(() => {
@@ -63,14 +64,20 @@ export function VoiceButton({
     }
   }, []);
 
-  const cancel = useCallback(() => {
+  const releaseRecording = useCallback(() => {
+    requestRef.current?.abort();
+    requestRef.current = null;
     stopTimer();
     recorderRef.current?.cancel();
     recorderRef.current = null;
+  }, [stopTimer]);
+
+  const cancel = useCallback(() => {
+    releaseRecording();
     setPhase("idle");
     setElapsed(0);
     setLevel(0);
-  }, [stopTimer]);
+  }, [releaseRecording]);
 
   const stopAndTranscribe = useCallback(async () => {
     const active = recorderRef.current;
@@ -98,9 +105,16 @@ export function VoiceButton({
   }, [onTranscript, stopTimer, t]);
 
   const begin = useCallback(async () => {
-    if (disabled || phase !== "idle") return;
+    if (disabled || phase !== "idle" || requestRef.current) return;
+    const request = new AbortController();
+    requestRef.current = request;
+    setPhase("starting");
     try {
-      const session = await startRecording(setLevel);
+      const session = await startRecording(request.signal, setLevel);
+      if (request.signal.aborted) {
+        session.cancel();
+        return;
+      }
       recorderRef.current = session;
       setElapsed(0);
       setPhase("recording");
@@ -109,14 +123,19 @@ export function VoiceButton({
         setElapsed(Math.floor((Date.now() - started) / 1000));
       }, 250);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : t("voice.micDenied"));
+      if (!request.signal.aborted) {
+        setPhase("idle");
+        toast.error(error instanceof Error ? error.message : t("voice.micDenied"));
+      }
+    } finally {
+      if (requestRef.current === request) requestRef.current = null;
     }
   }, [disabled, phase, t]);
 
-  useEffect(() => cancel, [cancel]);
+  useEffect(() => releaseRecording, [releaseRecording]);
 
   useEffect(() => {
-    if (phase !== "recording") return;
+    if (phase !== "starting" && phase !== "recording") return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
@@ -173,17 +192,17 @@ export function VoiceButton({
     );
   }
 
-  if (ready) {
+  if (ready || phase === "starting") {
     return (
       <Tip label={t("voice.dictate")}>
         <button
           type="button"
-          disabled={disabled}
+          disabled={disabled || phase === "starting"}
           aria-label={t("voice.dictate")}
           onClick={() => void begin()}
           className={cn(composerControlClass, "px-1.5")}
         >
-          <MicIcon />
+          {phase === "starting" ? <Spinner className="size-3.5" /> : <MicIcon />}
         </button>
       </Tip>
     );

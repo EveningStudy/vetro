@@ -32,7 +32,6 @@ pub struct WindowTheme {
 }
 
 pub struct Core {
-    pub home: Home,
     registry: RwLock<Arc<Registry>>,
     pub(crate) registry_changed: watch::Sender<()>,
     theme: watch::Sender<WindowTheme>,
@@ -47,6 +46,7 @@ pub struct Core {
     pub(crate) project_refresh_requested: AtomicBool,
     shutting_down: AtomicBool,
     voice: VoiceManager,
+    pub home: Home,
 }
 
 #[derive(Default)]
@@ -495,7 +495,7 @@ impl Core {
         };
         let result = self.auth_result(&params.agent_id, result).await?;
         self.request_history_refresh();
-        if params.agent_id != "codex" {
+        if params.agent_id != "codex" && result.url.is_none() && result.code.is_none() {
             self.set_agent_auth(&params.agent_id, AuthState::Ok).await;
         }
         Ok(result)
@@ -610,10 +610,29 @@ impl Core {
             cache_cwd.as_deref(),
             &selected,
         )?;
+        let independent = if agent.options_need_session() && params.prepare != Some(true) {
+            self.user_agent_call_on(&registry, agent.id(), || {
+                agent.options_without_session(cwd.as_deref())
+            })
+            .await?
+        } else {
+            vetro_agent_api::AgentOptions::default()
+        };
+        let merge_independent = |cached: &mut AgentOptionsResult| {
+            for option in &independent.options {
+                if let Some(existing) = cached.options.iter_mut().find(|item| item.id == option.id)
+                {
+                    *existing = option.clone();
+                } else {
+                    cached.options.push(option.clone());
+                }
+            }
+        };
         if let Some(mut cached) = self
             .home
             .read_state(|state| state.options.get(&key).cloned())
         {
+            merge_independent(&mut cached);
             vetro_agent_api::normalize_option_danger(&mut cached.options);
             return Ok(cached);
         }
@@ -647,14 +666,15 @@ impl Core {
                     .next()
             });
             if let Some(mut cached) = fallback {
+                merge_independent(&mut cached);
                 vetro_agent_api::normalize_option_danger(&mut cached.options);
                 return Ok(cached);
             }
         }
         if agent.options_need_session() && params.prepare != Some(true) {
             return Ok(AgentOptionsResult {
-                options: Vec::new(),
-                commands: Vec::new(),
+                options: independent.options,
+                commands: independent.commands,
                 needs_session: true,
             });
         }
@@ -915,6 +935,25 @@ impl Core {
                 .map(|thread| self.overlay_with_live(thread))
                 .collect(),
             next_cursor,
+        })
+    }
+
+    pub(crate) fn active_threads(&self) -> Result<ThreadsListResult> {
+        let threads = self
+            .store
+            .active_roots()?
+            .into_iter()
+            .map(|thread| self.overlay_with_live(thread))
+            .filter(|thread| {
+                matches!(
+                    thread.status,
+                    ThreadStatus::Running | ThreadStatus::AwaitingInput
+                )
+            })
+            .collect();
+        Ok(ThreadsListResult {
+            threads,
+            next_cursor: None,
         })
     }
 

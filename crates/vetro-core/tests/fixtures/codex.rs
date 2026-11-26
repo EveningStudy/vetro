@@ -17,10 +17,15 @@ const THREAD_ID: &str = "codex:01a07c95-7d45-7983-a759-ad414c92947e";
 
 pub async fn exercise() {
     let temp = tempfile::tempdir().unwrap();
-    let agent = Arc::new(CodexAgent::from_spec(Some(SpawnSpec::new(
-        env::current_exe().unwrap(),
-    ))));
-    let registry = || Registry::new([agent.clone() as Arc<dyn Agent>]).unwrap();
+    let mut spec = SpawnSpec::new(env::current_exe().unwrap());
+    spec.env.insert(
+        "VETRO_FAKE_CODEX_REMAINING".into(),
+        temp.path().join("remaining-turns").into_os_string(),
+    );
+    let registry = || {
+        Registry::new([Arc::new(CodexAgent::from_spec(Some(spec.clone()))) as Arc<dyn Agent>])
+            .unwrap()
+    };
     let home = Home::open(temp.path().join(".vetro"), temp.path().to_owned()).unwrap();
     let token = home.local_token();
     let server = Server::bind(Core::new(home, registry()), Some(0))
@@ -109,6 +114,9 @@ pub async fn exercise() {
         observer.call("threads.open", thread).await["items"],
         json!([])
     );
+    drop((client, observer));
+    stop.send(()).unwrap();
+    serving.await.unwrap().unwrap();
 
     let native_home = temp.path().join("fake-codex");
     fs::create_dir_all(native_home.join("sessions")).unwrap();
@@ -138,13 +146,12 @@ pub async fn exercise() {
         .unwrap()
         .items
         .is_empty());
-    stop.send(()).unwrap();
-    serving.await.unwrap().unwrap();
     println!("Codex rollback WebSocket fixture passed");
 }
 
 pub fn fake() {
-    let mut remaining = 2;
+    let saved = env::var_os("VETRO_FAKE_CODEX_REMAINING").unwrap();
+    let mut remaining = fs::read_to_string(&saved).map_or(2, |value| value.parse().unwrap());
     let mut loaded = false;
     let mut stdout = io::stdout().lock();
     let mut send = |response: Value| {
@@ -202,6 +209,7 @@ pub fn fake() {
                     }
                     _ => panic!("Unexpected rollback target {target}"),
                 };
+                fs::write(&saved, remaining.to_string()).unwrap();
                 send(json!({"method": "thread/reverted", "params": {"threadId": NATIVE_ID}}));
                 json!({"thread": {"id": NATIVE_ID, "turns": []}, "turnsBackwardsCursor": null,
                     "itemsBackwardsCursor": null})

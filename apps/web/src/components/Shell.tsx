@@ -1,6 +1,6 @@
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { CircleAlertIcon, CircleCheckIcon, InfoIcon, PanelLeftIcon, PanelLeftOpenIcon, WifiOffIcon, XIcon } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useT } from "~/i18n";
 import { cn, isMac } from "~/lib/utils";
 import { usePrefs } from "~/state/prefs";
@@ -133,6 +133,30 @@ function overlayOpen() {
 export function Shell() {
   const route = useStore((s) => s.route);
   const collapsed = useSidebarCollapsed();
+  const shellRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    const shell = shellRef.current;
+    if (!viewport || !shell) return;
+
+    const fitViewport = () => {
+      if (viewport.scale === 1 && viewport.height > 0 && viewport.height < window.innerHeight - 1) {
+        shell.style.setProperty("--vetro-viewport-height", `${viewport.height}px`);
+        shell.style.setProperty("--vetro-viewport-top", `${viewport.offsetTop}px`);
+      } else {
+        shell.style.removeProperty("--vetro-viewport-height");
+        shell.style.removeProperty("--vetro-viewport-top");
+      }
+    };
+    fitViewport();
+    viewport.addEventListener("resize", fitViewport);
+    viewport.addEventListener("scroll", fitViewport);
+    return () => {
+      viewport.removeEventListener("resize", fitViewport);
+      viewport.removeEventListener("scroll", fitViewport);
+    };
+  }, []);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -188,7 +212,10 @@ export function Shell() {
   }, []);
 
   return (
-    <div className="flex h-dvh min-h-0 w-full">
+    <div
+      ref={shellRef}
+      className="relative top-[var(--vetro-viewport-top,0px)] flex h-[calc(var(--vetro-viewport-height,100dvh)-env(safe-area-inset-top))] min-h-0 w-full"
+    >
       <aside
         data-app-sidebar
         data-collapsed={collapsed || undefined}
@@ -205,7 +232,7 @@ export function Shell() {
       <MobileSidebar />
       <main className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-background">
         {route.view === "thread" ? (
-          <ThreadView threadId={route.threadId} />
+          <ThreadView key={route.threadId} threadId={route.threadId} />
         ) : route.view === "new" ? (
           <NewThread projectPath={route.projectPath} agentId={route.agentId} />
         ) : route.view === "settings" ? (

@@ -15,6 +15,7 @@ use crate::{bad_request, internal, links::Projection, not_found, now, page_limit
 
 const DORMANT_THREADS: usize = 64;
 const RETAINED_EVENTS: usize = 256;
+const RETAINED_SENDS: usize = 256;
 
 #[derive(Default)]
 pub(crate) struct Sessions(Mutex<HashMap<String, Arc<Thread>>>);
@@ -32,11 +33,11 @@ struct Timeline {
     last_activity: Instant,
     last_access: Instant,
     raw_saved_at: Option<Instant>,
-    turn_baseline: Option<HashSet<vetro_agent_api::process::ProcessIdentity>>,
     status: ThreadStatus,
     pending: HashMap<String, usize>,
     queue: VecDeque<QueuedMessage>,
     queue_seq: u64,
+    accepted_sends: VecDeque<(String, String)>,
     options: Vec<ConfigOption>,
     commands: Vec<SlashCommand>,
     usage: ThreadUsage,
@@ -281,7 +282,7 @@ impl Core {
         params: ThreadForkParams,
     ) -> Result<(ThreadSummary, Arc<Thread>)> {
         let source = self.thread(&params.thread_id).await?;
-        let (source_summary, source_items, source_options, source_commands) = {
+        let (source_summary, source_items, source_commands) = {
             let state = source.state.lock().unwrap();
             if state.active() || !state.pending.is_empty() {
                 return Err(AgentError::new(
@@ -292,7 +293,6 @@ impl Core {
             (
                 state.summary.clone(),
                 state.items.clone(),
-                state.options.clone(),
                 state.commands.clone(),
             )
         };
@@ -338,11 +338,7 @@ impl Core {
             .unwrap_or_default();
         let mut state = Timeline::new(summary.clone());
         let cached = self.cached_thread_options(&summary);
-        let initial_options = if !source_options.is_empty() {
-            source_options
-        } else {
-            cached.options
-        };
+        let initial_options = session.current_options().unwrap_or(cached.options);
         state.set_options(&initial_options);
         state.commands = if !source_commands.is_empty() {
             source_commands
@@ -611,6 +607,17 @@ impl Thread {
                         | ItemKind::ToolCall(_)
                         | ItemKind::TurnEnd { .. }
                 );
+                if matches!(
+                    draft.kind,
+                    ItemKind::TurnEnd {
+                        stop_reason: StopReason::Cancelled,
+                        ..
+                    }
+                ) {
+                    state.cancel_pending(&core, |item| {
+                        item.turn_id.is_none() || item.turn_id == draft.turn_id
+                    });
+                }
                 Some(state.item(draft))
             }
             SessionEvent::TextDelta { item_id, delta } => {
@@ -668,7 +675,7 @@ impl Thread {
                         },
                     );
                 }
-                state.cancel_pending(&core);
+                state.cancel_pending(&core, |_| true);
                 if error.is_some() && was_active && !shutting_down {
                     state.status = ThreadStatus::Error;
                     error.map(|text| state.notice(text))
@@ -712,7 +719,7 @@ impl Thread {
                 let Some((id, _)) = change else {
                     return Ok(session.clone());
                 };
-                if state.active() {
+                if !state.can_release_idle(Duration::ZERO) {
                     return Err(AgentError::new(
                         ErrorCode::Busy,
                         format!("Wait for the current turn to finish before changing {id}"),
@@ -721,6 +728,12 @@ impl Thread {
             }
             state.summary.clone()
         };
+        if change.is_some() && self.background_processes() > 0 {
+            return Err(AgentError::new(
+                ErrorCode::BackgroundWork,
+                "Wait for the agent's background processes before restarting the session",
+            ));
+        }
         if !summary.resumable {
             return Err(AgentError::new(
                 ErrorCode::NotResumable,
@@ -732,6 +745,9 @@ impl Thread {
         let (sink, events) = mpsc::unbounded_channel();
         let registry = core.registry();
         let agent = registry.get(&summary.agent_id)?;
+        if change.is_some_and(|(id, _)| agent.resume_option_requires_detach(id)) {
+            self.release(false, Some(Duration::ZERO)).await?;
+        }
         let mut saved = core.home.read_state(|state| {
             state
                 .threads
@@ -739,7 +755,11 @@ impl Thread {
                 .map(|overlay| overlay.options.clone())
                 .unwrap_or_default()
         });
+        if summary.agent_id == "codex" && saved.contains_key("permissions") {
+            saved.remove("sandbox");
+        }
         if let Some((id, value)) = change {
+            remove_incompatible_option(&summary.id, &mut saved, id);
             saved.insert(id.to_owned(), value.to_owned());
         }
         let (launch, mut choices): (Vec<_>, Vec<_>) = saved
@@ -836,7 +856,6 @@ impl Thread {
         let previous = {
             let mut state = self.state.lock().unwrap();
             let previous = state.session.replace(session.clone());
-            state.turn_baseline = None;
             if let Some(previous) = &previous {
                 state.generation += 1;
                 self.persist_log(&core, &summary.id, previous);
@@ -858,8 +877,23 @@ impl Thread {
         Ok(session)
     }
 
-    pub(crate) async fn send(self: &Arc<Self>, content: Vec<ContentBlock>) -> Result<()> {
+    pub(crate) async fn confirm_send(&self, key: &(String, String)) -> bool {
         let _operation = self.operations.lock().await;
+        self.state.lock().unwrap().accepted_sends.contains(key)
+    }
+
+    pub(crate) async fn send(
+        self: &Arc<Self>,
+        content: Vec<ContentBlock>,
+        attempt: Option<(String, String)>,
+    ) -> Result<()> {
+        let _operation = self.operations.lock().await;
+        if attempt
+            .as_ref()
+            .is_some_and(|key| self.state.lock().unwrap().accepted_sends.contains(key))
+        {
+            return Ok(());
+        }
         let core = self.core();
         let agent_id = self.state.lock().unwrap().summary.agent_id.clone();
         let steer = core
@@ -869,11 +903,13 @@ impl Thread {
             .mid_turn_input;
         {
             let mut state = self.state.lock().unwrap();
-            if state.session.is_some()
-                && (!state.queue.is_empty()
-                    || (state.active() && !steer)
-                    || !state.pending.is_empty())
-            {
+            let awaiting_input = !state.pending.is_empty();
+            let queue = state.session.as_ref().is_some_and(|session| {
+                !state.queue.is_empty()
+                    || ((state.active() || awaiting_input)
+                        && !(steer && session.can_send_during_turn(&content, awaiting_input)))
+            });
+            if queue {
                 if state.queue.len() >= 32 {
                     return Err(AgentError::new(
                         ErrorCode::Busy,
@@ -883,13 +919,16 @@ impl Thread {
                 state.queue_seq += 1;
                 let id = format!("q:{}", state.queue_seq);
                 state.queue.push_back(QueuedMessage { id, content });
+                state.record_send(attempt);
                 let messages = state.queue.iter().cloned().collect();
                 state.emit(&core, ThreadEvent::Queue { messages });
                 return Ok(());
             }
         }
         let session = self.attach(None).await?;
-        self.send_now(&core, session, content).await
+        self.send_now(&core, session, content).await?;
+        self.state.lock().unwrap().record_send(attempt);
+        Ok(())
     }
 
     async fn send_now(
@@ -898,10 +937,8 @@ impl Thread {
         session: Arc<dyn Session>,
         content: Vec<ContentBlock>,
     ) -> Result<()> {
-        let baseline = session.descendants().into_iter().collect();
         let (generation, was_active) = {
             let mut state = self.state.lock().unwrap();
-            state.turn_baseline = Some(baseline);
             state.last_activity = Instant::now();
             let was_active = state.active();
             state.status = ThreadStatus::Running;
@@ -1009,7 +1046,9 @@ impl Thread {
         };
         let registry = core.registry();
         let agent = registry.get(&agent_id)?;
-        if live || !agent.resume_option_at_launch(&params.option_id) {
+        if !agent.resume_option_requires_detach(&params.option_id)
+            && (live || !agent.resume_option_at_launch(&params.option_id))
+        {
             let session = self.attach(None).await?;
             let result = core
                 .user_agent_call_on(&registry, &agent_id, || {
@@ -1035,12 +1074,13 @@ impl Thread {
 
     fn save_option(core: &Core, thread_id: &str, id: &str, value: &str) -> Result<()> {
         core.home.change_state(|state| {
-            state
+            let options = &mut state
                 .threads
                 .entry(thread_id.to_owned())
                 .or_default()
-                .options
-                .insert(id.to_owned(), value.to_owned());
+                .options;
+            remove_incompatible_option(thread_id, options, id);
+            options.insert(id.to_owned(), value.to_owned());
         })
     }
 
@@ -1103,11 +1143,17 @@ impl Thread {
             return Err(AgentError::new(
                 ErrorCode::BackgroundWork,
                 format!(
-                    "{background} background process(es) started by this thread are still running"
+                    "{background} background process(es) in this agent runtime are still running"
                 ),
             ));
         }
-        self.release(false, None).await
+        let agent_id = self.state.lock().unwrap().summary.agent_id.clone();
+        self.release(false, None).await?;
+        let core = self.core();
+        core.registry()
+            .release_requested(&agent_id, || core.sessions.has_live(&agent_id))
+            .await;
+        Ok(())
     }
 
     pub(crate) async fn rollback(&self, before_turn_id: &str) -> Result<ThreadOpenResult> {
@@ -1223,23 +1269,9 @@ impl Thread {
         session.rewind_files(user_message_id, dry_run).await
     }
 
-    /// Processes started during the latest turn that are still running.
-    /// Tool servers the agent already had when the turn began are not counted.
     pub(crate) fn background_processes(&self) -> usize {
-        let (session, baseline) = {
-            let state = self.state.lock().unwrap();
-            let (Some(session), Some(baseline)) =
-                (state.session.clone(), state.turn_baseline.clone())
-            else {
-                return 0;
-            };
-            (session, baseline)
-        };
-        session
-            .descendants()
-            .into_iter()
-            .filter(|process| !baseline.contains(process))
-            .count()
+        let session = self.state.lock().unwrap().session.clone();
+        session.map_or(0, |session| session.background_processes())
     }
 
     async fn release(&self, force: bool, idle: Option<Duration>) -> Result<()> {
@@ -1255,16 +1287,22 @@ impl Thread {
             }
             state.summary.agent_id.clone()
         };
-        let background = self.background_processes();
-        if automatic && background > 0 {
-            return Ok(());
-        }
         let registry = core.registry();
         let _guard = if registry.get(&agent_id).is_ok() {
             registry.enter(&agent_id, false).await.ok()
         } else {
             None
         };
+        let background = self.background_processes();
+        if idle.is_some() && background > 0 {
+            if automatic {
+                return Ok(());
+            }
+            return Err(AgentError::new(
+                ErrorCode::BackgroundWork,
+                "Wait for the agent's background processes before editing history",
+            ));
+        }
         let (session, id) = {
             let mut state = self.state.lock().unwrap();
             if !force && !state.pending.is_empty() {
@@ -1279,7 +1317,6 @@ impl Thread {
             let Some(session) = state.session.take() else {
                 return Ok(());
             };
-            state.turn_baseline = None;
             state.generation += 1;
             if !state.queue.is_empty() {
                 state.queue.clear();
@@ -1290,7 +1327,7 @@ impl Thread {
                     },
                 );
             }
-            state.cancel_pending(&core);
+            state.cancel_pending(&core, |_| true);
             state.summary.live = false;
             state.status = ThreadStatus::Idle;
             state.update_status();
@@ -1393,10 +1430,10 @@ impl Timeline {
             last_activity: Instant::now(),
             last_access: Instant::now(),
             raw_saved_at: None,
-            turn_baseline: None,
             pending: HashMap::new(),
             queue: VecDeque::new(),
             queue_seq: 0,
+            accepted_sends: VecDeque::new(),
             options: Vec::new(),
             commands: Vec::new(),
             usage: ThreadUsage::default(),
@@ -1408,6 +1445,15 @@ impl Timeline {
             native_children: HashMap::new(),
             index_dirty: false,
             history_reload_needed: false,
+        }
+    }
+
+    fn record_send(&mut self, attempt: Option<(String, String)>) {
+        if let Some(key) = attempt {
+            if self.accepted_sends.len() == RETAINED_SENDS {
+                self.accepted_sends.pop_front();
+            }
+            self.accepted_sends.push_back(key);
         }
     }
 
@@ -1474,7 +1520,15 @@ impl Timeline {
         }
     }
 
-    fn merge_history(&mut self, drafts: Vec<ItemDraft>) -> Vec<ThreadEvent> {
+    fn merge_history(&mut self, mut drafts: Vec<ItemDraft>) -> Vec<ThreadEvent> {
+        if drafts.iter().any(|draft| {
+            draft
+                .turn_id
+                .as_deref()
+                .is_some_and(|id| id.starts_with("replay:"))
+        }) {
+            self.align_acp_replay(&mut drafts);
+        }
         let history_ids: HashSet<String> = drafts.iter().map(|draft| draft.id.clone()).collect();
         let mut claimed: HashSet<String> = HashSet::new();
         let mut events = Vec::new();
@@ -1503,6 +1557,78 @@ impl Timeline {
             }
         }
         events
+    }
+
+    fn align_acp_replay(&self, drafts: &mut Vec<ItemDraft>) {
+        let visible = |kind: &ItemKind| {
+            matches!(
+                kind,
+                ItemKind::UserMessage { .. } | ItemKind::AgentMessage { .. }
+            )
+        };
+        let mut messages = HashMap::new();
+        let mut turns = HashMap::new();
+        let native_ids: HashSet<_> = drafts.iter().map(|draft| draft.id.as_str()).collect();
+        for (stored, live) in drafts
+            .iter()
+            .filter(|draft| visible(&draft.kind))
+            .zip(self.items.iter().filter(|item| visible(&item.kind)))
+        {
+            if stored.id != live.id
+                && (stored.kind != live.kind
+                    || native_ids.contains(live.id.as_str())
+                    || self.by_id.contains_key(&stored.id))
+            {
+                break;
+            }
+            messages.insert(stored.id.clone(), live);
+            if let (Some(stored_turn), Some(live_turn)) = (&stored.turn_id, &live.turn_id) {
+                turns.insert(stored_turn.clone(), live_turn);
+            }
+        }
+        let endings: HashMap<_, _> = self
+            .items
+            .iter()
+            .filter(|item| matches!(item.kind, ItemKind::TurnEnd { .. }))
+            .filter_map(|item| Some((item.turn_id.as_ref()?, item)))
+            .collect();
+        let mut represented_endings = HashSet::new();
+        drafts.retain_mut(|draft| {
+            if let Some(live) = messages.get(&draft.id) {
+                draft.id.clone_from(&live.id);
+                draft.ts = draft.ts.or(live.ts);
+            }
+            if let Some(turn) = draft.turn_id.as_ref().and_then(|id| turns.get(id)) {
+                draft.turn_id = Some((*turn).clone());
+                if matches!(draft.kind, ItemKind::TurnEnd { .. }) {
+                    if !represented_endings.insert(*turn) {
+                        return false;
+                    }
+                    if let Some(live) = endings.get(turn) {
+                        draft.id.clone_from(&live.id);
+                        if let (
+                            ItemKind::TurnEnd {
+                                usage,
+                                duration_ms,
+                                stop_reason,
+                            },
+                            ItemKind::TurnEnd {
+                                usage: old_usage,
+                                duration_ms: old_duration,
+                                stop_reason: old_reason,
+                            },
+                        ) = (&mut draft.kind, &live.kind)
+                        {
+                            *usage = usage.take().or_else(|| old_usage.clone());
+                            *duration_ms = duration_ms.or(*old_duration);
+                            *stop_reason = *old_reason;
+                        }
+                        draft.ts = draft.ts.or(live.ts);
+                    }
+                }
+            }
+            true
+        });
     }
 
     fn item(&mut self, mut draft: ItemDraft) -> ThreadEvent {
@@ -1604,8 +1730,13 @@ impl Timeline {
         Some(ThreadEvent::ItemUpdated { item: item.clone() })
     }
 
-    fn cancel_pending(&mut self, core: &Core) {
-        let requests: HashSet<_> = self.pending.keys().cloned().collect();
+    fn cancel_pending(&mut self, core: &Core, matches: impl Fn(&Item) -> bool) {
+        let requests: Vec<_> = self
+            .pending
+            .iter()
+            .filter(|&(_, index)| matches(&self.items[*index]))
+            .map(|(id, _)| id.clone())
+            .collect();
         for request in requests {
             if let Some(event) = self.resolve(&request, RequestResolution::Cancelled) {
                 self.emit(core, event);
@@ -1655,6 +1786,17 @@ fn split_id(id: &str) -> Result<(&str, &str)> {
     id.split_once(':')
         .filter(|(agent, native)| !agent.is_empty() && !native.is_empty())
         .ok_or_else(|| bad_request("Expected a thread id of the form agent:native-id"))
+}
+
+fn remove_incompatible_option(thread_id: &str, options: &mut BTreeMap<String, String>, id: &str) {
+    if !thread_id.starts_with("codex:") {
+        return;
+    }
+    match id {
+        "permissions" => options.remove("sandbox"),
+        "sandbox" => options.remove("permissions"),
+        _ => None,
+    };
 }
 
 fn rollback_reload_error(error: AgentError) -> AgentError {
@@ -1749,5 +1891,52 @@ mod tests {
             user("native-2", Some("turn-2"), "again"),
         ]);
         assert_eq!(user_count(&state), 2);
+    }
+
+    #[test]
+    fn acp_replay_aligns_repeated_turns_by_order_and_keeps_live_completion() {
+        let mut state = Timeline::new(new_summary("kiro", "session", "Test".into(), None));
+        let items = |prefix: &str, duration_ms| {
+            (0..2)
+                .flat_map(|index| {
+                    let turn = format!("{prefix}:{index}");
+                    [
+                        user(&format!("{turn}:user"), Some(&turn), "Repeat"),
+                        ItemDraft {
+                            id: format!("{turn}:answer"),
+                            turn_id: Some(turn.clone()),
+                            ts: None,
+                            kind: ItemKind::AgentMessage {
+                                text: "Done".into(),
+                                streaming: false,
+                            },
+                        },
+                        ItemDraft::turn_end(&turn, StopReason::EndTurn, None, duration_ms, None),
+                    ]
+                })
+                .collect::<Vec<_>>()
+        };
+        for item in items("acp:live", Some(42)) {
+            state.item(item);
+        }
+        let mut replay = items("replay:stored", None);
+        replay.push(user("external", Some("replay:external"), "New"));
+        assert_eq!(state.merge_history(replay.clone()).len(), 1);
+        assert!(state.merge_history(replay).is_empty());
+        assert_eq!(state.items.len(), 7);
+        assert!(matches!(
+            state.items[2].kind,
+            ItemKind::TurnEnd {
+                duration_ms: Some(42),
+                ..
+            }
+        ));
+        assert!(matches!(
+            state.items[5].kind,
+            ItemKind::TurnEnd {
+                duration_ms: Some(42),
+                ..
+            }
+        ));
     }
 }

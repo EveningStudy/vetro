@@ -1,6 +1,6 @@
 import type { AuthSession } from "./bindings/AuthSession";
 import type { HelloParams } from "./bindings/HelloParams";
-import { getSession, setSession } from "./session";
+import { clearSession, getSession, setSession } from "./session";
 import type { AppInfo, ServerEvent } from "./types";
 import {
   type AuthApi,
@@ -16,6 +16,10 @@ import {
 type Pending = { resolve: (value: unknown) => void; reject: (error: Error) => void };
 
 const MAX_BACKOFF_MS = 10_000;
+const CONNECT_TIMEOUT_MS = 12_000;
+const HEARTBEAT_INTERVAL_MS = 25_000;
+const HEARTBEAT_TIMEOUT_MS = 5_000;
+const AUTH_TIMEOUT_MS = 15_000;
 
 /** One WebSocket to the core. `app.hello` goes first on every connection; requests made while
  * disconnected are queued and flushed after it. */
@@ -30,6 +34,8 @@ export class WsTransport implements Transport {
   private attempts = 0;
   private everOpened = false;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private checkTimer: ReturnType<typeof setTimeout> | null = null;
+  private heartbeatId: number | null = null;
 
   constructor(
     private readonly url: string,
@@ -38,9 +44,9 @@ export class WsTransport implements Transport {
 
   start() {
     this.connect();
-    window.addEventListener("online", () => this.reconnectNow());
+    window.addEventListener("online", () => this.checkConnection());
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "visible") this.reconnectNow();
+      if (document.visibilityState === "visible") this.checkConnection();
     });
   }
 
@@ -77,11 +83,50 @@ export class WsTransport implements Transport {
     for (const listener of this.statusListeners) listener(status, { info, reconnected });
   }
 
-  private reconnectNow() {
+  private checkConnection() {
+    if (this.current === "open" && this.socket) {
+      this.heartbeat(this.socket);
+      return;
+    }
     if (this.current !== "closed") return;
     if (this.retryTimer) clearTimeout(this.retryTimer);
     this.attempts = 0;
     this.connect();
+  }
+
+  private setCheckTimer(callback: () => void, delay: number) {
+    if (this.checkTimer !== null) clearTimeout(this.checkTimer);
+    this.checkTimer = setTimeout(callback, delay);
+  }
+
+  private heartbeat(socket: WebSocket) {
+    if (this.socket !== socket || this.heartbeatId !== null) return;
+    if (socket.readyState !== WebSocket.OPEN) {
+      this.disconnect(socket);
+      return;
+    }
+    const id = this.nextId++;
+    this.heartbeatId = id;
+    this.setCheckTimer(() => this.disconnect(socket), HEARTBEAT_TIMEOUT_MS);
+    socket.send(JSON.stringify({ id, method: "app.ping", params: {} }));
+  }
+
+  private disconnect(socket: WebSocket) {
+    if (this.socket !== socket) return;
+    this.socket = null;
+    this.heartbeatId = null;
+    if (this.checkTimer !== null) clearTimeout(this.checkTimer);
+    this.checkTimer = null;
+    socket.close();
+    const queued = new Set(this.queue.map((entry) => entry.id));
+    for (const [id, pending] of this.pending) {
+      if (queued.has(id)) continue;
+      pending.reject(new RpcFailure("disconnected", "Connection lost"));
+      this.pending.delete(id);
+    }
+    const delay = Math.min(MAX_BACKOFF_MS, 500 * 2 ** this.attempts++) * (0.75 + Math.random() / 2);
+    this.retryTimer = setTimeout(() => this.connect(), delay);
+    this.setStatus("closed");
   }
 
   private connect() {
@@ -89,7 +134,9 @@ export class WsTransport implements Transport {
     this.setStatus("connecting");
     const socket = new WebSocket(this.url);
     this.socket = socket;
+    this.setCheckTimer(() => this.disconnect(socket), CONNECT_TIMEOUT_MS);
     socket.onopen = () => {
+      if (this.socket !== socket) return;
       const id = this.nextId++;
       this.pending.set(id, {
         resolve: (info) => {
@@ -99,30 +146,21 @@ export class WsTransport implements Transport {
           const queued = this.queue;
           this.queue = [];
           this.current = "open";
+          this.setCheckTimer(() => this.heartbeat(socket), HEARTBEAT_INTERVAL_MS);
           for (const entry of queued) socket.send(entry.frame);
           this.setStatus("open", info as AppInfo, reconnected);
         },
-        reject: () => socket.close(),
+        reject: () => this.disconnect(socket),
       });
       socket.send(JSON.stringify({ id, method: "app.hello", params: this.hello() }));
     };
-    socket.onmessage = (message) => this.handle(String(message.data));
-    socket.onclose = () => {
-      if (this.socket !== socket) return;
-      this.socket = null;
-      const queued = new Set(this.queue.map((entry) => entry.id));
-      for (const [id, pending] of this.pending) {
-        if (queued.has(id)) continue;
-        pending.reject(new RpcFailure("disconnected", "Connection lost"));
-        this.pending.delete(id);
-      }
-      this.setStatus("closed");
-      const delay = Math.min(MAX_BACKOFF_MS, 500 * 2 ** this.attempts++) * (0.75 + Math.random() / 2);
-      this.retryTimer = setTimeout(() => this.connect(), delay);
+    socket.onmessage = (message) => {
+      if (this.socket === socket) this.handle(String(message.data), socket);
     };
+    socket.onclose = () => this.disconnect(socket);
   }
 
-  private handle(text: string) {
+  private handle(text: string, socket: WebSocket) {
     let frame: {
       id?: number;
       result?: unknown;
@@ -135,6 +173,11 @@ export class WsTransport implements Transport {
       return;
     }
     if (typeof frame.id === "number") {
+      if (frame.id === this.heartbeatId) {
+        this.heartbeatId = null;
+        this.setCheckTimer(() => this.heartbeat(socket), HEARTBEAT_INTERVAL_MS);
+        return;
+      }
       const pending = this.pending.get(frame.id);
       if (!pending) return;
       this.pending.delete(frame.id);
@@ -157,50 +200,73 @@ export function wsUrl() {
   return `${scheme}//${location.host}/api/ws`;
 }
 
-function postJson(path: string, body: unknown) {
-  return fetch(path, {
-    method: "POST",
-    credentials: "same-origin",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
+async function authRequest<T>(path: string, init: RequestInit, read: (response: Response) => Promise<T>) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), AUTH_TIMEOUT_MS);
+  try {
+    const response = await fetch(path, { ...init, credentials: "same-origin", signal: controller.signal });
+    return await read(response);
+  } catch (error) {
+    if (controller.signal.aborted) throw new DOMException("Authentication request timed out", "TimeoutError");
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
-/** Keeps the session from a successful sign-in. An older core answered with a cookie and no body;
- * that still works because requests stay same-origin. */
-async function keepSession(response: Response) {
-  const body = (await response.json().catch(() => null)) as Partial<AuthSession> | null;
-  if (body && typeof body.session === "string") setSession(body.session);
+function postAuth<T>(path: string, body: unknown, read: (response: Response) => Promise<T>) {
+  return authRequest(path, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  }, read);
+}
+
+async function optionalJson<T>(response: Response): Promise<T | null> {
+  try {
+    return await response.json() as T;
+  } catch (error) {
+    if (error instanceof SyntaxError) return null;
+    throw error;
+  }
+}
+
+async function keepSession(response: Response, rememberRemote = false) {
+  const body = await optionalJson<Partial<AuthSession>>(response);
+  if (body && typeof body.session === "string") setSession(body.session, rememberRemote && body.remoteClient === true);
   return body;
 }
 
 export const httpAuth: AuthApi = {
   async session() {
     const session = getSession();
-    const response = await fetch("/api/auth/session", {
-      credentials: "same-origin",
+    return authRequest("/api/auth/session", {
       headers: session ? { authorization: `Bearer ${session}` } : {},
+    }, async (response) => {
+      if (response.status === 401) {
+        clearSession(session);
+        return null;
+      }
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return response.json();
     });
-    if (response.status === 401) {
-      setSession(null);
-      return null;
-    }
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    return response.json();
   },
-  async local(token) {
-    const response = await postJson("/api/auth/local", { token });
-    if (!response.ok) return { ok: false };
-    const body = await keepSession(response);
-    return { ok: true, remoteClient: body?.remoteClient };
+  local(token) {
+    return postAuth("/api/auth/local", { token }, async (response) => {
+      if (response.status === 429 || response.status >= 500) throw new Error(`HTTP ${response.status}`);
+      if (!response.ok) return { ok: false };
+      const body = await keepSession(response);
+      return { ok: true, remoteClient: body?.remoteClient };
+    });
   },
-  async pair(code, deviceName) {
-    const response = await postJson("/api/auth/pair", { code, deviceName });
-    if (response.ok) {
-      await keepSession(response);
-      return { ok: true };
-    }
-    const body = await response.json().catch(() => null);
-    return { ok: false, message: body?.error?.message ?? body?.message };
+  pair(code, deviceName, proposedSession, remember) {
+    return postAuth("/api/auth/pair", { code, deviceName, proposedSession }, async (response) => {
+      if (response.ok) {
+        const body = await keepSession(response, remember);
+        return { ok: typeof body?.session === "string" };
+      }
+      const body = await optionalJson<{ error?: { message?: string }; message?: string }>(response);
+      return { ok: false, status: response.status, message: body?.error?.message ?? body?.message };
+    });
   },
 };

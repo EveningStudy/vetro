@@ -1,6 +1,6 @@
 use std::{
     collections::BTreeMap,
-    fs::{self, File},
+    fs::{self, File, OpenOptions},
     io::{self, BufRead, BufReader, BufWriter, Read, Write},
     path::{Path, PathBuf},
     sync::Mutex,
@@ -9,9 +9,9 @@ use std::{
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
-use vetro_agent_api::Result;
+use vetro_agent_api::{AgentError, Result};
 use vetro_proto::{
-    rpc::{AgentOptionsResult, RemoteDevice, Settings},
+    rpc::{AgentOptionsResult, ErrorCode, RemoteDevice, Settings},
     RateLimit, RawEntry,
 };
 
@@ -23,6 +23,7 @@ pub struct Home {
     settings: Mutex<Settings>,
     state: Mutex<State>,
     log_lock: Mutex<()>,
+    _directory_lock: DirectoryLock,
 }
 
 #[derive(Clone, Default, Deserialize, Serialize)]
@@ -91,13 +92,15 @@ impl Home {
     pub fn open(root: PathBuf, user_home: PathBuf) -> Result<Self> {
         let root = std::path::absolute(root).map_err(internal)?;
         private_dir(&root).map_err(internal)?;
+        let actual_root = fs::canonicalize(&root).map_err(internal)?;
+        let directory_lock = directory_lock(&actual_root)?;
         #[cfg(unix)]
-        tighten(&fs::canonicalize(&root).map_err(internal)?).map_err(internal)?;
+        tighten(&actual_root).map_err(internal)?;
         for name in ["raw", "logs"] {
             let path = root.join(name);
             private_dir(&path).map_err(internal)?;
             let actual = fs::canonicalize(&path).map_err(internal)?;
-            if actual != fs::canonicalize(&root).map_err(internal)?.join(name) {
+            if actual != actual_root.join(name) {
                 return Err(internal(
                     "Vetro data subdirectory redirects outside its location",
                 ));
@@ -134,6 +137,7 @@ impl Home {
             settings: Mutex::new(settings),
             state: Mutex::new(state),
             log_lock: Mutex::new(()),
+            _directory_lock: directory_lock,
         })
     }
 
@@ -147,6 +151,10 @@ impl Home {
 
     pub fn settings(&self) -> Settings {
         self.settings.lock().unwrap().clone()
+    }
+
+    pub fn close_to_tray(&self) -> bool {
+        self.settings.lock().unwrap().close_to_tray
     }
 
     pub fn local_token(&self) -> String {
@@ -326,6 +334,117 @@ impl Home {
     }
 }
 
+struct DirectoryLock {
+    _file: File,
+}
+
+#[cfg(unix)]
+impl Drop for DirectoryLock {
+    fn drop(&mut self) {
+        use std::os::fd::AsRawFd;
+
+        unsafe { libc::flock(self._file.as_raw_fd(), libc::LOCK_UN) };
+    }
+}
+
+fn directory_lock(root: &Path) -> Result<DirectoryLock> {
+    let path = root.join("core.lock");
+    match lock_file(&path) {
+        Ok(file) => Ok(DirectoryLock { _file: file }),
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => Err(AgentError::new(
+            ErrorCode::Busy,
+            format!(
+                "Vetro is already using {}. Close the other instance or set VETRO_HOME to a separate directory.",
+                crate::files::normalize(root).display()
+            ),
+        )),
+        Err(error) => Err(internal(format!(
+            "Could not lock the Vetro data directory {}: {error}",
+            crate::files::normalize(root).display()
+        ))),
+    }
+}
+
+#[cfg(unix)]
+fn lock_file(path: &Path) -> io::Result<File> {
+    use std::os::{fd::AsRawFd, unix::fs::OpenOptionsExt};
+
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid lock file",
+        ));
+    }
+    loop {
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return Ok(file);
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn lock_file(path: &Path) -> io::Result<File> {
+    use std::os::windows::{
+        fs::{MetadataExt, OpenOptionsExt},
+        io::AsRawHandle,
+    };
+    use windows_sys::Win32::{
+        Foundation::ERROR_LOCK_VIOLATION,
+        Storage::FileSystem::{
+            LockFileEx, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
+            FILE_SHARE_READ, FILE_SHARE_WRITE, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY,
+        },
+        System::IO::OVERLAPPED,
+    };
+
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid lock file",
+        ));
+    }
+    let mut operation = OVERLAPPED::default();
+    let locked = unsafe {
+        LockFileEx(
+            file.as_raw_handle(),
+            LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+            0,
+            1,
+            0,
+            &mut operation,
+        )
+    };
+    if locked != 0 {
+        return Ok(file);
+    }
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() == Some(ERROR_LOCK_VIOLATION as i32) {
+        return Err(io::ErrorKind::WouldBlock.into());
+    }
+    Err(error)
+}
+
 fn private_dir(path: &Path) -> io::Result<()> {
     let mut builder = fs::DirBuilder::new();
     builder.recursive(true);
@@ -447,6 +566,37 @@ fn scratch_slug(title: &str) -> String {
         }
     }
     out.trim_end_matches('-').to_owned()
+}
+
+#[cfg(test)]
+#[test]
+fn data_directory_has_one_owner_until_closed() {
+    let parent = tempfile::tempdir().unwrap();
+    let root = parent.path().join(".vetro");
+    let user_home = parent.path().to_owned();
+    let first = Home::open(root.clone(), user_home.clone()).unwrap();
+    #[cfg(unix)]
+    let _inherited_handle = first._directory_lock._file.try_clone().unwrap();
+    let second = Home::open(root.join("."), user_home.clone());
+    assert!(matches!(second, Err(error) if error.code == ErrorCode::Busy));
+    let other = Home::open(parent.path().join("parallel"), user_home.clone()).unwrap();
+
+    first
+        .change_state(|state| {
+            state.projects.entry("first".into()).or_default().added = true;
+            state.threads.entry("thread".into()).or_default().pinned = Some(true);
+        })
+        .unwrap();
+    drop(first);
+    let next = Home::open(root, user_home).unwrap();
+    next.change_state(|state| {
+        state.projects.entry("second".into()).or_default().added = true;
+    })
+    .unwrap();
+    assert!(next.read_state(|state| state.projects["first"].added
+        && state.projects["second"].added
+        && state.threads["thread"].pinned == Some(true)));
+    assert!(other.read_state(|state| state.projects.is_empty()));
 }
 
 #[cfg(test)]

@@ -8,22 +8,29 @@ before the core URL is known or when the core fails to start.
 
 ## Run in development
 
-Start the core (or any static HTTP server) first, then point the shell at it:
+Run `cargo run -p vetro-desktop` from the workspace root to start the
+embedded core and the desktop window. To point the shell at an existing
+development server, set `VETRO_DESKTOP_URL`:
 
 ```sh
 VETRO_DESKTOP_URL=http://127.0.0.1:8080 cargo run -p vetro-desktop
 ```
 
-`core::start()` currently reads that URL from `VETRO_DESKTOP_URL` and fails
-with a visible error page when it is unset; the orchestrator replaces the body
-with the real core startup. `VETRO_DESKTOP_CLOSE_TO_TRAY=1` additionally
-enables close-to-tray.
+With the embedded core, turn on **Keep running when the window closes** in
+**Settings → Remote access**. The setting takes effect immediately and is saved
+as `closeToTray` in the Vetro data directory's `config.json`.
+The tray's **Open Vetro** action restores the window, and **Quit** stops the core
+and exits the application. On macOS, opening Vetro again from the Dock also
+restores its window while the core continues running. The window closes
+normally in development URL mode.
 
 Useful knobs while developing:
 
 - `CARGO_TARGET_DIR=target/desktop` keeps this heavy dependency tree out of
   the default `target/` dir.
 - Second launch of the binary focuses the existing window (single instance).
+- `--new-instance`, `VETRO_MULTI_INSTANCE=1`, or a different executable name
+  allows a separate window. Use a different `VETRO_HOME` for each embedded core.
 - Links outside the core's origin open in the system browser.
 
 ## Build
@@ -65,6 +72,12 @@ sudo apt install -y \
 
 `patchelf` is used by the AppImage bundler; `fuse`/`libfuse2` is needed to run
 the resulting AppImage on distros without FUSE 3.
+
+The Linux release workflow builds on Ubuntu 24.04 and launches the resulting AppImage before uploading it. To check the native window, Python ACP handshake, default file opener, and listener shutdown, run:
+
+```sh
+APPIMAGE_EXTRACT_AND_RUN=1 xvfb-run -a node .github/scripts/smoke-appimage.mjs path/to/Vetro.AppImage
+```
 
 ## Icons
 

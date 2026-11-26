@@ -1,6 +1,7 @@
 use std::{
     env, fs,
     io::{self, BufRead, Write},
+    path::Path,
     sync::Arc,
 };
 
@@ -42,30 +43,8 @@ pub async fn exercise() {
         ),
     )
     .unwrap();
-    let agent = Arc::new(ClaudeAgent::new(env::current_exe().unwrap(), projects));
-    let registry = Registry::new([agent as Arc<dyn vetro_agent_api::Agent>]).unwrap();
-    let home = Home::open(temp.path().join(".vetro"), temp.path().to_owned()).unwrap();
-    let token = home.local_token();
-    let core = Core::new(home, registry);
-    core.refresh_history().await;
-    let server = Server::bind(core, Some(0)).await.unwrap();
-    let addr = server.address();
-    let (stop, shutdown) = oneshot::channel();
-    let serving = tokio::spawn(server.serve(async {
-        let _ = shutdown.await;
-    }));
-    let origin = format!("http://{addr}");
-    let auth = http(
-        addr,
-        "POST",
-        "/api/auth/local",
-        &[("Origin", &origin)],
-        Some(json!({"token":token})),
-    )
-    .await;
-    assert_eq!(auth.status, 200);
-    let mut client = Client::connect(addr, auth.body["session"].as_str().unwrap(), &origin).await;
-    client.call("app.hello", hello()).await;
+    let home = temp.path().join(".vetro");
+    let (mut client, stop, serving) = start_core(&home, temp.path(), &projects).await;
     let thread = json!({"threadId": THREAD_ID});
     let opened = client.call("threads.open", thread.clone()).await;
     assert_eq!(opened["thread"]["source"], "desktop");
@@ -195,9 +174,106 @@ pub async fn exercise() {
         json!({"effort":"low","model":"sonnet","mode":"bypassPermissions"})
     );
     client.call("threads.detach", thread).await;
+    let fork = client
+        .call(
+            "threads.fork",
+            json!({"threadId": THREAD_ID, "turnId": CHECKPOINT}),
+        )
+        .await;
+    let fork = &fork["thread"];
+    let fork_native_id = fork["nativeId"].as_str().unwrap();
+    let fork_thread_id = fork["id"].as_str().unwrap();
+    assert_ne!(fork_native_id, NATIVE_ID);
+    assert_eq!(fork["source"], "vetro");
+    assert_eq!(fork["internal"], false);
+    assert_eq!(fork["model"], "default");
+    let opened = client
+        .call("threads.open", json!({"threadId": fork_thread_id}))
+        .await;
+    assert_eq!(current(&opened, "mode"), "default");
+    client
+        .call("threads.detach", json!({"threadId": fork_thread_id}))
+        .await;
+    drop(client);
     stop.send(()).unwrap();
     serving.await.unwrap().unwrap();
-    println!("Claude rewind WebSocket fixture passed");
+
+    fs::write(
+        store.join(format!("{fork_native_id}.jsonl")),
+        format!(
+            "{}\n",
+            json!({
+                "type":"user", "uuid":CHECKPOINT, "sessionId":fork_native_id, "cwd":project,
+                "entrypoint":"sdk-cli", "timestamp":"2026-11-23T01:00:00.000Z",
+                "message":{"content":"Stored Claude fork"}
+            }),
+        ),
+    )
+    .unwrap();
+    let reindexed_home = temp.path().join(".vetro-reindexed");
+    fs::create_dir(&reindexed_home).unwrap();
+    fs::copy(home.join("state.json"), reindexed_home.join("state.json")).unwrap();
+    let (mut client, stop, serving) = start_core(&reindexed_home, temp.path(), &projects).await;
+    let list = client.call("threads.list", json!({})).await;
+    let indexed = list["threads"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|thread| thread["id"] == fork_thread_id)
+        .expect("Vetro fork remains in the default root list after reindexing");
+    assert_eq!(indexed["source"], "vetro");
+    assert_eq!(indexed["internal"], false);
+    let reopened = client
+        .call("threads.open", json!({"threadId": fork_thread_id}))
+        .await;
+    assert_eq!(reopened["thread"]["live"], false);
+    assert_eq!(
+        reopened["items"][0]["content"][0]["text"],
+        "Stored Claude fork"
+    );
+    drop(client);
+    stop.send(()).unwrap();
+    serving.await.unwrap().unwrap();
+    println!("Claude rewind and fork WebSocket fixture passed");
+}
+
+async fn start_core(
+    home: &Path,
+    root: &Path,
+    projects: &Path,
+) -> (
+    Client,
+    oneshot::Sender<()>,
+    tokio::task::JoinHandle<io::Result<()>>,
+) {
+    let agent = Arc::new(ClaudeAgent::new(
+        env::current_exe().unwrap(),
+        projects.to_owned(),
+    ));
+    let registry = Registry::new([agent as Arc<dyn vetro_agent_api::Agent>]).unwrap();
+    let home = Home::open(home.to_owned(), root.to_owned()).unwrap();
+    let token = home.local_token();
+    let core = Core::new(home, registry);
+    core.refresh_history().await;
+    let server = Server::bind(core, Some(0)).await.unwrap();
+    let addr = server.address();
+    let (stop, shutdown) = oneshot::channel();
+    let serving = tokio::spawn(server.serve(async {
+        let _ = shutdown.await;
+    }));
+    let origin = format!("http://{addr}");
+    let auth = http(
+        addr,
+        "POST",
+        "/api/auth/local",
+        &[("Origin", &origin)],
+        Some(json!({"token":token})),
+    )
+    .await;
+    assert_eq!(auth.status, 200);
+    let mut client = Client::connect(addr, auth.body["session"].as_str().unwrap(), &origin).await;
+    client.call("app.hello", hello()).await;
+    (client, stop, serving)
 }
 
 async fn set_option(client: &mut Client, id: &str, value: &str) -> Value {
@@ -247,6 +323,11 @@ fn flag<'a>(args: &[&'a str], name: &str) -> Option<&'a str> {
 pub fn fake() {
     let args: Vec<_> = env::args().collect();
     let args: Vec<_> = args.iter().map(String::as_str).collect();
+    if args.contains(&"--fork-session") {
+        assert_eq!(flag(&args, "--resume"), Some(NATIVE_ID));
+        assert_eq!(flag(&args, "--resume-session-at"), Some(CHECKPOINT));
+        assert!(flag(&args, "--session-id").is_some_and(|id| id != NATIVE_ID));
+    }
     let mode = flag(&args, "--permission-mode").unwrap_or("default");
     let mut active = false;
     for line in io::stdin().lock().lines() {

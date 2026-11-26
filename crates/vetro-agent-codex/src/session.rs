@@ -114,33 +114,12 @@ impl Live {
             ("model", &response["model"]),
             ("effort", &response["reasoningEffort"]),
             ("mode", &response["collaborationMode"]["mode"]),
-            ("permissions", &response["activePermissionProfile"]["id"]),
         ] {
             if let Some(value) = value.as_str().filter(|_| !options.contains_key(id)) {
                 state.selected.insert(id.into(), value.into());
             }
         }
-        if let Some(approval) = response
-            .get("approvalPolicy")
-            .filter(|value| !value.is_null())
-        {
-            let value = approval
-                .as_str()
-                .map(str::to_owned)
-                .unwrap_or_else(|| approval.to_string());
-            state.selected.insert("approvalPolicy".into(), value);
-        }
-        if let Some(sandbox) = response["sandbox"]["type"]
-            .as_str()
-            .and_then(|kind| match kind {
-                "readOnly" => Some("read-only"),
-                "workspaceWrite" => Some("workspace-write"),
-                "dangerFullAccess" => Some("danger-full-access"),
-                _ => None,
-            })
-        {
-            state.selected.insert("sandbox".into(), sandbox.into());
-        }
+        update_access(&mut state.selected, response, "sandbox");
         if state.revision == revision {
             let turns = response["initialTurnsPage"]["data"]
                 .as_array()
@@ -183,6 +162,7 @@ impl Live {
         }
         let live = self.app.live(&self.id).map(|live| Arc::downgrade(&live));
         let local_user_id = local_user.id.clone();
+        self.app.peer.begin_user_work();
         let response = self
             .app
             .call_ordered("turn/start", params, move |reply| {
@@ -353,7 +333,6 @@ impl Live {
                     ("model", &settings["model"]),
                     ("effort", &settings["effort"]),
                     ("mode", &settings["collaborationMode"]["mode"]),
-                    ("permissions", &settings["activePermissionProfile"]["id"]),
                 ] {
                     if let Some(value) = value.as_str() {
                         state.selected.insert(id.into(), value.into());
@@ -361,6 +340,7 @@ impl Live {
                         state.selected.remove(id);
                     }
                 }
+                update_access(&mut state.selected, settings, "sandboxPolicy");
                 self.emit(SessionEvent::Model(state.selected.get("model").cloned()));
                 self.emit(SessionEvent::Options(self.catalog.options(&state.selected)));
             }
@@ -646,6 +626,10 @@ impl Session for Live {
         &self.id
     }
 
+    fn current_options(&self) -> Option<Vec<ConfigOption>> {
+        Some(self.catalog.options(&self.state.lock().unwrap().selected))
+    }
+
     async fn send(&self, content: Vec<ContentBlock>) -> Result<()> {
         let input = mapping::input(content.clone())?;
         let _operation = self.operations.lock().await;
@@ -805,8 +789,35 @@ impl Session for Live {
         self.log.clone()
     }
 
-    fn descendants(&self) -> Vec<vetro_agent_api::process::ProcessIdentity> {
-        self.app.peer.descendants()
+    fn background_processes(&self) -> usize {
+        self.app.peer.background_processes()
+    }
+}
+
+fn update_access(selected: &mut BTreeMap<String, String>, response: &Value, sandbox_key: &str) {
+    if let Some(policy) = crate::catalog::choice_id(&response["approvalPolicy"]) {
+        selected.insert("approvalPolicy".into(), policy);
+    }
+    if let Some(profile) = response.get("activePermissionProfile") {
+        if let Some(id) = profile["id"].as_str() {
+            selected.insert("permissions".into(), id.into());
+        } else if profile.is_null() {
+            selected.remove("permissions");
+        }
+    }
+    if selected.contains_key("permissions") {
+        selected.remove("sandbox");
+    } else if let Some(sandbox) = response.get(sandbox_key) {
+        let mode = match sandbox["type"].as_str() {
+            Some("readOnly") => "read-only",
+            Some("workspaceWrite") => "workspace-write",
+            Some("dangerFullAccess") => "danger-full-access",
+            _ => {
+                selected.remove("sandbox");
+                return;
+            }
+        };
+        selected.insert("sandbox".into(), mode.into());
     }
 }
 

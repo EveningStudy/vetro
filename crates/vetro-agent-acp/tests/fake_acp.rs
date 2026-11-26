@@ -118,6 +118,7 @@ fn fake(scenario: &str) {
     }
     let mut authenticated = false;
     let mut session_count = 0;
+    let mut load_count = 0;
     let mut prompt_id = Value::Null;
     let mut expected_session = Value::Null;
     let mut permission = false;
@@ -149,7 +150,10 @@ fn fake(scenario: &str) {
         let id = &message["id"];
         let params = &message["params"];
         assert_eq!(message["jsonrpc"], "2.0");
-        if matches!(scenario, "devin-locked" | "devin-load-error") {
+        if matches!(
+            scenario,
+            "devin-locked" | "devin-legacy-lock" | "devin-load-error"
+        ) {
             assert!(matches!(
                 message["method"].as_str(),
                 Some("initialize" | "session/load" | "session/resume")
@@ -170,7 +174,21 @@ fn fake(scenario: &str) {
                 } else {
                     "test"
                 };
-                json!({ "protocolVersion":1, "agentCapabilities":{"loadSession":true, "sessionCapabilities":{"list":{},"close":{},"delete":{},"resume":{}}, "promptCapabilities":{"image":true}}, "authMethods":[{"id":method,"name":"Test"}], "_meta":{"ignored":true} })
+                let mut result = json!({ "protocolVersion":1, "agentCapabilities":{"loadSession":true, "sessionCapabilities":{"list":{},"close":{},"delete":{},"resume":{}}, "promptCapabilities":{"image":true}}, "authMethods":[{"id":method,"name":"Test"}], "_meta":{"ignored":true} });
+                if scenario == "kiro-native-options" {
+                    result["agentCapabilities"]["_meta"] = json!({
+                        "kiro": {"extensionMethods": ["_kiro/permissions/presets/list"]}
+                    });
+                    result["agentCapabilities"]["sessionCapabilities"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("resume");
+                }
+                result
+            }
+            Some("_kiro/permissions/presets/list") if scenario == "kiro-native-options" => {
+                assert!(params["cwd"].is_string());
+                json!({"presets": [{"id": "allow-all", "name": "Allow all"}]})
             }
             Some("authenticate") => {
                 assert_eq!(
@@ -187,7 +205,14 @@ fn fake(scenario: &str) {
                 continue;
             }
             Some("session/new") => {
-                assert_eq!(params.as_object().unwrap().len(), 2);
+                if scenario == "kiro-native-options" && session_count > 0 {
+                    assert_eq!(
+                        params["_meta"],
+                        json!({"kiro": {"policyPreset": ["allow-all"]}})
+                    );
+                } else {
+                    assert_eq!(params.as_object().unwrap().len(), 2);
+                }
                 assert!(params["cwd"].as_str().is_some());
                 assert_eq!(params["mcpServers"], json!([]));
                 session_count += 1;
@@ -223,16 +248,24 @@ fn fake(scenario: &str) {
                 json!({"sessions":[{"sessionId":session,"cwd":cwd,"title":"Saved","updatedAt":"2026-11-23T00:00:00.250Z"}]})
             }
             Some("session/load" | "session/resume") => {
-                if matches!(scenario, "devin-locked" | "devin-load-error") {
+                if matches!(
+                    scenario,
+                    "devin-locked" | "devin-legacy-lock" | "devin-load-error"
+                ) {
                     assert_eq!(params["sessionId"], "stored");
-                    let data = if scenario == "devin-locked" {
-                        "session initialization failed: Failed to lock session 'stored': Access is denied. (os error 5)"
-                    } else {
-                        "session initialization failed"
+                    let (code, message, data) = match scenario {
+                        "devin-locked" => (-32015, "Session is already open in another process", json!({
+                            "cognition.ai/errorKind": "session_locked",
+                            "cognition.ai/retryable": true
+                        })),
+                        "devin-legacy-lock" => (-32603, "Internal error", json!(
+                            "session initialization failed: Failed to lock session 'stored': Access is denied. (os error 5)"
+                        )),
+                        _ => (-32603, "Internal error", json!("session initialization failed")),
                     };
                     output(json!({"id":id,"error":{
-                        "code":-32603,
-                        "message":"Internal error",
+                        "code":code,
+                        "message":message,
                         "data":data
                     }}));
                     continue;
@@ -243,7 +276,19 @@ fn fake(scenario: &str) {
                     );
                     continue;
                 }
-                assert_eq!(params.as_object().unwrap().len(), 3);
+                if scenario == "kiro-native-options" {
+                    load_count += 1;
+                    if load_count == 2 {
+                        assert_eq!(
+                            params["_meta"],
+                            json!({"kiro": {"policyPreset": ["allow-all"]}})
+                        );
+                    } else {
+                        assert_eq!(params.as_object().unwrap().len(), 3);
+                    }
+                } else {
+                    assert_eq!(params.as_object().unwrap().len(), 3);
+                }
                 let session = if scenario == "kiro-history" {
                     "sess_fixture"
                 } else {
@@ -380,8 +425,31 @@ fn fake(scenario: &str) {
                 if scenario == "cancel-timeout" {
                     continue;
                 }
+                if scenario == "kiro-native-options" {
+                    update(
+                        &expected_session,
+                        json!({"sessionUpdate": "session_info_update",
+                        "_meta": {"kiro": {"kind": "steering_cleared", "messageIds": ["cleared"]}}}),
+                    );
+                }
                 output(json!({"id":prompt_id,"result":{"stopReason":"cancelled"}}));
                 continue;
+            }
+            Some("_session/steer") if scenario == "kiro-native-options" => {
+                assert_eq!(params["sessionId"], expected_session);
+                let native_id = match params["message"].as_str() {
+                    Some(PROMPT) => {
+                        update(
+                            &expected_session,
+                            json!({"sessionUpdate": "session_info_update",
+                            "_meta": {"kiro": {"kind": "steering_injected", "messageId": "delivered"}}}),
+                        );
+                        "delivered"
+                    }
+                    Some("Cancel this steering") => "cleared",
+                    other => panic!("Unexpected steering message {other:?}"),
+                };
+                json!({"queued": true, "messageId": native_id})
             }
             None if id == "unknown" => {
                 assert_eq!(message["error"]["code"], -32601);
@@ -463,7 +531,14 @@ async fn devin_history_replay() {
     let cwd = env::current_dir().unwrap();
     let error = locked.read("stored", Some(&cwd)).await.unwrap_err();
     assert_eq!(error.code, ErrorCode::Busy);
+    assert!(error.message.contains("already open in another process"));
+
+    spec.args[1] = "devin-legacy-lock".into();
+    let legacy = AcpAgent::new("devin", "Devin", spec.clone());
+    let error = legacy.read("stored", Some(&cwd)).await.unwrap_err();
+    assert_eq!(error.code, ErrorCode::Busy);
     assert!(error.message.contains("Failed to lock session 'stored'"));
+    legacy.shutdown().await;
 
     spec.args[1] = "devin".into();
     let devin = AcpAgent::new("devin", "Devin", spec.clone());
@@ -720,6 +795,7 @@ async fn kiro_native_history_metadata() {
     let agent = AcpAgent::new("kiro", "Kiro", spec);
     let listing = agent.list(None).await.unwrap();
     assert_eq!(listing.sessions[0].created_at, Some(1_795_608_000_250));
+    assert_eq!(listing.sessions[0].updated_at, 1_795_608_006_000);
     assert!(listing.sessions[0].internal);
     let transcript = agent.read("sess_fixture", None).await.unwrap();
     let [user, answer, end] = transcript.items.as_slice() else {
@@ -748,10 +824,121 @@ async fn kiro_native_history_metadata() {
     agent.shutdown().await;
 }
 
+async fn kiro_native_options_and_steering() {
+    let mut spec = SpawnSpec::new(env::current_exe().unwrap());
+    spec.args = vec!["--agent".into(), "kiro-native-options".into()];
+    let agent = AcpAgent::new("kiro", "Kiro", spec);
+    assert!(agent.info().await.capabilities.mid_turn_input);
+    let desired = BTreeMap::from([("permissionPreset".into(), "allow-all".into())]);
+    let cwd = env::current_dir().unwrap();
+    let prepared = agent.prepare_options(Some(&cwd), &desired).await.unwrap();
+    assert_eq!(
+        prepared.options.last().unwrap().current_value,
+        "native-default"
+    );
+    let (sink, mut events) = mpsc::unbounded_channel();
+    let mut start = request(vec![text("cancel")]);
+    start.options = desired.clone();
+    let session = agent.start(start, sink).await.unwrap();
+    assert_eq!(
+        session
+            .current_options()
+            .unwrap()
+            .last()
+            .unwrap()
+            .current_value,
+        "allow-all"
+    );
+    assert_eq!(
+        session
+            .initial_options()
+            .unwrap()
+            .options
+            .last()
+            .unwrap()
+            .current_value,
+        "native-default"
+    );
+    assert!(session.can_send_during_turn(&[text(PROMPT)], true));
+    assert!(!session.can_send_during_turn(
+        &[
+            text(PROMPT),
+            ContentBlock::File {
+                path: "fixture.txt".into(),
+                name: None
+            }
+        ],
+        true
+    ));
+    session.send(vec![text(PROMPT)]).await.unwrap();
+    session
+        .send(vec![text("Cancel this steering")])
+        .await
+        .unwrap();
+    session.interrupt().await.unwrap();
+    let (reason, events) = until_end(&mut events).await;
+    assert_eq!(reason, StopReason::Cancelled);
+    let messages: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            SessionEvent::Item(item) => match &item.kind {
+                ItemKind::UserMessage { content } => Some(content.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        serde_json::to_value(messages).unwrap(),
+        json!([[text("cancel")], [text(PROMPT)]])
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event,
+                SessionEvent::Item(item) if matches!(&item.kind, ItemKind::Notice {
+                    detail: Some(detail), ..
+                } if *detail == json!([text("Cancel this steering")]))
+            ))
+            .count(),
+        1
+    );
+    session.detach().await;
+    agent.read("stored", Some(&cwd)).await.unwrap();
+    let (sink, _events) = mpsc::unbounded_channel();
+    let attached = agent
+        .attach_with_options("stored", Some(&cwd), desired, sink.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        attached
+            .current_options()
+            .unwrap()
+            .last()
+            .unwrap()
+            .current_value,
+        "allow-all"
+    );
+    attached.detach().await;
+    let restored = agent.attach("stored", Some(&cwd), sink).await.unwrap();
+    assert_eq!(
+        restored
+            .current_options()
+            .unwrap()
+            .last()
+            .unwrap()
+            .current_value,
+        "native-default"
+    );
+    restored.detach().await;
+    agent.shutdown().await;
+}
+
 async fn suites() {
     devin_history_replay().await;
     acp_replay_boundaries().await;
     kiro_native_history_metadata().await;
+    kiro_native_options_and_steering().await;
     let silent = agent("cancel-timeout");
     let (sink, mut events) = mpsc::unbounded_channel();
     let session = silent

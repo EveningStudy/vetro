@@ -1,3 +1,5 @@
+use std::sync::{Arc, Weak};
+
 use anyhow::{anyhow, Context};
 use tokio::sync::{broadcast, oneshot, watch};
 use vetro_core::{home::Home, registry::Registry, server::Server, Core, WindowTheme};
@@ -19,7 +21,7 @@ impl ShutdownHandle {
 /// the window at; everything else is internal to the core.
 pub struct CoreHandle {
     pub url: String,
-    pub close_to_tray: bool,
+    pub embedded_core: Weak<Core>,
     pub theme_rx: Option<watch::Receiver<WindowTheme>>,
     pub notify_rx: Option<broadcast::Receiver<NotifyParams>>,
     pub shutdown: Option<ShutdownHandle>,
@@ -36,7 +38,7 @@ pub async fn start() -> anyhow::Result<CoreHandle> {
         }
         return Ok(CoreHandle {
             url,
-            close_to_tray: false,
+            embedded_core: Weak::new(),
             theme_rx: None,
             notify_rx: None,
             shutdown: None,
@@ -46,6 +48,7 @@ pub async fn start() -> anyhow::Result<CoreHandle> {
     let settings = home.settings();
     let registry = Registry::from_settings(&settings).map_err(|error| anyhow!("{error:?}"))?;
     let core = Core::new(home, registry);
+    let embedded_core = Arc::downgrade(&core);
     let theme_rx = core.theme_watch();
     let notify_rx = core.notify_subscribe();
     let server = Server::bind(core, None)
@@ -67,7 +70,7 @@ pub async fn start() -> anyhow::Result<CoreHandle> {
     });
     Ok(CoreHandle {
         url,
-        close_to_tray: settings.close_to_tray,
+        embedded_core,
         theme_rx: Some(theme_rx),
         notify_rx: Some(notify_rx),
         shutdown: Some(ShutdownHandle { trigger, done }),

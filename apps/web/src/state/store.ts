@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { authApi, client } from "~/api/client";
 import { type ConnectionStatus, RpcFailure } from "~/api/protocol";
+import { getSession, pairedDraftStorageKey } from "~/api/session";
 import type {
   AgentInfo,
   AppInfo,
@@ -42,6 +43,31 @@ export interface OpenThread {
   loadingOlder: boolean;
 }
 
+export interface DraftAttachment {
+  id: number;
+  mimeType: string;
+  data: string;
+  url: string;
+}
+
+interface Draft {
+  text: string;
+  attachments: DraftAttachment[];
+  mentioned: string[];
+}
+
+interface SendAttempt {
+  id: string;
+  target: string;
+  restored?: boolean;
+}
+
+interface StoredDraft extends Pick<Draft, "text" | "mentioned"> {
+  pending?: SendAttempt;
+}
+
+export const emptyDraft: Draft = { text: "", attachments: [], mentioned: [] };
+
 export type Route =
   | { view: "empty" }
   | { view: "thread"; threadId: string }
@@ -77,7 +103,7 @@ interface State {
   rightDrawer: RightDrawer | null;
   paletteOpen: boolean;
   mobileSidebarOpen: boolean;
-  drafts: Record<string, string>;
+  drafts: Record<string, Draft>;
   authLost: boolean;
   /** Cursor of the newest-first list; null when everything is loaded. */
   threadsCursor: string | null;
@@ -322,7 +348,14 @@ let threadsLoadGen = 0;
 
 async function loadThreads() {
   const generation = ++threadsLoadGen;
-  const page = await client().request("threads.list", { ...rootListParams(), limit: FIRST_PAGE });
+  const api = client();
+  const [page, active] = await Promise.all([
+    api.request("threads.list", { ...rootListParams(), limit: FIRST_PAGE }),
+    api.request("threads.active", {}).catch((error: unknown) => {
+      if (error instanceof RpcFailure && error.code === "not_found") return { threads: [] };
+      throw error;
+    }),
+  ]);
   if (generation !== threadsLoadGen) return;
   const map: Record<string, ThreadSummary> = {};
   const open = get().open;
@@ -331,6 +364,7 @@ async function loadThreads() {
   for (const thread of Object.values(get().threads)) if (inProgress(thread)) map[thread.id] = thread;
   for (const { summary } of Object.values(open)) if (inProgress(summary)) map[summary.id] ??= summary;
   for (const thread of page.threads) if (!isExcludedCodexThread(thread)) map[thread.id] = thread;
+  for (const thread of active.threads) if (!isExcludedCodexThread(thread)) map[thread.id] ??= thread;
   set({ threads: map, threadsLoaded: true, threadsCursor: page.nextCursor, projectCursors: {} });
 }
 
@@ -350,14 +384,12 @@ export function isCatalogStub(thread: Pick<ThreadSummary, "origin">) {
   return !!thread.origin?.startsWith("Codex desktop catalog (");
 }
 
-/** The Active list ignores agent, source, scope and hidden-folder filters so a running thread
- * never drops out of sight. Shared by the sidebar and Alt+1..9. */
 export function isActiveRootThread(thread: ThreadSummary, filters: Pick<Filters, "showArchived" | "showInternal">) {
   return (
     !thread.parent &&
     ACTIVE.has(thread.status) &&
     !isCatalogStub(thread) &&
-    (filters.showArchived || !thread.archived) &&
+    (BUSY.has(thread.status) || filters.showArchived || !thread.archived) &&
     (thread.live || !thread.internal || filters.showInternal)
   );
 }
@@ -432,11 +464,21 @@ export function startSync() {
   const api = client();
   api.onEvent(handleEvent);
   api.onStatus((status, { info, reconnected }) => {
-    set({ connection: status, ...(info ? { app: info } : {}) });
+    const drafts = info?.remoteClient && !get().app ? restorePairedDrafts() : undefined;
+    set({ connection: status, ...(info ? { app: info } : {}), ...(drafts ? { drafts } : {}) });
     if (status === "closed") {
       authApi()
         .session()
-        .then((session) => session === null && set({ authLost: true }))
+        .then((session) => {
+          if (session !== null) return;
+          if (get().app?.remoteClient) {
+            draftStorageKey = null;
+            sendAttempts.clear();
+            set({ authLost: true, drafts: {} });
+          } else {
+            set({ authLost: true });
+          }
+        })
         .catch(() => undefined);
     }
     if (status !== "open") return;
@@ -528,6 +570,78 @@ function activeThreads() {
 
 const opening = new Map<string, Promise<void>>();
 const refs = new Map<string, number>();
+const sendAttempts = new Map<string, SendAttempt>();
+let draftStorageKey: string | null = null;
+
+function restorePairedDrafts() {
+  draftStorageKey = pairedDraftStorageKey(getSession());
+  if (!draftStorageKey) return undefined;
+  const drafts = new Map(Object.entries(get().drafts));
+  try {
+    const stored = JSON.parse(sessionStorage.getItem(draftStorageKey) ?? "{}") as Record<string, StoredDraft>;
+    for (const [key, draft] of Object.entries(stored)) {
+      if (!draft || typeof draft.text !== "string" || !draft.text || drafts.has(key)) continue;
+      const mentioned = Array.isArray(draft.mentioned)
+        ? draft.mentioned.filter((path) => typeof path === "string")
+        : [];
+      drafts.set(key, { text: draft.text, mentioned, attachments: [] });
+      if (typeof draft.pending?.id === "string" && typeof draft.pending.target === "string") {
+        sendAttempts.set(key, { ...draft.pending, restored: true });
+      }
+    }
+  } catch {
+    return undefined;
+  }
+  return Object.fromEntries(drafts);
+}
+
+function persistPairedDrafts() {
+  if (!draftStorageKey) return;
+  const stored = Object.entries(get().drafts).filter(([, draft]) => draft.text).map(([key, draft]) => [
+    key,
+    { text: draft.text, mentioned: draft.mentioned, pending: sendAttempts.get(key) },
+  ]);
+  try {
+    if (stored.length) sessionStorage.setItem(draftStorageKey, JSON.stringify(Object.fromEntries(stored)));
+    else sessionStorage.removeItem(draftStorageKey);
+  } catch {
+    try {
+      sessionStorage.removeItem(draftStorageKey);
+    } catch {
+      return;
+    }
+  }
+}
+
+async function submitDraft<T>(
+  key: string,
+  target: string,
+  request: (receipt: { clientMessageId: string; recoverOnly?: boolean }) => Promise<T>,
+): Promise<T> {
+  const previous = sendAttempts.get(key);
+  const recoverOnly = previous && (previous.restored || previous.target === target);
+  const attempt = recoverOnly ? previous : { id: crypto.randomUUID(), target };
+  sendAttempts.set(key, attempt);
+  persistPairedDrafts();
+  let uncertain = false;
+  try {
+    return await request({ clientMessageId: attempt.id, ...(recoverOnly ? { recoverOnly } : {}) });
+  } catch (error) {
+    if (error instanceof RpcFailure) {
+      uncertain = error.code === "disconnected" || error.code === "delivery_unknown";
+      if (error.code === "delivery_unknown") {
+        const lang = resolvedLanguage(usePrefs.getState().language);
+        throw new RpcFailure(error.code, translate(lang, "composer.deliveryUnknown"));
+      }
+    }
+    throw error;
+  } finally {
+    if (!uncertain && sendAttempts.get(key) === attempt) {
+      sendAttempts.delete(key);
+      persistPairedDrafts();
+    }
+  }
+}
 /** Each threads.open gets a generation; a late answer to an older request is dropped. */
 const generations = new Map<string, number>();
 /** Views left while the thread was still loading; close its subscription once the open lands. */
@@ -699,9 +813,10 @@ export const actions = {
   },
 
   async send(threadId: string, content: ContentBlock[]) {
-    const clientMessageId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     patchOpen(threadId, (thread) => ({ scrollSignal: thread.scrollSignal + 1 }));
-    await client().request("threads.send", { threadId, content, clientMessageId });
+    await submitDraft(threadId, threadId, (receipt) =>
+      client().request("threads.send", { threadId, content, ...receipt }),
+    );
   },
 
   async forkThread(threadId: string, turnId?: string) {
@@ -721,7 +836,10 @@ export const actions = {
   },
 
   async start(agentId: string, cwd: string, content: ContentBlock[], options: Record<string, string>) {
-    const { thread } = await client().request("threads.start", { agentId, cwd, content, options });
+    const target = JSON.stringify([agentId, cwd, Object.entries(options).sort()]);
+    const { thread } = await submitDraft("new", target, (receipt) =>
+      client().request("threads.start", { agentId, cwd, content, options, ...receipt }),
+    );
     mergeSummaries([thread]);
     await actions.openThread(thread.id, true);
     actions.navigate({ view: "thread", threadId: thread.id });
@@ -745,9 +863,11 @@ export const actions = {
     try {
       const { options } = await client().request("threads.setOption", { threadId, optionId, value });
       patchOpen(threadId, () => ({ options }));
+      return options.some((option) => option.id === optionId && option.currentValue === value);
     } catch (error) {
       toast.error(errorMessage(error));
       void actions.openThread(threadId, true);
+      return false;
     }
   },
 
@@ -922,8 +1042,17 @@ export const actions = {
     }
   },
 
-  setDraft(key: string, text: string) {
-    set({ drafts: { ...get().drafts, [key]: text } });
+  updateDraft(key: string, update: (draft: Draft) => Draft) {
+    const drafts = { ...get().drafts };
+    const previous = drafts[key] ?? emptyDraft;
+    const draft = update(previous);
+    if (draft.text !== previous.text || draft.attachments !== previous.attachments || draft.mentioned !== previous.mentioned) {
+      sendAttempts.delete(key);
+    }
+    if (draft.text || draft.attachments.length || draft.mentioned.length) drafts[key] = draft;
+    else delete drafts[key];
+    set({ drafts });
+    persistPairedDrafts();
   },
 
   async refreshVoice() {

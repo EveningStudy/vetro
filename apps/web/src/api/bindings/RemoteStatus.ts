@@ -6,4 +6,4 @@ export type RemoteStatus = {
 /**
  * Paired devices may connect. The server itself always listens on loopback only.
  */
-enabled: boolean, port: number, tailscale: TailscaleStatus, devices: Array<RemoteDevice>, };
+enabled: boolean, port: number, tailscale: TailscaleStatus, externalUrl: string | null, pairingExpiresAt: number | null, devices: Array<RemoteDevice>, };

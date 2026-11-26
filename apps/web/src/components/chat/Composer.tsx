@@ -3,24 +3,17 @@ import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState }
 import { client } from "~/api/client";
 import type { AgentInfo, ConfigOption, ContentBlock, QueuedMessage, SlashCommand, ThreadUsage } from "~/api/types";
 import { useT } from "~/i18n";
-import { formatTokens } from "~/lib/format";
+import { basename, formatTokens } from "~/lib/format";
 import { getDesktopChrome, listenFileDrops, pickSystemFiles } from "~/lib/desktopChrome";
 import { cn } from "~/lib/utils";
 import { usePrefs } from "~/state/prefs";
-import { actions, useStore } from "~/state/store";
+import { type DraftAttachment, actions, emptyDraft, useStore } from "~/state/store";
 import { errorMessage, toast } from "~/state/toast";
 import { Menu, MenuItem, MenuItemHint, MenuPopup, MenuTrigger, Popover, PopoverPopup, PopoverTrigger, Tip } from "../ui/overlay";
 import { Spinner } from "../ui/primitives";
 import { OptionPicker, composerControlClass, isDangerChoice } from "./OptionPicker";
 import { RateLimitBadge, type UsageTone, rateLimitSource, usageChipClass, usageValueClass } from "./RateLimits";
 import { VoiceButton } from "./VoiceButton";
-
-interface Attachment {
-  id: number;
-  mimeType: string;
-  data: string;
-  url: string;
-}
 
 type Trigger = { kind: "mention" | "command"; query: string; start: number; end: number };
 
@@ -33,13 +26,13 @@ function findTrigger(text: string, caret: number): Trigger | null {
   return null;
 }
 
-const IMAGE_NAME = /\.(png|jpe?g|gif|webp|bmp|avif)$/i;
+const IMAGE_NAME = /\.(png|jpe?g|gif|webp)$/i;
 
 function isImageFile(file: File) {
   return file.type.startsWith("image/") || (file.type === "" && IMAGE_NAME.test(file.name));
 }
 
-function readImage(file: File): Promise<Omit<Attachment, "id">> {
+function readImage(file: File): Promise<Omit<DraftAttachment, "id">> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onerror = () => reject(reader.error);
@@ -60,7 +53,8 @@ function partitionOptions(options: ConfigOption[]) {
   const picks = [
     options.find((option) => option.category === "model"),
     options.find((option) => option.category === "thought_level"),
-    modes.find((option) => /permission/i.test(option.id)) ?? modes[0],
+    modes.find((option) => /permission|sandbox/i.test(option.id)) ?? modes[0],
+    modes.find((option) => option.id === "approvalPolicy"),
     ...options.filter((option) => option.choices.some((choice) => choice.value === option.currentValue && isDangerChoice(option, choice))),
   ];
   const chosen = new Set(picks.filter((option) => option !== undefined).map((option) => option.id));
@@ -98,9 +92,7 @@ export interface ComposerProps {
 
 export function Composer(props: ComposerProps) {
   const t = useT();
-  const draft = useStore((s) => s.drafts[props.draftKey] ?? "");
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
-  const [mentioned, setMentioned] = useState<string[]>([]);
+  const { text: draft, attachments, mentioned } = useStore((s) => s.drafts[props.draftKey] ?? emptyDraft);
   const [trigger, setTrigger] = useState<Trigger | null>(null);
   const [highlight, setHighlight] = useState(0);
   const [files, setFiles] = useState<string[]>([]);
@@ -109,11 +101,16 @@ export function Composer(props: ComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const setDraft = (text: string) => actions.setDraft(props.draftKey, text);
+  const setDraft = (text: string) => actions.updateDraft(props.draftKey, (current) => ({ ...current, text }));
+  const appendAttachments = (images: Omit<DraftAttachment, "id">[]) => {
+    if (!images.length) return;
+    const added = images.map((image) => ({ ...image, id: ++attachmentSeq }));
+    actions.updateDraft(props.draftKey, (current) => ({ ...current, attachments: [...current.attachments, ...added] }));
+  };
 
   const insertTranscript = (spoken: string) => {
     const area = textareaRef.current;
-    const current = useStore.getState().drafts[props.draftKey] ?? "";
+    const current = useStore.getState().drafts[props.draftKey]?.text ?? "";
     const start = area ? area.selectionStart : current.length;
     const end = area ? area.selectionEnd : current.length;
     const before = current.slice(0, start);
@@ -134,7 +131,7 @@ export function Composer(props: ComposerProps) {
     const area = textareaRef.current;
     if (!area) return;
     area.style.height = "0px";
-    area.style.height = `${Math.min(area.scrollHeight, Math.round(window.innerHeight * 0.4))}px`;
+    area.style.height = `${area.scrollHeight}px`;
   }, [draft]);
 
   useEffect(() => {
@@ -162,7 +159,7 @@ export function Composer(props: ComposerProps) {
         .filter((command) => command.name.toLowerCase().includes(query))
         .map((command) => ({ key: command.name, label: `/${command.name}`, detail: command.description ?? command.inputHint ?? "" }));
     }
-    return files.map((path) => ({ key: path, label: path.split("/").at(-1) ?? path, detail: path }));
+    return files.map((path) => ({ key: path, label: basename(path), detail: path }));
   }, [trigger, props.commands, files]);
 
   const updateTrigger = (text: string, caret: number) => {
@@ -176,8 +173,13 @@ export function Composer(props: ComposerProps) {
     if (!trigger || !choice) return;
     const insert = trigger.kind === "command" ? `/${choice.key} ` : `@${choice.key} `;
     const next = draft.slice(0, trigger.start) + insert + draft.slice(trigger.end);
-    setDraft(next);
-    if (trigger.kind === "mention") setMentioned((list) => (list.includes(choice.key) ? list : [...list, choice.key]));
+    actions.updateDraft(props.draftKey, (current) => ({
+      ...current,
+      text: next,
+      mentioned: trigger.kind === "mention" && !current.mentioned.includes(choice.key)
+        ? [...current.mentioned, choice.key]
+        : current.mentioned,
+    }));
     setTrigger(null);
     const caret = trigger.start + insert.length;
     requestAnimationFrame(() => {
@@ -213,10 +215,14 @@ export function Composer(props: ComposerProps) {
 
   const mentionPaths = (paths: string[]) => {
     if (paths.length === 0) return;
-    const current = useStore.getState().drafts[props.draftKey] ?? "";
-    const separator = current === "" || /\s$/.test(current) ? "" : " ";
-    setDraft(`${current}${separator}${paths.map((path) => `@${path}`).join(" ")} `);
-    setMentioned((list) => [...list, ...paths.filter((path) => !list.includes(path))]);
+    actions.updateDraft(props.draftKey, (current) => {
+      const separator = current.text === "" || /\s$/.test(current.text) ? "" : " ";
+      return {
+        ...current,
+        text: `${current.text}${separator}${paths.map((path) => `@${path}`).join(" ")} `,
+        mentioned: [...new Set([...current.mentioned, ...paths])],
+      };
+    });
     requestAnimationFrame(() => textareaRef.current?.focus());
   };
 
@@ -231,17 +237,11 @@ export function Composer(props: ComposerProps) {
       ),
     );
     const inline = read.flatMap((entry) => (entry ? [entry] : []));
-    if (inline.length > 0) {
-      setAttachments((current) => [
-        ...current,
-        ...inline.map(({ content }) => ({
-          id: ++attachmentSeq,
-          mimeType: content.mimeType,
-          data: content.base64,
-          url: `data:${content.mimeType};base64,${content.base64}`,
-        })),
-      ]);
-    }
+    appendAttachments(inline.map(({ content }) => ({
+      mimeType: content.mimeType,
+      data: content.base64,
+      url: `data:${content.mimeType};base64,${content.base64}`,
+    })));
     const inlined = new Set(inline.map((entry) => entry.path));
     mentionPaths(paths.filter((path) => !inlined.has(path)));
   };
@@ -280,8 +280,7 @@ export function Composer(props: ComposerProps) {
       return;
     }
     try {
-      const read = await Promise.all(images.map(readImage));
-      setAttachments((current) => [...current, ...read.map((image) => ({ ...image, id: ++attachmentSeq }))]);
+      appendAttachments(await Promise.all(images.map(readImage)));
     } catch {
       toast.error(t("composer.attachFailed"));
     }
@@ -296,13 +295,15 @@ export function Composer(props: ComposerProps) {
     const content: ContentBlock[] = [];
     if (text.trim()) content.push({ type: "text", text });
     for (const image of attachments) content.push({ type: "image", mimeType: image.mimeType, data: image.data, uri: null });
-    for (const path of mentioned) if (text.includes(`@${path}`)) content.push({ type: "file", path, name: path.split("/").at(-1) ?? null });
+    for (const path of mentioned) if (text.includes(`@${path}`)) content.push({ type: "file", path, name: basename(path) });
     setSending(true);
     try {
       await props.onSubmit(content);
-      setDraft("");
-      setAttachments([]);
-      setMentioned([]);
+      actions.updateDraft(props.draftKey, (current) => ({
+        text: current.text === text ? "" : current.text,
+        attachments: current.attachments.filter((attachment) => !attachments.includes(attachment)),
+        mentioned: current.text === text ? [] : current.mentioned,
+      }));
     } catch (error) {
       toast.error(errorMessage(error));
     } finally {
@@ -413,7 +414,10 @@ export function Composer(props: ComposerProps) {
                 <button
                   type="button"
                   aria-label={t("composer.removeAttachment")}
-                  onClick={() => setAttachments((list) => list.filter((a) => a.id !== attachment.id))}
+                  onClick={() => actions.updateDraft(props.draftKey, (current) => ({
+                    ...current,
+                    attachments: current.attachments.filter((item) => item.id !== attachment.id),
+                  }))}
                   className="absolute -top-1.5 -right-1.5 flex size-5 items-center justify-center rounded-full border bg-popover text-muted-foreground shadow-sm hover:text-foreground"
                 >
                   <XIcon className="size-3" />
@@ -450,6 +454,7 @@ export function Composer(props: ComposerProps) {
           }}
           onKeyDown={(event) => {
             if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+            if (event.key === "Enter" && window.matchMedia("(pointer: coarse)").matches) return;
             if (trigger && suggestions.length > 0) {
               if (event.key === "ArrowDown" || event.key === "ArrowUp") {
                 event.preventDefault();
@@ -473,7 +478,7 @@ export function Composer(props: ComposerProps) {
               void submit();
             }
           }}
-          className="block max-h-[40vh] min-h-[3.25rem] w-full resize-none bg-transparent px-4 pt-3.5 pb-1 text-base leading-relaxed text-foreground outline-none placeholder:text-placeholder disabled:cursor-not-allowed sm:text-sm"
+          className="block max-h-[calc(var(--vetro-viewport-height,100dvh)*0.4)] min-h-[3.25rem] w-full resize-none bg-transparent px-4 pt-3.5 pb-1 text-base leading-relaxed text-foreground outline-none placeholder:text-placeholder disabled:cursor-not-allowed sm:text-sm"
         />
         <div className="flex items-center gap-1 px-2 pt-1 pb-2">
           <div className="flex min-w-0 flex-1 items-center gap-0.5 @max-[36rem]:flex-wrap @max-[36rem]:gap-y-1">

@@ -16,12 +16,14 @@ import {
   SunIcon,
   Trash2Icon,
 } from "lucide-react";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { client } from "~/api/client";
 import type { AgentInfo, AgentSettings, Pairing, Settings } from "~/api/types";
+import type { RemoteSetParams } from "~/api/bindings/RemoteSetParams";
 import { useT } from "~/i18n";
+import { useDesktopChrome } from "~/lib/desktopChrome";
 import { relativeTime, shortVersion } from "~/lib/format";
-import { cn } from "~/lib/utils";
+import { cn, copyText } from "~/lib/utils";
 import {
   type BypassMemoryScope,
   type ChatWidth,
@@ -403,26 +405,20 @@ function VoiceSection() {
   const progress = useStore((s) => s.voiceProgress);
   const { settings, update } = useSettings();
   const remoteClient = useStore((s) => s.app?.remoteClient ?? false);
-  const [endpointUrl, setEndpointUrl] = useState("");
-  const [endpointModel, setEndpointModel] = useState("");
-  const [glossary, setGlossary] = useState("");
+  const [draftUrl, setDraftUrl] = useState<string | null>(null);
+  const [draftModel, setDraftModel] = useState<string | null>(null);
+  const [draftGlossary, setDraftGlossary] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
   const [pendingModel, setPendingModel] = useState<string | null>(null);
+  const endpointUrl = draftUrl ?? settings?.voice.endpointUrl ?? "";
+  const endpointModel = draftModel ?? settings?.voice.endpointModel ?? "";
+  const glossary = draftGlossary ?? Object.entries(settings?.voice.replacements ?? {})
+    .map(([from, to]) => `${from} = ${to}`).join("\n");
+  const endpointDisabled = remoteClient || !settings || saving;
 
   useEffect(() => {
     void actions.refreshVoice();
   }, []);
-
-  useEffect(() => {
-    const v = settings?.voice;
-    if (!v) return;
-    setEndpointUrl(v.endpointUrl ?? "");
-    setEndpointModel(v.endpointModel ?? "");
-    setGlossary(
-      Object.entries(v.replacements ?? {})
-        .map(([from, to]) => `${from} = ${to}`)
-        .join("\n"),
-    );
-  }, [settings]);
 
   const installing = !!voice?.installing || (!!progress && !progress.done);
   const percent = progress && progress.totalBytes > 0 ? Math.min(100, Math.round((progress.downloadedBytes / progress.totalBytes) * 100)) : 0;
@@ -437,6 +433,7 @@ function VoiceSection() {
         if (from) replacements[from] = to;
       }
     }
+    setSaving(true);
     const next = await update({
       voice: {
         endpointUrl: endpointUrl.trim() || null,
@@ -444,7 +441,13 @@ function VoiceSection() {
         replacements,
       },
     });
-    if (next) void actions.refreshVoice();
+    if (next) {
+      setDraftUrl(null);
+      setDraftModel(null);
+      setDraftGlossary(null);
+      await actions.refreshVoice();
+    }
+    setSaving(false);
   };
 
   const models = voice?.models ?? [];
@@ -541,9 +544,9 @@ function VoiceSection() {
               <Label>{t("voice.endpointUrl")}</Label>
               <Input
                 value={endpointUrl}
-                disabled={remoteClient}
+                disabled={endpointDisabled}
                 placeholder="http://127.0.0.1:8080/v1/audio/transcriptions"
-                onChange={(event) => setEndpointUrl(event.target.value)}
+                onChange={(event) => setDraftUrl(event.target.value)}
                 className="font-mono text-xs sm:text-xs"
               />
               <span className="text-xs text-muted-foreground">{t("voice.endpointUrlHint")}</span>
@@ -552,9 +555,9 @@ function VoiceSection() {
               <Label>{t("voice.endpointModel")}</Label>
               <Input
                 value={endpointModel}
-                disabled={remoteClient}
+                disabled={endpointDisabled}
                 placeholder="whisper-1"
-                onChange={(event) => setEndpointModel(event.target.value)}
+                onChange={(event) => setDraftModel(event.target.value)}
                 className="font-mono text-xs sm:text-xs"
               />
             </div>
@@ -563,15 +566,15 @@ function VoiceSection() {
               <Textarea
                 rows={4}
                 value={glossary}
-                disabled={remoteClient}
+                disabled={endpointDisabled}
                 placeholder={"claude code = Claude Code\n微特罗 = Vetro"}
-                onChange={(event) => setGlossary(event.target.value)}
+                onChange={(event) => setDraftGlossary(event.target.value)}
                 className="font-mono text-xs sm:text-xs"
               />
               <span className="text-xs text-muted-foreground">{t("voice.glossaryHint")}</span>
             </div>
             <div className="flex justify-end">
-              <Button size="sm" disabled={remoteClient} onClick={() => void saveVoice()}>
+              <Button size="sm" disabled={endpointDisabled} onClick={() => void saveVoice()}>
                 {t("common.save")}
               </Button>
             </div>
@@ -582,28 +585,55 @@ function VoiceSection() {
   );
 }
 
+function CloseToTraySetting() {
+  const t = useT();
+  const { settings, update } = useSettings();
+  const [saving, setSaving] = useState(false);
+  const label = t("settings.keepRunning");
+  return (
+    <Row label={label} hint={t("settings.keepRunningHint")}>
+      <Switch
+        aria-label={label}
+        checked={settings?.closeToTray ?? false}
+        disabled={!settings || saving}
+        onCheckedChange={(closeToTray) => {
+          setSaving(true);
+          void update({ closeToTray }).finally(() => setSaving(false));
+        }}
+      />
+    </Row>
+  );
+}
+
 function RemoteSection() {
   const t = useT();
+  const { embeddedCore } = useDesktopChrome();
   const remote = useStore((s) => s.remote);
   const remoteClient = useStore((s) => s.app?.remoteClient ?? false);
   const [pairing, setPairing] = useState<Pairing | null>(null);
+  const [externalUrl, setExternalUrl] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const requestedPairing = useRef(false);
   const now = useNow(1000);
 
-  useEffect(() => {
+  const refresh = () => {
+    setError(null);
+    setBusy(true);
     client()
       .request("remote.status", {})
       .then((status) => useStore.setState({ remote: status }))
-      .catch((error) => toast.error(errorMessage(error)));
-  }, []);
+      .catch((failure) => setError(errorMessage(failure)))
+      .finally(() => setBusy(false));
+  };
+  useEffect(refresh, []);
 
-  const set = (enabled: boolean, tailscaleServe: boolean) => {
+  const set = (params: RemoteSetParams) => {
+    setError(null);
     setBusy(true);
     client()
-      .request("remote.set", { enabled, tailscaleServe })
+      .request("remote.set", params)
       .then((status) => {
-        setError(null);
         useStore.setState({ remote: status });
         if (!status.enabled) setPairing(null);
       })
@@ -611,73 +641,125 @@ function RemoteSection() {
       .finally(() => setBusy(false));
   };
 
-  const createPairing = () =>
+  const createPairing = () => {
+    setError(null);
+    setBusy(true);
     client()
       .request("remote.createPairing", {})
       .then((result) => {
-        setError(null);
+        useStore.setState((state) => ({
+          remote: state.remote && { ...state.remote, pairingExpiresAt: result.expiresAt },
+        }));
         setPairing(result);
       })
-      .catch((failure) => setError(errorMessage(failure)));
+      .catch((failure) => setError(errorMessage(failure)))
+      .finally(() => setBusy(false));
+  };
 
+  const address = remote?.externalUrl ?? remote?.tailscale.serveUrl;
   useEffect(() => {
-    if (new URLSearchParams(location.search).get("pairing") === "1" && remote?.enabled && !pairing) void createPairing();
-  }, [remote?.enabled]);
+    if (address && !remoteClient && !requestedPairing.current && new URLSearchParams(location.search).get("pairing") === "1") {
+      requestedPairing.current = true;
+      createPairing();
+    }
+  }, [address, remoteClient]);
 
-  if (!remote) return <Spinner className="mx-auto my-10 block text-muted-foreground" />;
+  if (!remote) return error ? (
+    <div className="flex items-center justify-between gap-3">
+      <p role="alert" className="text-sm text-destructive-foreground">{error}</p>
+      <Button size="sm" variant="outline" onClick={refresh}>{t("common.retry")}</Button>
+    </div>
+  ) : <Spinner className="mx-auto my-10 block text-muted-foreground" />;
   const tailscale = remote.tailscale;
-  const serving = !!tailscale.serveUrl;
+  const visiblePairing = pairing && pairing.expiresAt === remote.pairingExpiresAt ? pairing : null;
   return (
     <section className="flex flex-col gap-6">
-      <div>
+      {!remoteClient ? <div>
         <SectionTitle title={t("settings.remote")} />
-        {remoteClient ? <p className="mb-3 text-xs text-muted-foreground">{t("settings.desktopOnly")}</p> : null}
-        {error ? <p className="mb-3 rounded-lg border border-destructive/30 bg-error-surface px-3 py-2 text-sm text-destructive-foreground">{error}</p> : null}
+        {error ? <p role="alert" className="mb-3 rounded-lg border border-destructive/30 bg-error-surface px-3 py-2 text-sm text-destructive-foreground">{error}</p> : null}
         <Group>
-          <Row label={t("settings.remoteEnable")} hint={t("settings.remoteEnableHint")}>
-            <Switch checked={remote.enabled} disabled={remoteClient || busy} onCheckedChange={(enabled) => set(enabled, serving)} />
-          </Row>
-          <Row
+          {embeddedCore ? <CloseToTraySetting /> : null}
+          {remote.enabled ? <Row
+            label={t("settings.remoteActive")}
+            hint={address ? <span className="break-all font-mono">{address}</span> : t("settings.tailscaleStopped")}
+          >
+            <Button size="sm" variant="outline" disabled={busy} onClick={() => set({ enabled: false, tailscaleServe: false })}>
+              {t("settings.remoteStop")}
+            </Button>
+          </Row> : null}
+          {!address ? <Row
             label={t("settings.tailscale")}
-            hint={tailscale.dnsName ? <span className="font-mono">{tailscale.dnsName}</span> : undefined}
+            hint={t("settings.remoteEnableHint")}
           >
             <Badge variant={!tailscale.installed ? "error" : tailscale.running ? "success" : "warning"}>
               {!tailscale.installed ? t("settings.tailscaleMissing") : tailscale.running ? t("settings.tailscaleRunning") : t("settings.tailscaleStopped")}
             </Badge>
-          </Row>
-          <Row label={t("settings.tailscaleServe")} hint={tailscale.serveUrl ? <span className="font-mono">{tailscale.serveUrl}</span> : `127.0.0.1:${remote.port}`}>
-            <Switch checked={serving} disabled={remoteClient || busy || !tailscale.running || !remote.enabled} onCheckedChange={(serve) => set(remote.enabled, serve)} />
-          </Row>
+            {tailscale.running ? <Button size="sm" variant="outline" disabled={busy} onClick={() => set({ enabled: true, tailscaleServe: true })}>
+              {t("settings.tailscaleServe")}
+            </Button> : <Button size="sm" variant="outline" disabled={busy} onClick={refresh}>
+              {t("settings.remoteRefresh")}
+            </Button>}
+          </Row> : null}
+          {!address ? <form className="grid gap-3 px-4 py-3" onSubmit={(event) => {
+            event.preventDefault();
+            if (!busy && externalUrl.trim()) set({ enabled: true, tailscaleServe: false, externalUrl: externalUrl.trim() });
+          }}>
+            <div>
+              <Label htmlFor="remote-proxy-url">{t("settings.remoteProxy")}</Label>
+              <p id="remote-proxy-target" className="mt-0.5 text-xs text-muted-foreground">
+                {t("settings.remoteProxyTarget", { target: `http://127.0.0.1:${remote.port}` })}
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <Input
+                id="remote-proxy-url"
+                type="url"
+                aria-label={t("settings.remoteProxyUrl")}
+                aria-describedby="remote-proxy-target"
+                placeholder="https://vetro.example.com"
+                autoCapitalize="none"
+                spellCheck={false}
+                disabled={busy}
+                value={externalUrl}
+                onChange={(event) => setExternalUrl(event.target.value)}
+              />
+              <Button size="sm" variant="outline" type="submit" disabled={busy || !externalUrl.trim()}>
+                {t("settings.remoteStart")}
+              </Button>
+            </div>
+          </form> : null}
         </Group>
-      </div>
+      </div> : null}
 
-      <div>
+      {!remoteClient && address ? <div>
         <SectionTitle
           title={t("settings.pairDevice")}
           action={
-            <Button size="sm" variant="outline" disabled={remoteClient || !remote.enabled} onClick={() => void createPairing()}>
+            <Button size="sm" variant="outline" disabled={busy} onClick={createPairing}>
               <SmartphoneIcon />
-              {pairing ? t("settings.newCode") : t("settings.pairDevice")}
+              {visiblePairing ? t("settings.newCode") : t("settings.pairDevice")}
             </Button>
           }
         />
-        {pairing ? (
+        {visiblePairing ? (
           <Group>
             <div className="flex flex-col items-center gap-5 px-4 py-5 sm:flex-row sm:items-start">
-              {pairing.url ? <QrCodeSvg value={pairing.url} size={148} /> : null}
-              <div className="flex min-w-0 flex-col items-center gap-2 sm:items-start">
-                <div className="font-mono text-3xl font-semibold tracking-[0.2em] tabular-nums">{pairing.code}</div>
-                {pairing.url ? <div className="max-w-full truncate font-mono text-xs text-muted-foreground">{pairing.url}</div> : null}
-                <p className="text-center text-xs text-muted-foreground sm:text-left">
-                  {pairing.expiresAt > now
-                    ? t("settings.pairHint", { time: countdown(pairing.expiresAt - now) })
-                    : t("settings.pairExpired")}
-                </p>
-              </div>
+              {visiblePairing.expiresAt > now ? <>
+                {visiblePairing.url ? <QrCodeSvg value={visiblePairing.url} size={148} margin={4} /> : null}
+                <div className="flex min-w-0 flex-col items-center gap-2 sm:items-start">
+                  <div className="font-mono text-3xl font-semibold tracking-[0.2em] tabular-nums">{visiblePairing.code}</div>
+                  <p className="text-center text-xs text-muted-foreground sm:text-left">
+                    {t("settings.pairHint", { time: countdown(visiblePairing.expiresAt - now) })}
+                  </p>
+                  {visiblePairing.url ? <Button size="sm" variant="outline" onClick={() => {
+                    void copyText(visiblePairing.url!).then((ok) => ok && toast.success(t("common.copied")));
+                  }}>{t("settings.remoteCopyLink")}</Button> : null}
+                </div>
+              </> : <p className="text-sm text-muted-foreground">{t("settings.pairExpired")}</p>}
             </div>
           </Group>
         ) : null}
-      </div>
+      </div> : null}
 
       <div>
         <SectionTitle title={t("settings.devices")} />

@@ -15,9 +15,11 @@ pub(crate) struct Catalog {
     models: Vec<Value>,
     modes: Vec<Value>,
     permissions: Vec<Value>,
-    approvals: Vec<Value>,
-    sandboxes: Vec<Value>,
+    approvals: Option<Vec<Value>>,
+    sandboxes: Option<Vec<Value>>,
     default_permissions: Option<String>,
+    default_approval: Option<String>,
+    default_sandbox: Option<String>,
 }
 
 impl Catalog {
@@ -36,8 +38,10 @@ impl Catalog {
         let params = cwd.map_or_else(|| json!({}), |cwd| json!({"cwd": cwd}));
         if let Ok(response) = app.call("config/read", params).await {
             let config = &response["config"];
+            catalog.default_approval = choice_id(&config["approval_policy"]);
+            catalog.default_sandbox = string(config, "sandbox_mode");
             catalog.default_permissions = string(config, "default_permissions").or_else(|| {
-                match config["sandbox_mode"].as_str()? {
+                match catalog.default_sandbox.as_deref()? {
                     "read-only" => Some(":read-only".into()),
                     "workspace-write" => Some(":workspace".into()),
                     "danger-full-access" => Some(":danger-full-access".into()),
@@ -46,8 +50,8 @@ impl Catalog {
             });
         }
         let requirements = app.requirements().await;
-        catalog.approvals = array(&requirements["allowedApprovalPolicies"]).to_vec();
-        catalog.sandboxes = array(&requirements["allowedSandboxModes"]).to_vec();
+        catalog.approvals = requirements["allowedApprovalPolicies"].as_array().cloned();
+        catalog.sandboxes = requirements["allowedSandboxModes"].as_array().cloned();
         Ok(catalog)
     }
 
@@ -82,7 +86,7 @@ impl Catalog {
             let id = entry["mode"].as_str()?;
             Some(choice(id, entry["name"].as_str().unwrap_or(id), None))
         });
-        let permissions = self
+        let permissions: Vec<_> = self
             .permissions
             .iter()
             .filter(|profile| profile["allowed"] != false)
@@ -91,20 +95,47 @@ impl Catalog {
                 let name = match id {
                     ":read-only" => "Read only",
                     ":workspace" => "Workspace",
-                    ":danger-full-access" => "Full access",
+                    ":danger-full-access" => "Unrestricted sandbox",
                     other => profile["name"].as_str().unwrap_or(other),
                 };
                 Some(choice(id, name, string(profile, "description")))
-            });
-        let approvals = self.approvals.iter().filter_map(|entry| {
-            let id = choice_id(entry)?;
-            Some(choice(&id, entry.as_str().unwrap_or("Granular"), None))
+            })
+            .collect();
+        let approvals: Vec<_> = match &self.approvals {
+            Some(allowed) => allowed.iter().filter_map(choice_id).collect(),
+            None => ["on-request", "never"]
+                .into_iter()
+                .chain(
+                    self.default_approval
+                        .as_deref()
+                        .filter(|value| !matches!(*value, "on-request" | "never")),
+                )
+                .map(str::to_owned)
+                .collect(),
+        };
+        let approvals = approvals.iter().map(|id| match id.as_str() {
+            "on-request" => choice(id, "Ask when needed", None),
+            "never" => choice(id, "Never ask for approval", None),
+            value if value.starts_with('{') => choice(id, "Granular", None),
+            value => choice(id, value, None),
         });
         let sandboxes = self
-            .sandboxes
-            .iter()
-            .filter_map(Value::as_str)
-            .map(|id| choice(id, id, None));
+            .sandbox_modes()
+            .into_iter()
+            .filter(|_| permissions.is_empty())
+            .map(|id| {
+                choice(
+                    id,
+                    match id {
+                        "read-only" => "Read only",
+                        "workspace-write" => "Workspace",
+                        "danger-full-access" => "Unrestricted sandbox",
+                        value => value,
+                    },
+                    None,
+                )
+            })
+            .collect::<Vec<_>>();
         let mut options: Vec<_> = [
             option(
                 "model",
@@ -135,18 +166,18 @@ impl Catalog {
             ),
             option(
                 "permissions",
-                "Permission profile",
+                "Sandbox profile",
                 ConfigCategory::Mode,
                 selected,
                 self.default_permissions.as_deref(),
-                permissions,
+                permissions.into_iter(),
             ),
             option(
                 "approvalPolicy",
                 "Approval policy",
                 ConfigCategory::Mode,
                 selected,
-                None,
+                self.default_approval.as_deref(),
                 approvals,
             ),
             option(
@@ -154,8 +185,8 @@ impl Catalog {
                 "Sandbox",
                 ConfigCategory::Mode,
                 selected,
-                None,
-                sandboxes,
+                self.default_sandbox.as_deref(),
+                sandboxes.into_iter(),
             ),
         ]
         .into_iter()
@@ -163,6 +194,13 @@ impl Catalog {
         .collect();
         vetro_agent_api::normalize_option_danger(&mut options);
         options
+    }
+
+    fn sandbox_modes(&self) -> Vec<&str> {
+        match &self.sandboxes {
+            Some(allowed) => allowed.iter().filter_map(Value::as_str).collect(),
+            None => vec!["read-only", "workspace-write", "danger-full-access"],
+        }
     }
 
     pub(crate) fn validate(
@@ -176,23 +214,11 @@ impl Catalog {
             .iter()
             .find(|option| option.id == id)
             .map(|option| option.choices.iter().any(|choice| choice.value == value));
-        let permitted = match advertised {
-            Some(allowed) => allowed,
-            None => match id {
-                "approvalPolicy" => {
-                    self.approvals.is_empty()
-                        && matches!(value, "untrusted" | "on-request" | "never")
-                }
-                "sandbox" => {
-                    self.sandboxes.is_empty()
-                        && matches!(
-                            value,
-                            "read-only" | "workspace-write" | "danger-full-access"
-                        )
-                }
+        let permitted =
+            advertised.unwrap_or_else(|| match id {
+                "sandbox" => self.sandbox_modes().contains(&value),
                 _ => false,
-            },
-        };
+            }) || (id == "approvalPolicy" && self.approvals.is_none() && value == "untrusted");
         if permitted {
             Ok(())
         } else {
@@ -281,7 +307,7 @@ fn option(
     }
 }
 
-fn choice_id(value: &Value) -> Option<String> {
+pub(crate) fn choice_id(value: &Value) -> Option<String> {
     if let Some(value) = value.as_str() {
         Some(value.to_owned())
     } else if value.is_object() {
@@ -360,6 +386,8 @@ fn launch_browser(url: &str) -> Result<()> {
         "xdg-open"
     };
     let mut opener = std::process::Command::new(opener);
+    #[cfg(target_os = "linux")]
+    vetro_agent_api::process::remove_appimage_environment(&mut opener);
     let status = opener
         .arg(url)
         .stdin(std::process::Stdio::null())

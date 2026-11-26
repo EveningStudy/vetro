@@ -16,12 +16,10 @@ fn binary_name(command: &str) -> String {
 
 fn on_path(command: &str) -> Option<PathBuf> {
     let name = binary_name(command);
-    let mut dirs = search_directories();
+    let dirs = search_directories().into_iter();
     #[cfg(all(feature = "acp", windows))]
-    dirs.extend(windows_registry_path_dirs());
-    dirs.into_iter()
-        .map(|dir| dir.join(&name))
-        .find(|file| usable(file))
+    let dirs = dirs.chain(windows_registry_path_dirs());
+    dirs.map(|dir| dir.join(&name)).find(|file| usable(file))
 }
 
 #[cfg(all(feature = "acp", windows))]

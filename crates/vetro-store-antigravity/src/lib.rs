@@ -227,11 +227,12 @@ fn read_summaries(path: &Path) -> rusqlite::Result<HashMap<String, Summary>> {
 #[derive(Default)]
 struct FileFacts {
     created_at: Option<i64>,
+    updated_at: Option<i64>,
     workspace: Option<PathBuf>,
     first_input: Option<String>,
 }
 
-fn read_file_facts(path: &Path) -> rusqlite::Result<FileFacts> {
+fn read_file_facts(path: &Path, needs_activity: bool) -> rusqlite::Result<FileFacts> {
     let conn = sqlite::open_readonly(path)?;
     let mut facts = FileFacts::default();
     if has_table(&conn, "trajectory_metadata_blob")? {
@@ -254,6 +255,26 @@ fn read_file_facts(path: &Path) -> rusqlite::Result<FileFacts> {
         }
     }
     if has_table(&conn, "steps")? {
+        if needs_activity {
+            let mut stmt =
+                conn.prepare("SELECT step_payload FROM steps WHERE step_payload IS NOT NULL")?;
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                let payload: Vec<u8> = row.get(0)?;
+                let Some(meta) = Msg(&payload).msg(5) else {
+                    continue;
+                };
+                facts.updated_at = facts.updated_at.max(meta.msg(1).and_then(timestamp_ms));
+                if let Some(history) = meta.msg(26) {
+                    facts.updated_at = facts.updated_at.max(
+                        history
+                            .msgs(1)
+                            .filter_map(|update| update.msg(2).and_then(timestamp_ms))
+                            .max(),
+                    );
+                }
+            }
+        }
         let payload: Option<Vec<u8>> = conn
             .query_row(
                 "SELECT step_payload FROM steps WHERE step_type = ?1 ORDER BY idx LIMIT 1",
@@ -382,6 +403,11 @@ impl Store {
     /// All conversations whose file lives in this store, newest first. The summaries database
     /// also lists conversations of the sibling store; those are left to that store.
     pub fn list(&self) -> Result<Vec<SessionRecord>> {
+        self.list_with_native_activity()
+            .map(|entries| entries.into_iter().map(|(record, _)| record).collect())
+    }
+
+    pub fn list_with_native_activity(&self) -> Result<Vec<(SessionRecord, Option<i64>)>> {
         let summaries =
             read_summaries(&self.root.join("conversation_summaries.db")).map_err(read_error)?;
         let modes = match self.kind {
@@ -410,8 +436,9 @@ impl Store {
                     || s.created_at.is_none()
                     || (s.title.is_empty() && s.role.is_none())
             });
-            let facts = if needs_facts {
-                read_file_facts(&path).unwrap_or_default()
+            let needs_activity = summary.and_then(|s| s.updated_at).is_none();
+            let facts = if needs_facts || needs_activity {
+                read_file_facts(&path, needs_activity).unwrap_or_default()
             } else {
                 FileFacts::default()
             };
@@ -455,13 +482,15 @@ impl Store {
                 Some(CliMode::Acp) => format!("{base} acp"),
                 _ => base,
             };
+            let created_at = s.created_at.or(facts.created_at);
+            let native_activity = s.updated_at.or(facts.updated_at.max(created_at));
             let record = SessionRecord {
                 native_id: id.to_owned(),
                 title,
                 preview,
                 cwd: s.workspace.clone().or(facts.workspace),
-                created_at: s.created_at.or(facts.created_at),
-                updated_at: s.updated_at.or(file_time).or(s.created_at).unwrap_or(0),
+                created_at,
+                updated_at: native_activity.or(file_time).unwrap_or(0),
                 source,
                 origin: Some(origin),
                 model: None,
@@ -469,12 +498,13 @@ impl Store {
                 parent_native_id: s.parent.clone(),
                 internal: false,
             };
-            out.push(record.classify("antigravity"));
+            out.push((record.classify("antigravity"), native_activity));
         }
-        out.sort_by(|a, b| {
-            b.updated_at
-                .cmp(&a.updated_at)
-                .then_with(|| a.native_id.cmp(&b.native_id))
+        out.sort_by(|(left, _), (right, _)| {
+            right
+                .updated_at
+                .cmp(&left.updated_at)
+                .then_with(|| left.native_id.cmp(&right.native_id))
         });
         Ok(out)
     }

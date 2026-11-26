@@ -9,8 +9,6 @@ import type { FsFindParams } from "./bindings/FsFindParams";
 import type { FsFindResult } from "./bindings/FsFindResult";
 import type { FsListParams } from "./bindings/FsListParams";
 import type { FsListResult } from "./bindings/FsListResult";
-import type { FsMkdirParams } from "./bindings/FsMkdirParams";
-import type { FsMkdirResult } from "./bindings/FsMkdirResult";
 import type { GitDiffParams } from "./bindings/GitDiffParams";
 import type { GitDiffResult } from "./bindings/GitDiffResult";
 import type { GitStatusResult } from "./bindings/GitStatusResult";
@@ -66,6 +64,7 @@ export const PROTOCOL_VERSION = 1;
 
 export interface Methods {
   "app.hello": [HelloParams, AppInfo];
+  "app.ping": [Empty, Empty];
   "agents.list": [Empty, AgentsResult];
   "agents.refresh": [Empty, AgentsResult];
   "agents.authenticate": [AuthenticateParams, AuthenticateResult];
@@ -75,6 +74,7 @@ export interface Methods {
   "projects.remove": [ProjectAddParams, Empty];
   "projects.update": [ProjectUpdateParams, Project];
   "threads.list": [ThreadsListParams, ThreadsListResult];
+  "threads.active": [Empty, ThreadsListResult];
   "threads.open": [ThreadOpenParams, ThreadOpenResult];
   "threads.close": [ThreadIdParams, Empty];
   "threads.items": [ThreadItemsParams, ThreadItemsResult];
@@ -93,7 +93,6 @@ export interface Methods {
   "search.threads": [SearchParams, SearchResult];
   "fs.list": [FsListParams, FsListResult];
   "fs.find": [FsFindParams, FsFindResult];
-  "fs.mkdir": [FsMkdirParams, FsMkdirResult];
   "workspace.gitStatus": [WorkspacePathParams, GitStatusResult];
   "workspace.gitDiff": [GitDiffParams, GitDiffResult];
   "workspace.readFile": [WorkspaceFileParams, WorkspaceFileResult];
@@ -146,5 +145,5 @@ export interface Transport {
 export interface AuthApi {
   session(): Promise<{ authenticated: boolean; remoteClient: boolean } | null>;
   local(token: string): Promise<{ ok: boolean; remoteClient?: boolean }>;
-  pair(code: string, deviceName: string): Promise<{ ok: boolean; message?: string }>;
+  pair(code: string, deviceName: string, proposedSession: string, remember: boolean): Promise<{ ok: boolean; message?: string; status?: number }>;
 }

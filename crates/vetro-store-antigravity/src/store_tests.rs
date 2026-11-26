@@ -535,7 +535,18 @@ fn desktop_native_step_envelope_keeps_user_and_planner_content() {
             (2, 15, 3, step(15, 3, planner_meta, 20, answer), None),
         ],
     ));
-    let transcript = Store::open(&tmp.0).read("adef-10").unwrap();
+    fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(UNIX_EPOCH + std::time::Duration::from_millis((T0 + 50_000) as u64))
+        .unwrap();
+    let store = Store::open(&tmp.0);
+    let list = store.list_with_native_activity().unwrap();
+    assert_eq!(list[0].0.updated_at, T0 + 2400);
+    assert_eq!(list[0].1, Some(T0 + 2400));
+    assert!(super::mtime_ms(&path).unwrap() > list[0].0.updated_at);
+    let transcript = store.read("adef-10").unwrap();
     let [user, thought, answer, end] = transcript.items.as_slice() else {
         panic!("expected user input, planner thought, answer, and completion");
     };

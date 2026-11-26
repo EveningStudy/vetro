@@ -212,8 +212,12 @@ impl Peer {
         self.process.wire_log()
     }
 
-    pub fn descendants(&self) -> Vec<crate::process::ProcessIdentity> {
-        self.process.descendants()
+    pub fn begin_user_work(&self) {
+        self.process.begin_user_work();
+    }
+
+    pub fn background_processes(&self) -> usize {
+        self.process.background_processes()
     }
 
     pub async fn exit_detail(&self) -> String {

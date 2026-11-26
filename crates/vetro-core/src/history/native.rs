@@ -22,7 +22,7 @@ pub(super) struct Inventory {
 
 pub(super) struct NativeFile {
     pub record: Option<SessionRecord>,
-    pub path: Option<PathBuf>,
+    pub paths: Vec<PathBuf>,
     pub mark: String,
     pub archived: bool,
 }
@@ -48,7 +48,7 @@ pub(super) fn inventory(agent: &str, roots: &[PathBuf]) -> Result<Inventory> {
                                 extra.push_str(&format!("{}:{mark}", sidechain.display()));
                             }
                         }
-                        insert_file(&mut inventory.files, id.into(), &path, extra, false);
+                        insert_file(&mut inventory.files, id.into(), vec![path], extra, false);
                     }
                 }
             }
@@ -64,7 +64,13 @@ pub(super) fn inventory(agent: &str, roots: &[PathBuf]) -> Result<Inventory> {
                         continue;
                     };
                     let wal = file_mark(&path.with_extension("db-wal")).unwrap_or_default();
-                    if !insert_file(&mut inventory.files, id.into(), &path, wal, false) {
+                    if !insert_file(
+                        &mut inventory.files,
+                        id.into(),
+                        vec![path.clone()],
+                        wal,
+                        false,
+                    ) {
                         inventory
                             .errors
                             .push(format!("Could not stat {}", path.display()));
@@ -109,16 +115,17 @@ fn uuid(id: &str) -> bool {
 fn insert_file(
     files: &mut HashMap<String, NativeFile>,
     id: String,
-    path: &Path,
+    paths: Vec<PathBuf>,
     extra: String,
     archived: bool,
 ) -> bool {
+    let path = &paths[0];
     let Some(mark) = file_mark(path) else {
         return false;
     };
     if files
         .get(&id)
-        .and_then(|file| file.path.as_deref())
+        .and_then(|file| file.paths.first())
         .is_some_and(|previous| modified_ms(previous) > modified_ms(path))
     {
         return true;
@@ -127,21 +134,25 @@ fn insert_file(
         id,
         NativeFile {
             record: None,
-            path: Some(path.into()),
             mark: format!("{archived}:{}{mark}{extra}", path.display()),
+            paths,
             archived,
         },
     );
     true
 }
 
-pub(super) fn file_record(agent: &str, path: &Path, id: String) -> Result<Option<SessionRecord>> {
+pub(super) fn file_record(
+    agent: &str,
+    paths: &[PathBuf],
+    id: String,
+) -> Result<Option<SessionRecord>> {
     if agent == "claude" {
-        return claude_record(path, id);
+        return claude_record(&paths[0], id);
     }
     #[cfg(feature = "codex")]
     if agent == "codex" {
-        return codex::rollout_record(path, id);
+        return codex::rollout_record(paths, id);
     }
     Ok(None)
 }
@@ -171,7 +182,11 @@ fn string(value: &Value, key: &str) -> Option<String> {
 }
 
 fn timestamp(value: &Value) -> Option<i64> {
-    let instant = humantime::parse_rfc3339_weak(value.as_str()?).ok()?;
+    timestamp_text(value.as_str()?)
+}
+
+fn timestamp_text(value: &str) -> Option<i64> {
+    let instant = humantime::parse_rfc3339_weak(value).ok()?;
     Some(instant.duration_since(super::UNIX_EPOCH).ok()?.as_millis() as i64)
 }
 

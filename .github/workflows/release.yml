@@ -13,10 +13,18 @@ env:
   RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  verify:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+    with:
+      revision: ${{ inputs.tag || github.ref_name }}
+
   build:
+    needs: verify
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -30,7 +38,7 @@ jobs:
           - name: macos-x64
             os: macos-15-intel
           - name: linux-x64
-            os: ubuntu-latest
+            os: ubuntu-24.04
 
     steps:
       - name: Checkout
@@ -52,7 +60,7 @@ jobs:
             build-essential curl wget file libssl-dev \
             libwebkit2gtk-4.1-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev \
             libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev \
-            patchelf
+            patchelf xvfb xauth x11-utils libglib2.0-bin libx11-dev
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -70,7 +78,7 @@ jobs:
           pnpm --dir apps/web install --frozen-lockfile
           pnpm --dir apps/web build
 
-      # ----- Optional code signing (skipped while the secrets are absent) -----
+      # ----- Optional distribution signing -----
       - name: Detect signing secrets
         id: signing
         shell: bash
@@ -85,8 +93,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Enable macOS signing and notarization (optional)
-        # When these secrets exist the Tauri bundler signs Vetro.app and
-        # notarizes the dmg during `tauri build`:
+        # Tauri signs Vetro.app and the DMG. With notarization credentials it staples the ticket to Vetro.app.
         #   APPLE_CERTIFICATE            base64-encoded .p12 Developer ID cert
         #   APPLE_CERTIFICATE_PASSWORD   .p12 password
         #   APPLE_SIGNING_IDENTITY       e.g. "Developer ID Application: Name (TEAMID)"
@@ -108,20 +115,11 @@ jobs:
             echo "APPLE_PASSWORD=$APPLE_PASSWORD"
             echo "APPLE_TEAM_ID=$APPLE_TEAM_ID"
           } >> "$GITHUB_ENV"
+          if [ -n "$APPLE_ID" ] && [ -n "$APPLE_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ]; then
+            echo "VETRO_VERIFY_NOTARIZATION=true" >> "$GITHUB_ENV"
+          fi
 
-      - name: Build desktop app
-        working-directory: apps/desktop
-        env:
-          CARGO_TARGET_DIR: ${{ github.workspace }}/apps/desktop/src-tauri/target/desktop
-        run: pnpm dlx @tauri-apps/cli build
-
-      - name: Build vetro CLI
-        run: cargo build --release -p vetro-cli --features claude,codex,acp,antigravity-store
-
-      - name: Sign Windows binaries (optional)
-        # Secrets required (skipped while absent):
-        #   WINDOWS_CODESIGN_PFX        base64-encoded .pfx certificate
-        #   WINDOWS_CODESIGN_PASSWORD   certificate password
+      - name: Configure Windows signing (optional)
         if: runner.os == 'Windows' && steps.signing.outputs.windows == 'true'
         shell: pwsh
         env:
@@ -129,40 +127,189 @@ jobs:
           WINDOWS_CODESIGN_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_PASSWORD }}
         run: |
           $pfx = Join-Path $env:RUNNER_TEMP "vetro-signing.pfx"
-          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CODESIGN_PFX))
+          $import = @{ FilePath = $pfx; CertStoreLocation = "Cert:\CurrentUser\My" }
+          if ($env:WINDOWS_CODESIGN_PASSWORD) {
+            $import.Password = ConvertTo-SecureString $env:WINDOWS_CODESIGN_PASSWORD -AsPlainText -Force
+          }
+          try {
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CODESIGN_PFX))
+            $certificates = @(Import-PfxCertificate @import | Where-Object HasPrivateKey)
+            if ($certificates.Count -ne 1) { throw "Expected one signing certificate with a private key" }
+          } finally {
+            if (Test-Path -LiteralPath $pfx) { Remove-Item -LiteralPath $pfx -Force }
+          }
+          $thumbprint = $certificates[0].Thumbprint
+          $config = Join-Path $env:RUNNER_TEMP "vetro-windows-signing.json"
+          @{
+            bundle = @{ windows = @{
+              certificateThumbprint = $thumbprint
+              digestAlgorithm = "sha256"
+              timestampUrl = "http://timestamp.digicert.com"
+              tsp = $true
+            } }
+          } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $config
+          "VETRO_WINDOWS_SIGNING_CONFIG=$config" >> $env:GITHUB_ENV
+          "VETRO_WINDOWS_SIGNING_THUMBPRINT=$thumbprint" >> $env:GITHUB_ENV
+
+      - name: Build desktop app
+        working-directory: apps/desktop
+        shell: pwsh
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/apps/desktop/src-tauri/target/desktop
+          APPIMAGE_EXTRACT_AND_RUN: ${{ runner.os == 'Linux' && '1' || '' }}
+        run: |
+          $tauriArgs = @("build")
+          if ($env:RUNNER_OS -eq "Windows") { $tauriArgs += @("--bundles", "nsis") }
+          if ($env:VETRO_WINDOWS_SIGNING_CONFIG) { $tauriArgs += @("--config", $env:VETRO_WINDOWS_SIGNING_CONFIG) }
+          pnpm dlx @tauri-apps/cli@2.12.6 @tauriArgs
+
+      - name: Test Linux AppImage
+        if: runner.os == 'Linux'
+        shell: bash
+        timeout-minutes: 2
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: xvfb-run -a node .github/scripts/smoke-appimage.mjs apps/desktop/src-tauri/target/desktop/release/bundle/appimage/*.AppImage
+
+      - name: Verify macOS bundle signature and microphone configuration
+        if: runner.os == 'macOS'
+        env:
+          DISTRIBUTION_SIGNED: ${{ steps.signing.outputs.apple }}
+        run: |
+          bundles=apps/desktop/src-tauri/target/desktop/release/bundle
+          app="$bundles/macos/Vetro.app"
+          codesign --verify --strict "$app"
+          test -n "$(plutil -extract NSMicrophoneUsageDescription raw -expect string -o - "$app/Contents/Info.plist")"
+          codesign -d --xml --entitlements - "$app" > "$RUNNER_TEMP/vetro-entitlements.plist"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.device.audio-input' "$RUNNER_TEMP/vetro-entitlements.plist")" = true
+          if [ "$DISTRIBUTION_SIGNED" = true ]; then
+            codesign --verify --strict "$bundles"/dmg/*.dmg
+          fi
+          if [ "${VETRO_VERIFY_NOTARIZATION:-false}" = true ]; then
+            xcrun stapler validate "$app"
+          fi
+
+      - name: Build vetro CLI
+        run: cargo build --release -p vetro-cli --features claude,codex,acp,antigravity-store
+
+      - name: Sign Windows CLI (optional)
+        if: runner.os == 'Windows' && steps.signing.outputs.windows == 'true'
+        shell: pwsh
+        run: |
           $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
             Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
-          $targets = @(
-            (Get-ChildItem "apps\desktop\src-tauri\target\desktop\release\bundle\nsis\*.exe"),
-            (Get-Item "target\release\vetro.exe")
-          )
-          foreach ($t in $targets) {
-            & $signtool sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com /f $pfx /p $env:WINDOWS_CODESIGN_PASSWORD $t.FullName
-            if ($LASTEXITCODE -ne 0) { throw "signtool failed for $($t.Name)" }
+          & $signtool sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com /sha1 $env:VETRO_WINDOWS_SIGNING_THUMBPRINT target\release\vetro.exe
+          if ($LASTEXITCODE -ne 0) { throw "signtool failed for vetro.exe" }
+
+      - name: Verify Windows installation and signatures
+        if: runner.os == 'Windows'
+        shell: pwsh
+        timeout-minutes: 3
+        run: |
+          $installers = @(Get-ChildItem "apps\desktop\src-tauri\target\desktop\release\bundle\nsis\*.exe" -File)
+          if ($installers.Count -ne 1) { throw "Expected one Windows installer" }
+          $installer = $installers[0].FullName
+          $installDir = Join-Path $env:RUNNER_TEMP "vetro-nsis-smoke"
+          $app = Join-Path $installDir "vetro-desktop.exe"
+          $uninstaller = Join-Path $installDir "uninstall.exe"
+          $registration = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Vetro"
+          if ((Test-Path -LiteralPath $installDir) -or (Test-Path -LiteralPath $registration)) {
+            throw "Windows installer verification requires a fresh install location"
           }
-          Remove-Item $pfx -Force
-      # ----- End optional code signing -----
+          try {
+            $install = Start-Process -FilePath $installer -ArgumentList "/S", "/NS", "/D=$installDir" -WindowStyle Hidden -Wait -PassThru
+            if ($install.ExitCode -ne 0 -or !(Test-Path -LiteralPath $app -PathType Leaf) -or
+                !(Test-Path -LiteralPath $uninstaller -PathType Leaf) -or !(Test-Path -LiteralPath $registration)) {
+              throw "Windows installation failed with exit code $($install.ExitCode)"
+            }
+            if ($env:VETRO_WINDOWS_SIGNING_THUMBPRINT) {
+              foreach ($file in @($installer, $app, $uninstaller, "target\release\vetro.exe")) {
+                $signature = Get-AuthenticodeSignature -LiteralPath $file
+                if ($signature.Status -ne "Valid" -or $signature.SignerCertificate.Thumbprint -ne $env:VETRO_WINDOWS_SIGNING_THUMBPRINT) {
+                  throw "Unexpected Authenticode signature for $file ($($signature.Status))"
+                }
+              }
+            }
+          } finally {
+            if (Test-Path -LiteralPath $uninstaller -PathType Leaf) {
+              $uninstall = Start-Process -FilePath $uninstaller -ArgumentList "/S" -WindowStyle Hidden -Wait -PassThru
+              if ($uninstall.ExitCode -ne 0 -or (Test-Path -LiteralPath $app) -or (Test-Path -LiteralPath $uninstaller) -or
+                  (Test-Path -LiteralPath $registration)) {
+                throw "Windows uninstall failed with exit code $($uninstall.ExitCode)"
+              }
+            }
+          }
 
       - name: Stage release artifacts
         shell: bash
+        env:
+          ASSET_TARGET: ${{ matrix.name }}
         run: |
-          set -e
+          set -eu
           mkdir -p dist-release
           B="apps/desktop/src-tauri/target/desktop/release/bundle"
-          cp "$B"/nsis/*.exe dist-release/ 2>/dev/null || true
-          cp "$B"/dmg/*.dmg dist-release/ 2>/dev/null || true
-          cp "$B"/appimage/*.AppImage dist-release/ 2>/dev/null || true
-          cp "$B"/deb/*.deb dist-release/ 2>/dev/null || true
-          if [ -d "$B/macos" ]; then
-            for app in "$B"/macos/*.app; do
-              [ -d "$app" ] || continue
-              (cd "$B/macos" && ditto -c -k --keepParent "$(basename "$app")" "$GITHUB_WORKSPACE/dist-release/$(basename "$app" .app)-macos-${{ matrix.name }}.zip")
-            done
-          fi
+          copy_bundle() {
+            if [ "$#" -ne 1 ] || [ ! -s "$1" ]; then
+              printf 'Expected one nonempty bundle, got: %s\n' "$*" >&2
+              return 1
+            fi
+            cp -- "$1" dist-release/
+          }
           ext=""
-          [ "$RUNNER_OS" = "Windows" ] && ext=".exe"
-          cp "target/release/vetro$ext" "dist-release/vetro-${{ matrix.name }}$ext"
+          case "$RUNNER_OS" in
+            Windows)
+              ext=".exe"
+              copy_bundle "$B"/nsis/*.exe
+              ;;
+            macOS)
+              copy_bundle "$B"/dmg/*.dmg
+              ditto -c -k --keepParent "$B/macos/Vetro.app" "dist-release/Vetro-macos-$ASSET_TARGET.zip"
+              ;;
+            Linux)
+              copy_bundle "$B"/appimage/*.AppImage
+              copy_bundle "$B"/deb/*.deb
+              ;;
+            *)
+              printf 'Unexpected runner OS: %s\n' "$RUNNER_OS" >&2
+              exit 1
+              ;;
+          esac
+          test -s "target/release/vetro$ext"
+          cp "target/release/vetro$ext" "dist-release/vetro-$ASSET_TARGET$ext"
           ls -la dist-release
+
+      - name: Upload platform release artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-${{ matrix.name }}
+          path: dist-release/
+          if-no-files-found: error
+          overwrite: true
+
+  draft:
+    needs: build
+    runs-on: ubuntu-latest
+    concurrency:
+      group: draft-release-${{ inputs.tag || github.ref_name }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - name: Download platform release artifacts
+        uses: actions/download-artifact@v6
+        with:
+          pattern: release-*
+          path: dist-release
+          merge-multiple: true
+
+      - name: Verify the complete release asset set
+        shell: bash
+        run: |
+          count=$(find dist-release -maxdepth 1 -type f -size +0c | wc -l)
+          if [ "$count" -ne 11 ]; then
+            printf 'Expected 11 release assets, found %s\n' "$count" >&2
+            exit 1
+          fi
 
       - name: Attach artifacts to draft release
         uses: softprops/action-gh-release@v2
@@ -170,4 +317,5 @@ jobs:
           draft: true
           tag_name: ${{ env.RELEASE_TAG }}
           name: Vetro ${{ env.RELEASE_TAG }}
+          fail_on_unmatched_files: true
           files: dist-release/*

@@ -35,6 +35,7 @@ pub(crate) struct AcpSession {
     pub cwd: PathBuf,
     image: bool,
     steering: bool,
+    kiro_steering: bool,
     pub can_close: bool,
     outbound: AsyncMutex<()>,
     responses: AsyncMutex<()>,
@@ -53,6 +54,7 @@ struct State {
     counter: u64,
     replay_turn: u64,
     config: mapping::Config,
+    permission_preset: Option<ConfigOption>,
     commands: Vec<SlashCommand>,
     title: Option<String>,
     open: Option<Message>,
@@ -70,6 +72,13 @@ struct Turn {
     user: Option<Vec<ContentBlock>>,
     user_item_id: Option<String>,
     usage: Option<TokenUsage>,
+    steering: Steering,
+}
+
+#[derive(Default)]
+struct Steering {
+    queued: HashMap<String, Vec<ContentBlock>>,
+    early: Option<HashMap<String, bool>>,
 }
 
 #[derive(Default)]
@@ -117,6 +126,7 @@ impl AcpSession {
             cwd,
             image: capabilities.image,
             steering: capabilities.steering,
+            kiro_steering: capabilities.kiro_steering,
             can_close: capabilities.close,
             outbound: AsyncMutex::new(()),
             responses: AsyncMutex::new(()),
@@ -148,13 +158,27 @@ impl AcpSession {
     pub fn options(&self) -> AgentOptions {
         let state = self.state.lock().unwrap();
         AgentOptions {
-            options: state.config.options(),
+            options: state.options(),
             commands: state.commands.clone(),
         }
     }
 
+    pub fn set_permission_preset(&self, permission_preset: Option<ConfigOption>) {
+        self.state.lock().unwrap().permission_preset = permission_preset;
+    }
+
     pub fn capture_initial_options(&self) {
-        self.initial_options.get_or_init(|| self.options());
+        self.initial_options.get_or_init(|| {
+            let mut options = self.options();
+            if let Some(preset) = options
+                .options
+                .iter_mut()
+                .find(|option| option.id == crate::KIRO_PERMISSIONS)
+            {
+                preset.current_value = crate::KIRO_DEFAULT_PERMISSIONS.into();
+            }
+            options
+        });
     }
 
     pub fn emit_notice(&self, level: NoticeLevel, text: String) {
@@ -182,6 +206,7 @@ impl AcpSession {
     ) -> Result<()> {
         let session = Arc::downgrade(self);
         let retry_params = retry.then(|| params.clone());
+        self.connection.begin_user_work();
         self.connection
             .submit("session/prompt", params, move |reply| {
                 let Some(session) = session.upgrade() else {
@@ -257,7 +282,8 @@ impl AcpSession {
             state.flush_user();
             state.end_message();
             state.interactions.clear();
-            state.turn = None;
+            state.clear_steering();
+            state.turn.take();
             state.closed = true;
             state.emit(SessionEvent::Closed { error });
             state.sink = None;
@@ -325,6 +351,22 @@ impl AcpSession {
                 }
             }
             Some("session_info_update") => {
+                if self.kiro_steering {
+                    let update = &value["_meta"]["kiro"];
+                    match update["kind"].as_str() {
+                        Some("steering_injected") => {
+                            if let Some(id) = update["messageId"].as_str() {
+                                state.steering_receipt(id, true);
+                            }
+                        }
+                        Some("steering_cleared") => {
+                            for id in array(&update["messageIds"]).filter_map(Value::as_str) {
+                                state.steering_receipt(id, false);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
                 if let Some(title) = string(value, "title") {
                     state.emit(SessionEvent::Title(title.clone()));
                     state.title = Some(title);
@@ -350,7 +392,12 @@ impl AcpSession {
             return Ok(Some(cancelled(method)));
         }
         let id = state.id("request");
-        let (protocol, request) = Interaction::parse(method, params, id.clone())?;
+        let (protocol, request) = Interaction::parse(
+            method,
+            params,
+            id.clone(),
+            self.connection.agent_id == "kiro",
+        )?;
         if matches!(&request.body, vetro_proto::RequestBody::Permission { options } if options.is_empty())
         {
             return Ok(Some(cancelled(method)));
@@ -427,6 +474,7 @@ impl AcpSession {
     fn finish_prompt(state: &mut State, reason: StopReason) {
         state.flush_user();
         state.end_message();
+        state.clear_steering();
         let turn = state.turn.as_ref().unwrap();
         let draft = state.draft(
             format!("{}:end", turn.id),
@@ -440,6 +488,46 @@ impl AcpSession {
         state.turn = None;
         state.ended_messages.clear();
         state.status_after_input(reason == StopReason::Error);
+    }
+
+    async fn steer(self: &Arc<Self>, turn_id: String, message: String) -> Result<()> {
+        let session = Arc::downgrade(self);
+        let reply = self
+            .connection
+            .call_ordered(
+                "_session/steer",
+                json!({ "sessionId": self.id, "message": message }),
+                move |reply| {
+                    let Some(session) = session.upgrade() else {
+                        return;
+                    };
+                    let mut state = session.state.lock().unwrap();
+                    let queued_id = reply.as_ref().ok().and_then(steering_id);
+                    let content = vec![ContentBlock::Text { text: message }];
+                    let Some(turn) = state.turn.as_mut().filter(|turn| turn.id == turn_id) else {
+                        if queued_id.is_some() && !state.closed {
+                            state.undelivered_steering(content);
+                        }
+                        return;
+                    };
+                    let early = turn.steering.early.take().unwrap_or_default();
+                    if let Some(id) = queued_id {
+                        turn.steering.queued.insert(id.to_owned(), content);
+                        if let Some(injected) = early.get(id) {
+                            state.steering_receipt(id, *injected);
+                        }
+                    }
+                },
+            )
+            .await
+            .map_err(agent_error)?;
+        if steering_id(&reply).is_none() {
+            return Err(AgentError::new(
+                ErrorCode::AgentUnavailable,
+                "Kiro did not acknowledge steering input",
+            ));
+        }
+        Ok(())
     }
 
     async fn cancel_interactions(&self) {
@@ -496,6 +584,18 @@ impl Session for AcpSession {
         self.initial_options.get().cloned()
     }
 
+    fn current_options(&self) -> Option<Vec<ConfigOption>> {
+        Some(self.options().options)
+    }
+
+    fn can_send_during_turn(&self, content: &[ContentBlock], awaiting_input: bool) -> bool {
+        if self.kiro_steering {
+            matches!(content, [ContentBlock::Text { .. }])
+        } else {
+            !awaiting_input
+        }
+    }
+
     async fn send(&self, content: Vec<ContentBlock>) -> Result<()> {
         let prompt = mapping::prompt(&content, &self.cwd, self.image)?;
         let _outbound = self.outbound.lock().await;
@@ -511,36 +611,57 @@ impl Session for AcpSession {
             .connection
             .session(&self.id)
             .ok_or_else(|| agent_error(Error::Closed))?;
-        let turn_id = {
+        let (turn_id, steering) = {
             let mut state = self.state.lock().unwrap();
             state.ensure_open()?;
-            if state.turn.is_some() && !self.steering {
-                return Err(AgentError::new(
-                    ErrorCode::Busy,
-                    "An ACP turn is already running",
-                ));
-            }
-            state.flush_user();
-            state.end_message();
-            if let Some(turn) = state.turn.as_mut() {
-                turn.pending += 1;
-                turn.user = Some(content);
-                turn.user_item_id = None;
+            let session_running = state.turn.is_some();
+            if let Some(turn) = state.turn.as_mut().filter(|_| self.kiro_steering) {
+                let [ContentBlock::Text { text }] = content.as_slice() else {
+                    return Err(AgentError::new(
+                        ErrorCode::Busy,
+                        "Kiro steering requires text",
+                    ));
+                };
+                if turn.steering.queued.len() >= 32 {
+                    return Err(AgentError::new(
+                        ErrorCode::Busy,
+                        "Kiro steering queue is full",
+                    ));
+                }
+                turn.steering.early = Some(HashMap::new());
+                (turn.id.clone(), Some(text.clone()))
             } else {
-                state.turn = Some(Turn {
-                    id: state.id("turn"),
-                    since: Instant::now(),
-                    pending: 1,
-                    user: Some(content),
-                    user_item_id: None,
-                    usage: None,
-                });
+                if session_running && !self.steering {
+                    return Err(AgentError::new(
+                        ErrorCode::Busy,
+                        "An ACP turn is already running",
+                    ));
+                }
+                state.flush_user();
+                state.end_message();
+                if let Some(turn) = state.turn.as_mut() {
+                    turn.pending += 1;
+                    turn.user = Some(content);
+                    turn.user_item_id = None;
+                } else {
+                    state.turn = Some(Turn {
+                        id: state.id("turn"),
+                        since: Instant::now(),
+                        pending: 1,
+                        user: Some(content),
+                        user_item_id: None,
+                        usage: None,
+                        steering: Steering::default(),
+                    });
+                }
+                state.flush_user();
+                state.status_after_input(false);
+                (state.turn.as_ref().unwrap().id.clone(), None)
             }
-            // Emit immediately so the user sees their sent message without waiting for agent TTFT.
-            state.flush_user();
-            state.status_after_input(false);
-            state.turn.as_ref().unwrap().id.clone()
         };
+        if let Some(message) = steering {
+            return session.steer(turn_id, message).await;
+        }
         session
             .submit_prompt(
                 json!({ "sessionId": self.id, "prompt": prompt }),
@@ -649,12 +770,65 @@ impl Session for AcpSession {
         self.log.clone()
     }
 
-    fn descendants(&self) -> Vec<vetro_agent_api::process::ProcessIdentity> {
-        self.connection.descendants()
+    fn background_processes(&self) -> usize {
+        self.connection.background_processes()
     }
 }
 
+fn steering_id(reply: &Value) -> Option<&str> {
+    (reply["queued"].as_bool() == Some(true))
+        .then(|| reply["messageId"].as_str())
+        .flatten()
+}
+
 impl State {
+    fn options(&self) -> Vec<ConfigOption> {
+        let mut options = self.config.options();
+        options.extend(self.permission_preset.clone());
+        options
+    }
+
+    fn steering_receipt(&mut self, id: &str, injected: bool) {
+        let Some(turn) = self.turn.as_mut() else {
+            return;
+        };
+        if let Some(content) = turn.steering.queued.remove(id) {
+            if injected {
+                self.end_message();
+                let draft = self.draft(format!("message:{id}"), ItemKind::UserMessage { content });
+                self.upsert(draft);
+            } else {
+                self.undelivered_steering(content);
+            }
+        } else if let Some(early) = &mut turn.steering.early {
+            if early.len() < 32 {
+                early.entry(id.to_owned()).or_insert(injected);
+            }
+        }
+    }
+
+    fn clear_steering(&mut self) {
+        if let Some(turn) = self.turn.as_mut() {
+            let queued = std::mem::take(&mut turn.steering.queued);
+            for content in queued.into_values() {
+                self.undelivered_steering(content);
+            }
+        }
+    }
+
+    fn undelivered_steering(&mut self, content: Vec<ContentBlock>) {
+        let id = self.id("notice");
+        let draft = self.draft(
+            id,
+            ItemKind::Notice {
+                level: NoticeLevel::Warning,
+                text: "Kiro did not confirm delivery of the steering message".into(),
+                detail: Some(json!(content)),
+            },
+        );
+        self.upsert(draft);
+    }
+
     fn ensure_open(&self) -> Result<()> {
         if self.closed {
             Err(agent_error(Error::Closed))
@@ -698,7 +872,7 @@ impl State {
     }
 
     fn emit_options(&self) {
-        let options = self.config.options();
+        let options = self.options();
         let model = options
             .iter()
             .find(|option| option.category == ConfigCategory::Model)

@@ -4,4 +4,4 @@ export type RemoteSetParams = { enabled: boolean,
 /**
  * Also start or stop `tailscale serve` for Vetro's port.
  */
-tailscaleServe: boolean, };
+tailscaleServe: boolean, externalUrl?: string, };

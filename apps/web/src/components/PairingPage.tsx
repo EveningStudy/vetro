@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { authApi } from "~/api/client";
+import { newPairingSession } from "~/api/session";
 import { useT } from "~/i18n";
 import { Button } from "./ui/button";
 import { Input, Label, Spinner } from "./ui/primitives";
@@ -15,20 +16,30 @@ function defaultDeviceName() {
   return "Browser";
 }
 
-/** The pairing link carries the code as #pair=… (or ?code=…); take it and clear it from the address bar. */
-function initialCode() {
-  const fromHash = /[#&]pair=([^&]+)/.exec(location.hash)?.[1];
-  if (fromHash) history.replaceState(null, "", `${location.pathname}${location.search}`);
-  return decodeURIComponent(fromHash ?? new URLSearchParams(location.search).get("code") ?? "");
+export function takePairingCode() {
+  const url = new URL(location.href);
+  const fragment = new URLSearchParams(url.hash.slice(1));
+  const code = fragment.get("pair") ?? url.searchParams.get("code") ?? "";
+  if (fragment.has("pair") || url.searchParams.has("code")) {
+    if (fragment.has("pair")) {
+      fragment.delete("pair");
+      url.hash = fragment.toString();
+    }
+    url.searchParams.delete("code");
+    history.replaceState(null, "", url);
+  }
+  return code;
 }
 
-export function PairingPage({ onPaired }: { onPaired: () => void }) {
+export function PairingPage({ initialCode = "", onPaired }: { initialCode?: string; onPaired: () => void }) {
   const t = useT();
   const [code, setCode] = useState(initialCode);
   const [name, setName] = useState(defaultDeviceName);
+  const [remember, setRemember] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  if (/^(127\.0\.0\.1|localhost|\[::1\])$/.test(location.hostname) && !code)
+  const proposedSession = useRef<string | null>(null);
+  if (/^(127\.0\.0\.1|localhost|\[::1\])$/.test(location.hostname))
     return (
       <div className="flex min-h-dvh items-center justify-center bg-background px-4 py-10">
         <div className="flex w-full max-w-sm flex-col items-center gap-3 rounded-2xl border bg-card/80 p-6 text-center shadow-composer dark:bg-surface-raised/80">
@@ -44,19 +55,24 @@ export function PairingPage({ onPaired }: { onPaired: () => void }) {
         className="flex w-full max-w-sm flex-col gap-5 rounded-2xl border bg-card/80 p-6 shadow-composer dark:bg-surface-raised/80"
         onSubmit={(event) => {
           event.preventDefault();
+          if (busy) return;
+          proposedSession.current ??= newPairingSession();
           setBusy(true);
           setError(null);
           authApi()
-            .pair(code.trim(), name.trim() || defaultDeviceName())
+            .pair(code.trim(), name.trim() || defaultDeviceName(), proposedSession.current, remember)
             .then((result) => {
               if (result.ok) {
-                const url = new URL(location.href);
-                url.searchParams.delete("code");
-                history.replaceState(null, "", url);
                 onPaired();
-              } else setError(result.message ?? t("pair.failed"));
+              } else if (result.status === 401) setError(t("pair.invalid"));
+              else if (result.status === 429) setError(t("pair.rateLimited"));
+              else setError(result.message ?? t("pair.failed"));
             })
-            .catch((err: unknown) => setError(err instanceof Error ? err.message : t("pair.failed")))
+            .catch((error: unknown) => setError(
+              error instanceof DOMException && error.name === "TimeoutError"
+                ? t("pair.timeout")
+                : t("pair.failed"),
+            ))
             .finally(() => setBusy(false));
         }}
       >
@@ -77,15 +93,26 @@ export function PairingPage({ onPaired }: { onPaired: () => void }) {
             autoCapitalize="none"
             autoCorrect="off"
             spellCheck={false}
-            onChange={(event) => setCode(event.target.value.trim())}
+            disabled={busy}
+            onChange={(event) => {
+              proposedSession.current = null;
+              setCode(event.target.value.trim());
+            }}
             placeholder="503bb401"
             className="h-11 text-center font-mono text-lg tracking-[0.2em] sm:h-11 sm:text-lg"
           />
         </div>
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="pair-name">{t("pair.deviceName")}</Label>
-          <Input id="pair-name" value={name} onChange={(event) => setName(event.target.value)} />
+          <Input id="pair-name" maxLength={100} value={name} disabled={busy} onChange={(event) => {
+            proposedSession.current = null;
+            setName(event.target.value);
+          }} />
         </div>
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={remember} disabled={busy} onChange={(event) => setRemember(event.target.checked)} />
+          {t("pair.remember")}
+        </label>
         {error ? <p className="text-sm text-destructive-foreground">{error}</p> : null}
         <Button type="submit" size="lg" disabled={busy || code.trim().length < 4}>
           {busy ? <Spinner className="size-4" /> : null}

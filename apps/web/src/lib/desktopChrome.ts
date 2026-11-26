@@ -9,11 +9,12 @@ export interface DesktopChromeState {
   platform: DesktopPlatform;
   chrome: DesktopChromeMode;
   maximized: boolean;
+  embeddedCore: boolean;
 }
 
 declare global {
   interface Window {
-    __VETRO_DESKTOP__?: { platform?: string; chrome?: string; maximized?: boolean };
+    __VETRO_DESKTOP__?: { platform?: string; chrome?: string; maximized?: boolean; embeddedCore?: boolean };
     __TAURI_INTERNALS__?: {
       invoke?: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
       transformCallback?: (callback: (event: { payload: unknown }) => void, once?: boolean) => number;
@@ -21,20 +22,20 @@ declare global {
   }
 }
 
-const WEB: DesktopChromeState = { platform: "web", chrome: "web", maximized: false };
+const WEB: DesktopChromeState = { platform: "web", chrome: "web", maximized: false, embeddedCore: false };
 
 function detect(): DesktopChromeState {
   const injected = window.__VETRO_DESKTOP__;
   if (injected) {
     const platform = injected.platform === "windows" || injected.platform === "macos" ? injected.platform : "linux";
     const chrome = injected.chrome === "custom" || injected.chrome === "overlay" ? injected.chrome : "native";
-    return { platform, chrome, maximized: injected.maximized === true };
+    return { platform, chrome, maximized: injected.maximized === true, embeddedCore: injected.embeddedCore === true };
   }
   const params = new URLSearchParams(location.search);
   if (import.meta.env.DEV || import.meta.env.VITE_MOCK === "1" || params.get("mock") === "1") {
     const preview = params.get("chrome");
-    if (preview === "windows") return { platform: "windows", chrome: "custom", maximized: false };
-    if (preview === "macos") return { platform: "macos", chrome: "overlay", maximized: false };
+    if (preview === "windows") return { ...WEB, platform: "windows", chrome: "custom" };
+    if (preview === "macos") return { ...WEB, platform: "macos", chrome: "overlay" };
   }
   return WEB;
 }
@@ -124,6 +125,7 @@ export function listenFileDrops(handler: (event: FileDropEvent) => void): (() =>
   const invoke = internals?.invoke;
   const transform = internals?.transformCallback;
   if (!invoke || !transform) return null;
+  let listening = true;
   const subscriptions = (
     [
       ["tauri://drag-enter", () => handler({ kind: "over" })],
@@ -138,12 +140,15 @@ export function listenFileDrops(handler: (event: FileDropEvent) => void): (() =>
       ],
     ] as const
   ).map(([event, callback]) => {
-    const id = transform((message) => callback(message.payload));
+    const id = transform((message) => {
+      if (listening) callback(message.payload);
+    });
     return invoke("plugin:event|listen", { event, target: { kind: "Any" }, handler: id })
       .then((eventId) => ({ event, eventId }))
       .catch(() => null);
   });
   return () => {
+    listening = false;
     for (const subscription of subscriptions) {
       void subscription.then((active) => {
         if (active) void invoke("plugin:event|unlisten", { event: active.event, eventId: active.eventId }).catch(() => {});

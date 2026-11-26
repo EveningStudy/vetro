@@ -581,6 +581,11 @@ export class MockTransport implements Transport {
       this.emit({ event: "projects.updated", data: { projects: this.projects } });
       return project;
     },
+    "threads.active": () => ({
+      threads: [...this.threads.values()].map((thread) => thread.summary).filter((thread) =>
+        !thread.parent && (thread.status === "running" || thread.status === "awaiting_input")),
+      nextCursor: null,
+    }),
     "threads.list": (params) => {
       let list = [...this.threads.values()].map((t) => t.summary);
       if (params.projectPath) list = list.filter((t) => t.cwd === params.projectPath);
@@ -687,16 +692,6 @@ export class MockTransport implements Transport {
     "search.threads": (params) => this.search(params),
     "fs.list": (params) => this.list(params),
     "fs.find": (params) => this.find(params),
-    "fs.mkdir": (params) => {
-      this.desktopOnly();
-      const name = params.name.trim();
-      if (!name || /[\\/]/.test(name)) throw new RpcFailure("bad_request", "Invalid folder name");
-      const sep = params.parent.endsWith("\\") ? "" : "\\";
-      const created = `${params.parent}${sep}${name}`;
-      fileTree[params.parent] = [...(fileTree[params.parent] ?? []), `${name}\\`];
-      fileTree[created] = [];
-      return { path: created };
-    },
     "workspace.gitStatus": (params) => {
       if (!/[\\/]vetro$/i.test(params.cwd)) return { isRepo: false, root: null, branch: null, dirty: false, files: [] };
       return { isRepo: true, root: params.cwd, branch: "main", dirty: true, files: MOCK_GIT_FILES };
@@ -742,6 +737,7 @@ export class MockTransport implements Transport {
       this.desktopOnly();
       return {};
     },
+    "app.ping": () => ({}),
     "app.notify": () => ({}),
     "settings.get": () => this.settings,
     "settings.update": (params) => {
@@ -759,15 +755,19 @@ export class MockTransport implements Transport {
       this.desktopOnly();
       this.remote.enabled = params.enabled;
       const dns = this.remote.tailscale.dnsName;
-      this.remote.tailscale.serveUrl = params.tailscaleServe && dns ? `https://${dns}` : null;
+      this.remote.tailscale.serveUrl = params.enabled && params.tailscaleServe && dns ? `https://${dns}:8443` : null;
+      this.remote.externalUrl = params.enabled && params.externalUrl ? new URL(params.externalUrl).origin : null;
+      this.remote.pairingExpiresAt = null;
       this.emit({ event: "remote.updated", data: { status: this.remote } });
       return this.remote;
     },
     "remote.createPairing": () => {
       this.desktopOnly();
-      const code = "K7M-4QX";
-      const serve = this.remote.tailscale.serveUrl;
-      return { code, url: serve ? `${serve}/?code=${code}` : null, expiresAt: Date.now() + 5 * 60_000 };
+      const code = "503bb401";
+      const address = this.remote.externalUrl ?? this.remote.tailscale.serveUrl;
+      this.remote.pairingExpiresAt = Date.now() + 10 * 60_000;
+      this.emit({ event: "remote.updated", data: { status: this.remote } });
+      return { code, url: address ? `${address}/#pair=${code}` : null, expiresAt: this.remote.pairingExpiresAt };
     },
     "remote.revokeDevice": (params) => {
       this.remote.devices = this.remote.devices.filter((d) => d.id !== params.deviceId);

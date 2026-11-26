@@ -186,6 +186,22 @@ impl Registry {
         }
     }
 
+    pub(crate) async fn release_requested(&self, id: &str, has_live_thread: impl FnOnce() -> bool) {
+        let Some(entry) = self.agents.get(id) else {
+            return;
+        };
+        let Ok(_access) = entry.access.try_write() else {
+            return;
+        };
+        let requested = {
+            let activity = entry.activity.lock().unwrap();
+            activity.in_use && activity.release_requested
+        };
+        if requested && !entry.retired.load(Ordering::Acquire) && !has_live_thread() {
+            entry.release().await;
+        }
+    }
+
     pub(crate) fn background_poll_due(&self, id: &str) -> bool {
         self.agents[id]
             .activity
@@ -212,24 +228,16 @@ impl Registry {
             let release = {
                 let activity = entry.activity.lock().unwrap();
                 activity.in_use
-                    && if authenticated {
-                        idle.is_some_and(|idle| activity.warm_since.elapsed() >= idle)
-                    } else {
-                        activity.release_requested
-                            || activity.last_release.is_some()
-                            || activity.warm_since.elapsed() >= WARM_IDLE
-                    }
+                    && (activity.release_requested
+                        || if authenticated {
+                            idle.is_some_and(|idle| activity.warm_since.elapsed() >= idle)
+                        } else {
+                            activity.last_release.is_some()
+                                || activity.warm_since.elapsed() >= WARM_IDLE
+                        })
             };
-            if release
-                && !has_live_thread(id)
-                && tokio::time::timeout(Duration::from_secs(5), entry.agent.shutdown())
-                    .await
-                    .is_ok()
-            {
-                let mut activity = entry.activity.lock().unwrap();
-                activity.in_use = false;
-                activity.release_requested = false;
-                activity.last_release = Some(Instant::now());
+            if release && !has_live_thread(id) {
+                entry.release().await;
             }
         }
     }
@@ -245,6 +253,20 @@ impl Registry {
             });
         }
         while tasks.join_next().await.is_some() {}
+    }
+}
+
+impl Entry {
+    async fn release(&self) {
+        if tokio::time::timeout(Duration::from_secs(5), self.agent.shutdown())
+            .await
+            .is_ok()
+        {
+            let mut activity = self.activity.lock().unwrap();
+            activity.in_use = false;
+            activity.release_requested = false;
+            activity.last_release = Some(Instant::now());
+        }
     }
 }
 

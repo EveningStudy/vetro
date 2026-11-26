@@ -9,11 +9,11 @@ mod fixtures;
 use std::{
     collections::{BTreeMap, VecDeque},
     fs,
-    io::Write,
+    io::{BufRead, Write},
     net::SocketAddr,
     path::Path,
     sync::{atomic::Ordering, Arc},
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use fixtures::Fake;
@@ -92,6 +92,10 @@ fn main() {
         .build()
         .unwrap()
         .block_on(async {
+            if std::env::args().nth(1).as_deref() == Some("--browser-fixture") {
+                browser_fixture(path, &cwd).await;
+                return;
+            }
             tokio::time::timeout(
                 Duration::from_secs(30),
                 exercise(path, &cwd, &fake_bin, marker_port),
@@ -112,6 +116,47 @@ fn main() {
     assert!(path.join(".vetro/state.json").exists());
     assert!(path.join(".vetro/raw").is_dir());
     assert!(path.join(".vetro/index.db").is_file());
+}
+
+async fn browser_fixture(path: &Path, cwd: &Path) {
+    let fake = Arc::new(Fake {
+        starts: Default::default(),
+        cwd: cwd.to_owned(),
+        prompts: Default::default(),
+        attaches: Default::default(),
+        detaches: Default::default(),
+        shutdowns: Default::default(),
+        background: Arc::new(true.into()),
+        authenticated: Default::default(),
+        history_path: path.join(".claude/fake-transcript"),
+        reads: Default::default(),
+        option_reads: Default::default(),
+    });
+    let authenticated = fake.authenticated.clone();
+    let home = Home::open(path.join(".vetro"), path.to_owned()).unwrap();
+    let registry = Registry::new([fake as Arc<dyn Agent>]).unwrap();
+    let server = Server::bind(Core::new(home, registry), Some(0))
+        .await
+        .unwrap();
+    println!("{}", server.local_url());
+    std::io::stdout().flush().unwrap();
+    server
+        .serve(async move {
+            let _ = tokio::task::spawn_blocking(move || {
+                for line in std::io::stdin()
+                    .lock()
+                    .lines()
+                    .map_while(std::result::Result::ok)
+                {
+                    assert_eq!(line, "complete-sign-in");
+                    authenticated.store(true, Ordering::Relaxed);
+                    println!("sign-in completed");
+                }
+            })
+            .await;
+        })
+        .await
+        .unwrap();
 }
 
 fn fake_tailscale(port: &str) {
@@ -140,8 +185,13 @@ fn fake_tailscale(port: &str) {
             }
         }
         ["serve", "--https=8443", target] => {
+            let stop = std::path::PathBuf::from(std::env::var_os("USERPROFILE").unwrap())
+                .join(".vetro/stop-serve-fixture");
             let signal = std::net::TcpListener::bind(marker).unwrap();
             for mut connection in signal.incoming().flatten() {
+                if fs::remove_file(&stop).is_ok() {
+                    return;
+                }
                 connection.write_all(target.as_bytes()).unwrap();
             }
         }
@@ -159,11 +209,13 @@ async fn exercise(path: &Path, cwd: &Path, fake_bin: &Path, marker_port: u16) {
         }).to_string(),
     ).unwrap();
     let fake = Arc::new(Fake {
+        starts: Default::default(),
         cwd: cwd.to_owned(),
         prompts: Default::default(),
         attaches: Default::default(),
         detaches: Default::default(),
         shutdowns: Default::default(),
+        background: Default::default(),
         authenticated: Default::default(),
         history_path: path.join(".claude/fake-transcript"),
         reads: Default::default(),
@@ -261,6 +313,10 @@ async fn exercise(path: &Path, cwd: &Path, fake_bin: &Path, marker_port: u16) {
         "unauthorized"
     );
     assert_eq!(
+        unauthenticated.request("app.ping", json!({})).await["error"]["code"],
+        "unauthorized"
+    );
+    assert_eq!(
         unauthenticated.request("app.hello", hello()).await["error"]["code"],
         "unauthorized"
     );
@@ -307,6 +363,7 @@ async fn exercise(path: &Path, cwd: &Path, fake_bin: &Path, marker_port: u16) {
     let mut second = Client::connect(addr, &session, &origin).await;
     assert_eq!(first.call("app.hello", hello()).await["protocolVersion"], 1);
     second.call("app.hello", hello()).await;
+    assert_eq!(first.call("app.ping", json!({})).await, json!({}));
     let agents = first.call("agents.list", json!({})).await;
     assert_eq!(agents["agents"][0]["id"], "fake");
     let options = first
@@ -562,15 +619,69 @@ async fn exercise(path: &Path, cwd: &Path, fake_bin: &Path, marker_port: u16) {
     )
     .await;
     assert_eq!(replacement_device.status, 200);
-    let replacement_id = replacement_device.body["session"]
-        .as_str()
-        .unwrap()
-        .split_once('.')
-        .unwrap()
-        .0;
-    first
+    let replacement_session = replacement_device.body["session"].as_str().unwrap();
+    let replacement_id = replacement_session.split_once('.').unwrap().0;
+    let mut replacement_client = Client::connect(addr, replacement_session, REMOTE_ORIGIN).await;
+    replacement_client.call("app.hello", hello()).await;
+    let interrupted_code = first.call("remote.createPairing", json!({})).await;
+    let stop_serve = path.join(".vetro/stop-serve-fixture");
+    fs::write(&stop_serve, []).unwrap();
+    drop(
+        TcpStream::connect(("127.0.0.1", marker_port))
+            .await
+            .unwrap(),
+    );
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while stop_serve.exists() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the fake Serve process receives the stop signal");
+    replacement_client.wait_closed().await;
+    let disabled = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let event = second.recv().await;
+            let status = &event["data"]["status"];
+            if event["event"] == "remote.updated" && status["enabled"] == false {
+                break status.clone();
+            }
+        }
+    })
+    .await
+    .expect("desktop receives remote status after the Serve process exits");
+    assert!(disabled["tailscale"]["serveUrl"].is_null());
+    assert_eq!(disabled["devices"][0]["id"], replacement_id);
+    assert_eq!(socket_error(addr, REMOTE_ORIGIN).await, 403);
+    let restarted = first.call("remote.set", settings.clone()).await;
+    assert!(restarted["pairingExpiresAt"].is_null());
+    assert_eq!(
+        http(
+            addr,
+            "POST",
+            "/api/auth/pair",
+            &remote_headers,
+            Some(json!({
+                "code": interrupted_code["code"], "deviceName": "Interrupted"
+            }))
+        )
+        .await
+        .status,
+        401
+    );
+    let mut replacement_client = Client::connect(addr, replacement_session, REMOTE_ORIGIN).await;
+    assert_eq!(
+        replacement_client.call("app.hello", hello()).await["remoteClient"],
+        true
+    );
+    let status = replacement_client
         .call("remote.revokeDevice", json!({"deviceId": replacement_id}))
         .await;
+    assert_eq!(status["devices"], json!([]));
+    let close = tokio::time::timeout(Duration::from_secs(2), replacement_client.socket.next())
+        .await
+        .unwrap();
+    assert!(matches!(close, Some(Ok(Message::Close(_)))));
     let disabled = first
         .call(
             "remote.set",
@@ -592,6 +703,7 @@ async fn exercise(path: &Path, cwd: &Path, fake_bin: &Path, marker_port: u16) {
     occupier.join().unwrap();
     assert_eq!(first.call("remote.status", json!({})).await, before);
     first.call("remote.set", settings).await;
+    exercise_external_proxy(addr, &mut first, &session).await;
 
     let content = json!([{"type": "text", "text": "  Exact \r\nテキスト \"\u{1f30d}\"\n"}, {"type": "file", "path": "file.rs", "name": null}]);
     let start =
@@ -615,9 +727,27 @@ async fn exercise(path: &Path, cwd: &Path, fake_bin: &Path, marker_port: u16) {
     let auth = first.recv_response(auth_id).await;
     assert!(auth["error"].is_null());
     first.until_agent_auth("ok").await;
-    let started = first.call("threads.start", start).await;
+    let mut start = start;
+    start["clientMessageId"] = json!("initial-message");
+    let mut recovery = start.clone();
+    recovery["recoverOnly"] = json!(true);
+    assert_eq!(
+        second.request("threads.start", recovery.clone()).await["error"]["code"],
+        "delivery_unknown"
+    );
+    assert_eq!(fake.starts.load(Ordering::Relaxed), 0);
+    let (started, duplicate) = tokio::join!(
+        first.call("threads.start", start.clone()),
+        second.call("threads.start", start),
+    );
     let id = started["thread"]["id"].as_str().unwrap();
     assert_eq!(id, "fake:live");
+    assert_eq!(duplicate["thread"]["id"], id);
+    assert_eq!(
+        second.call("threads.start", recovery.clone()).await["thread"]["id"],
+        id
+    );
+    assert_eq!(fake.starts.load(Ordering::Relaxed), 1);
     let mut seq = 0;
     let mut delta = String::new();
     loop {
@@ -643,6 +773,18 @@ async fn exercise(path: &Path, cwd: &Path, fake_bin: &Path, marker_port: u16) {
     assert_eq!(opened["items"][0]["content"], content);
     assert_eq!(opened["items"][1]["text"], "Fake stream");
     assert_eq!(opened["items"][2]["resolution"], Value::Null);
+    let filtered = second
+        .call("threads.list", json!({"sources": ["cli"]}))
+        .await;
+    assert!(filtered["threads"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|thread| thread["id"] != id));
+    let attention = second.call("threads.active", json!({})).await;
+    assert_eq!(attention["threads"][0]["id"], id);
+    assert_eq!(attention["threads"][0]["status"], "awaiting_input");
+    assert!(attention["nextCursor"].is_null());
     assert_eq!(
         first
             .request("threads.detach", json!({"threadId": id}))
@@ -650,12 +792,33 @@ async fn exercise(path: &Path, cwd: &Path, fake_bin: &Path, marker_port: u16) {
         "busy"
     );
     assert_eq!(fake.detaches.load(Ordering::Relaxed), 0);
-    first
+    fake.background.store(true, Ordering::Relaxed);
+    let queued = json!({
+        "threadId": id,
+        "content": [{"type": "text", "text": "Queued"}],
+        "clientMessageId": "queued-message"
+    });
+    tokio::join!(
+        first.call("threads.send", queued.clone()),
+        second.call("threads.send", queued),
+    );
+    second
         .call(
             "threads.send",
-            json!({"threadId": id, "content": [{"type": "text", "text": "Queued"}]}),
+            json!({"threadId": id, "content": [], "clientMessageId": "queued-message", "recoverOnly": true}),
         )
         .await;
+    assert_eq!(
+        second
+            .request(
+                "threads.send",
+                json!({"threadId": id, "content": content, "clientMessageId": "absent-message", "recoverOnly": true}),
+            )
+            .await["error"]["code"],
+        "delivery_unknown"
+    );
+    let snapshot = second.call("threads.open", json!({"threadId": id})).await;
+    assert_eq!(snapshot["queue"].as_array().unwrap().len(), 1);
     assert_eq!(fake.prompts.lock().unwrap().len(), 1);
     second.call("threads.respond", json!({"threadId": id, "requestId": "permission", "resolution": {"type": "selected", "optionId": "allow"}})).await;
     let mut resolved = false;
@@ -693,20 +856,24 @@ async fn exercise(path: &Path, cwd: &Path, fake_bin: &Path, marker_port: u16) {
     assert_eq!(reopened["thread"]["model"], "updated");
     first.call("threads.close", json!({"threadId": id})).await;
     first.events.clear();
-    first.call("threads.detach", json!({"threadId": id})).await;
+    assert_eq!(
+        first
+            .request("threads.detach", json!({"threadId": id}))
+            .await["error"]["code"],
+        "background_work"
+    );
+    assert_eq!(fake.detaches.load(Ordering::Relaxed), 0);
+    first
+        .call("threads.detach", json!({"threadId": id, "force": true}))
+        .await;
+    fake.background.store(false, Ordering::Relaxed);
     let (_, detached) = second
         .until_event(id, |event| event["thread"]["live"] == false)
         .await;
     assert_eq!(detached["thread"]["live"], false);
     let dormant = second.call("threads.open", json!({"threadId": id})).await;
     assert_eq!(dormant["options"][0]["currentValue"], "updated");
-    tokio::time::timeout(Duration::from_secs(8), async {
-        while fake.shutdowns.load(Ordering::Relaxed) == 0 {
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-    })
-    .await
-    .unwrap();
+    assert!(fake.shutdowns.load(Ordering::Relaxed) > 0);
     first
         .call(
             "threads.send",
@@ -935,6 +1102,29 @@ async fn exercise(path: &Path, cwd: &Path, fake_bin: &Path, marker_port: u16) {
         .await;
     assert_eq!(settings["idleReleaseMinutes"], 0);
 
+    let proxy_origin = "https://restart.example.test";
+    first
+        .call(
+            "remote.set",
+            json!({"enabled": true, "externalUrl": proxy_origin}),
+        )
+        .await;
+    let pairing = first.call("remote.createPairing", json!({})).await;
+    let pairing_headers = [("Host", "restart.example.test"), ("Origin", proxy_origin)];
+    let paired_before_restart = http(
+        addr,
+        "POST",
+        "/api/auth/pair",
+        &pairing_headers,
+        Some(json!({"code": pairing["code"], "deviceName": "Before restart"})),
+    )
+    .await;
+    assert_eq!(paired_before_restart.status, 200);
+    let retained_session = paired_before_restart.body["session"].as_str().unwrap();
+    let mut paired = Client::connect(addr, retained_session, proxy_origin).await;
+    paired.call("app.hello", hello()).await;
+    drop(paired);
+
     stop.send(()).unwrap();
     serving.await.unwrap().unwrap();
     assert!(std::net::TcpStream::connect(&marker).is_err());
@@ -963,6 +1153,40 @@ async fn exercise(path: &Path, cwd: &Path, fake_bin: &Path, marker_port: u16) {
     )
     .await;
     resumed.call("app.hello", hello()).await;
+    assert_eq!(socket_error(restarted_addr, proxy_origin).await, 403);
+    resumed
+        .call(
+            "remote.set",
+            json!({"enabled": true, "externalUrl": proxy_origin}),
+        )
+        .await;
+    let mut retained = Client::connect(restarted_addr, retained_session, proxy_origin).await;
+    assert_eq!(
+        retained.call("app.hello", hello()).await["remoteClient"],
+        true
+    );
+    let mut revoked_before_restart =
+        Client::connect(restarted_addr, replacement_session, proxy_origin).await;
+    assert_eq!(
+        revoked_before_restart.request("app.hello", hello()).await["error"]["code"],
+        "unauthorized"
+    );
+    let prompt_count = fake.prompts.lock().unwrap().len();
+    assert_eq!(
+        resumed.request("threads.start", recovery).await["error"]["code"],
+        "delivery_unknown"
+    );
+    assert_eq!(
+        resumed
+            .request(
+                "threads.send",
+                json!({"threadId": id, "content": [], "clientMessageId": "queued-message", "recoverOnly": true}),
+            )
+            .await["error"]["code"],
+        "delivery_unknown"
+    );
+    assert_eq!(fake.starts.load(Ordering::Relaxed), 1);
+    assert_eq!(fake.prompts.lock().unwrap().len(), prompt_count);
     assert_eq!(
         resumed.call("prefs.get", json!({})).await["prefs"]["theme"],
         "dark"
@@ -1094,6 +1318,201 @@ impl Client {
     }
 }
 
+async fn exercise_external_proxy(addr: SocketAddr, desktop: &mut Client, local_session: &str) {
+    let origin = "https://proxy.example.test";
+    let host = "proxy.example.test";
+    let headers = [("Host", host), ("Origin", origin)];
+    for invalid in [
+        "http://proxy.example.test",
+        "https://proxy.example.test/subpath",
+        "https://proxy.example.test/#fragment",
+        "https://proxy.example.test/?query",
+        "https://user:password@proxy.example.test",
+        "https://localhost.",
+        "https://127.1",
+        "https://[::ffff:127.0.0.1]",
+    ] {
+        let params = json!({"enabled": true, "externalUrl": invalid});
+        assert_eq!(
+            desktop.request("remote.set", params).await["error"]["code"],
+            "bad_request",
+            "{invalid}"
+        );
+    }
+    assert_eq!(
+        desktop.call("remote.status", json!({})).await["tailscale"]["serveUrl"],
+        REMOTE_ORIGIN
+    );
+    let previous = desktop.call("remote.createPairing", json!({})).await;
+    let status = desktop
+        .call(
+            "remote.set",
+            json!({"enabled": true, "externalUrl": "https://PROXY.example.test:443/"}),
+        )
+        .await;
+    assert_eq!(status["externalUrl"], origin);
+    assert!(status["tailscale"]["serveUrl"].is_null());
+    assert!(status["pairingExpiresAt"].is_null());
+    assert_eq!(socket_error(addr, REMOTE_ORIGIN).await, 403);
+    assert_eq!(
+        socket_error(addr, "https://proxy.example.test:8443").await,
+        403
+    );
+    assert_eq!(
+        http(
+            addr,
+            "GET",
+            "/api/health",
+            &[("Host", host), ("Origin", "https://elsewhere.example.test")],
+            None
+        )
+        .await
+        .status,
+        403
+    );
+    assert_eq!(
+        http(
+            addr,
+            "POST",
+            "/api/auth/pair",
+            &headers,
+            Some(json!({"code": previous["code"], "deviceName": "Old"}))
+        )
+        .await
+        .status,
+        401
+    );
+    assert_eq!(
+        http(
+            addr,
+            "POST",
+            "/api/auth/local",
+            &headers,
+            Some(json!({"token": "unused"}))
+        )
+        .await
+        .status,
+        403
+    );
+    let mut wrong = Client::connect(addr, local_session, origin).await;
+    assert_eq!(
+        wrong.request("app.hello", hello()).await["error"]["code"],
+        "unauthorized"
+    );
+    drop(wrong);
+    let pairing = desktop.call("remote.createPairing", json!({})).await;
+    let code = pairing["code"].as_str().unwrap();
+    assert_eq!(pairing["url"], format!("{origin}/#pair={code}"));
+    assert_eq!(
+        desktop.call("remote.status", json!({})).await["pairingExpiresAt"],
+        pairing["expiresAt"]
+    );
+    assert_eq!(
+        http(
+            addr,
+            "POST",
+            "/api/auth/pair",
+            &headers,
+            Some(json!({"code": code, "deviceName": "Proxy device", "proposedSession": "invalid"})),
+        )
+        .await
+        .status,
+        400
+    );
+    let proposed = format!("{}.{}", "a".repeat(32), "b".repeat(64));
+    let device = json!({"code": code, "deviceName": "Proxy device", "proposedSession": proposed});
+    let paired = http(
+        addr,
+        "POST",
+        "/api/auth/pair",
+        &headers,
+        Some(device.clone()),
+    )
+    .await;
+    assert_eq!(paired.status, 200);
+    assert_eq!(paired.body["session"], proposed);
+    let recovered = http(
+        addr,
+        "POST",
+        "/api/auth/pair",
+        &headers,
+        Some(device.clone()),
+    )
+    .await;
+    assert_eq!(recovered.status, 200);
+    assert_eq!(recovered.body, paired.body);
+    let mut wrong_token = device.clone();
+    wrong_token["proposedSession"] = json!(format!("{}.{}", "a".repeat(32), "c".repeat(64)));
+    assert_eq!(
+        http(addr, "POST", "/api/auth/pair", &headers, Some(wrong_token))
+            .await
+            .status,
+        401
+    );
+    let pending = desktop.call("remote.status", json!({})).await;
+    assert_eq!(pending["devices"].as_array().unwrap().len(), 1);
+    assert!(pending["pairingExpiresAt"].is_null());
+    assert!(pending["devices"][0]["lastSeenAt"].is_null());
+    let session = paired.body["session"].as_str().unwrap();
+    let mut remote = Client::connect(addr, session, origin).await;
+    assert_eq!(
+        remote.call("app.hello", hello()).await["remoteClient"],
+        true
+    );
+    let status = remote.call("remote.status", json!({})).await;
+    assert_eq!(status["devices"].as_array().unwrap().len(), 1);
+    assert_eq!(status["devices"][0]["current"], true);
+    let connected = status["devices"][0]["lastSeenAt"].as_i64().unwrap();
+    assert!(connected >= status["devices"][0]["createdAt"].as_i64().unwrap());
+    desktop
+        .call(
+            "remote.set",
+            json!({"enabled": true, "externalUrl": "https://second.example.test:8443"}),
+        )
+        .await;
+    remote.wait_closed().await;
+    assert_eq!(socket_error(addr, origin).await, 403);
+    let next_tick = UNIX_EPOCH + Duration::from_millis(connected as u64 + 1);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while SystemTime::now() < next_tick {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("Wall clock did not advance past the first connection");
+    let mut remote = Client::connect(addr, session, "https://second.example.test:8443").await;
+    assert_eq!(
+        remote.call("app.hello", hello()).await["remoteClient"],
+        true
+    );
+    let devices = desktop.call("remote.status", json!({})).await;
+    let reconnected = devices["devices"][0]["lastSeenAt"].as_i64().unwrap();
+    assert!(reconnected > connected, "{reconnected} <= {connected}");
+    desktop.call("remote.set", json!({"enabled": false})).await;
+    remote.wait_closed().await;
+    assert_eq!(
+        socket_error(addr, "https://second.example.test:8443").await,
+        403
+    );
+    let id = status["devices"][0]["id"].as_str().unwrap();
+    desktop
+        .call("remote.revokeDevice", json!({"deviceId": id}))
+        .await;
+    desktop
+        .call(
+            "remote.set",
+            json!({"enabled": true, "externalUrl": origin}),
+        )
+        .await;
+    assert_eq!(
+        http(addr, "POST", "/api/auth/pair", &headers, Some(device))
+            .await
+            .status,
+        401
+    );
+    desktop.call("remote.set", json!({"enabled": false})).await;
+}
+
 fn ws_request(
     addr: SocketAddr,
     origin: &str,
@@ -1102,10 +1521,10 @@ fn ws_request(
     request
         .headers_mut()
         .insert("origin", HeaderValue::from_str(origin).unwrap());
-    if origin == REMOTE_ORIGIN {
+    if let Some(host) = origin.strip_prefix("https://") {
         request
             .headers_mut()
-            .insert("host", HeaderValue::from_static(REMOTE_HOST));
+            .insert("host", HeaderValue::from_str(host).unwrap());
     }
     request
 }

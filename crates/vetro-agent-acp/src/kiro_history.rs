@@ -48,6 +48,9 @@ pub(crate) async fn enrich_inventory(spec: &SpawnSpec, sessions: &mut [SessionRe
     for record in sessions {
         if let Some(native) = metadata.get(&record.native_id) {
             record.created_at = record.created_at.or(native.created_at);
+            if let Some(updated_at) = native.updated_at.or(native.created_at) {
+                record.updated_at = record.updated_at.max(updated_at);
+            }
             record.internal |= native.non_interactive;
         }
     }
@@ -74,6 +77,7 @@ fn session_file(folder: &Path, id: &str, name: &str) -> Option<PathBuf> {
 #[derive(PartialEq, Eq)]
 struct SessionMetadata {
     created_at: Option<i64>,
+    updated_at: Option<i64>,
     non_interactive: bool,
 }
 
@@ -90,6 +94,7 @@ fn session_metadata(root: PathBuf, ids: Vec<String>) -> HashMap<String, SessionM
                 }
                 Some(SessionMetadata {
                     created_at: mapping::timestamp(&value["createdAt"]),
+                    updated_at: mapping::timestamp(&value["lastModifiedAt"]),
                     non_interactive: value["_meta"]["kiro"]["nonInteractive"] == true,
                 })
             });

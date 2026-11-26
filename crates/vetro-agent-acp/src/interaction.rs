@@ -20,7 +20,7 @@ pub fn cancelled(method: &str) -> Value {
 }
 
 pub enum Interaction {
-    Permission,
+    Permission(Option<Value>),
     Form(BTreeMap<String, Field>),
 }
 
@@ -36,14 +36,35 @@ impl Interaction {
         method: &str,
         params: &Value,
         request_id: String,
+        kiro: bool,
     ) -> std::result::Result<(Self, InteractionRequest), RemoteError> {
-        let (kind, call_id, title, body) = if method == PERMISSION {
+        let (kind, call_id, title, detail, body) = if method == PERMISSION {
             let tool = &params["toolCall"];
-            let options = array(&params["options"]).filter_map(permission).collect();
+            let context = &params["_meta"]["kiro"]["consent"];
+            let consent = if kiro && context.is_object() {
+                workspace_consent(context)
+            } else {
+                None
+            };
+            let options = array(&params["options"])
+                .filter_map(permission)
+                .filter_map(|mut option| {
+                    if kiro && context.is_object() && persistent(option.kind) {
+                        consent.as_ref()?;
+                        option.label = format!("{} in this workspace", option.label);
+                    }
+                    Some(option)
+                })
+                .collect();
+            let detail = (kiro && context.is_object())
+                .then(|| consent_resource(context))
+                .flatten()
+                .map(str::to_owned);
             (
-                Self::Permission,
+                Self::Permission(consent),
                 string(tool, "toolCallId"),
                 string(tool, "title").unwrap_or_else(|| "Permission request".into()),
+                detail,
                 RequestBody::Permission { options },
             )
         } else {
@@ -65,6 +86,7 @@ impl Interaction {
                 Self::Form(fields),
                 string(params, "toolCallId"),
                 string(params, "message").unwrap_or_else(|| "Agent question".into()),
+                None,
                 RequestBody::Questions { questions },
             )
         };
@@ -74,7 +96,7 @@ impl Interaction {
                 request_id,
                 call_id,
                 title,
-                detail: None,
+                detail,
                 body,
                 resolution: None,
             },
@@ -82,7 +104,7 @@ impl Interaction {
     }
 
     pub fn cancel(&self) -> Value {
-        cancelled(if matches!(self, Self::Permission) {
+        cancelled(if matches!(self, Self::Permission(_)) {
             PERMISSION
         } else {
             "elicitation/create"
@@ -93,11 +115,20 @@ impl Interaction {
         match (self, body, resolution) {
             (_, _, RequestResolution::Cancelled) => Ok(self.cancel()),
             (
-                Self::Permission,
+                Self::Permission(consent),
                 RequestBody::Permission { options },
                 RequestResolution::Selected { option_id },
-            ) if options.iter().any(|option| option.id == *option_id) => {
-                Ok(json!({ "outcome": { "outcome": "selected", "optionId": option_id } }))
+            ) => {
+                let option = options
+                    .iter()
+                    .find(|option| option.id == *option_id)
+                    .ok_or_else(bad_answer)?;
+                let mut result =
+                    json!({ "outcome": { "outcome": "selected", "optionId": option_id } });
+                if let Some(consent) = consent.as_ref().filter(|_| persistent(option.kind)) {
+                    result["_meta"] = json!({ "kiro": { "consent": consent } });
+                }
+                Ok(result)
             }
             (Self::Form(fields), _, RequestResolution::Answered { answers }) => {
                 let mut content = Map::new();
@@ -118,6 +149,32 @@ impl Interaction {
             _ => Err(bad_answer()),
         }
     }
+}
+
+fn persistent(kind: PermissionOptionKind) -> bool {
+    matches!(
+        kind,
+        PermissionOptionKind::AllowAlways | PermissionOptionKind::RejectAlways
+    )
+}
+
+fn consent_resource(context: &Value) -> Option<&str> {
+    context["triggeringResource"]
+        .as_str()
+        .or_else(|| context["resource"].as_str())
+        .filter(|resource| !resource.is_empty())
+}
+
+fn workspace_consent(context: &Value) -> Option<Value> {
+    let resource = consent_resource(context)?;
+    let root = context["workspaceRoot"].as_str()?;
+    if context["persistableConsent"].as_bool() == Some(false)
+        || !std::path::Path::new(root).is_absolute()
+        || resource.contains(['*', '?', '[', ']', '{', '}', '\0', '\r', '\n'])
+    {
+        return None;
+    }
+    Some(json!({ "scope": "workspace", "resource": resource, "workspaceRoot": root }))
 }
 
 fn invalid(message: &str) -> RemoteError {
@@ -259,5 +316,53 @@ impl Field {
         } else {
             Err(bad_answer())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kiro_persistent_consent_uses_only_the_offered_workspace_and_resource() {
+        let cwd = std::env::current_dir().unwrap();
+        let mut params = json!({
+            "toolCall": {"toolCallId": "call", "title": "Review command"},
+            "options": [
+                {"optionId": "accept", "name": "Allow", "kind": "allow_once"},
+                {"optionId": "always-accept", "name": "Always allow", "kind": "allow_always"}
+            ],
+            "_meta": {"kiro": {"consent": {
+                "capability": "shell", "resource": "npm run *", "triggeringResource": "npm run test",
+                "workspaceRoot": cwd, "persistableConsent": true
+            }}}
+        });
+        let selection = |option_id: &str| RequestResolution::Selected {
+            option_id: option_id.to_owned(),
+        };
+        let (protocol, request) =
+            Interaction::parse(PERMISSION, &params, "p".into(), true).unwrap();
+        assert_eq!(request.detail.as_deref(), Some("npm run test"));
+        assert_eq!(
+            protocol
+                .reply(&request.body, &selection("always-accept"))
+                .unwrap(),
+            json!({
+                "outcome": {"outcome": "selected", "optionId": "always-accept"},
+                "_meta": {"kiro": {"consent": {
+                    "scope": "workspace", "resource": "npm run test", "workspaceRoot": cwd
+                }}}
+            })
+        );
+        assert_eq!(
+            protocol.reply(&request.body, &selection("accept")).unwrap(),
+            json!({"outcome": {"outcome": "selected", "optionId": "accept"}})
+        );
+        params["_meta"]["kiro"]["consent"]["triggeringResource"] = Value::Null;
+        let (protocol, request) =
+            Interaction::parse(PERMISSION, &params, "p".into(), true).unwrap();
+        assert!(protocol
+            .reply(&request.body, &selection("always-accept"))
+            .is_err());
     }
 }

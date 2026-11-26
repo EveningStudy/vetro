@@ -14,11 +14,13 @@ use vetro_proto::{
 };
 
 pub(crate) struct Fake {
+    pub starts: AtomicUsize,
     pub cwd: PathBuf,
     pub prompts: Arc<Mutex<Vec<Vec<ContentBlock>>>>,
     pub attaches: AtomicUsize,
     pub detaches: Arc<AtomicUsize>,
     pub shutdowns: AtomicUsize,
+    pub background: Arc<AtomicBool>,
     pub authenticated: Arc<AtomicBool>,
     pub history_path: PathBuf,
     pub reads: AtomicUsize,
@@ -40,12 +42,23 @@ impl Agent for Fake {
             path: None,
             version: Some("test".into()),
             auth: AgentAuth {
-                state: AuthState::Unknown,
-                methods: vec![AuthMethod {
-                    id: "fake-login".into(),
-                    name: "Fake login".into(),
-                    description: None,
-                }],
+                state: if self.authenticated.load(Ordering::Relaxed) {
+                    AuthState::Ok
+                } else {
+                    AuthState::Required
+                },
+                methods: vec![
+                    AuthMethod {
+                        id: "fake-login".into(),
+                        name: "Fake login".into(),
+                        description: None,
+                    },
+                    AuthMethod {
+                        id: "fake-device-code".into(),
+                        name: "Fake device code".into(),
+                        description: None,
+                    },
+                ],
                 account: None,
                 provider: None,
                 endpoint: None,
@@ -53,19 +66,44 @@ impl Agent for Fake {
             capabilities: AgentCapabilities {
                 resume: true,
                 list_sessions: true,
+                image_input: true,
                 ..Default::default()
             },
             error: None,
-            rate_limits: Vec::new(),
+            rate_limits: vec![
+                RateLimit {
+                    label: "five_hour".into(),
+                    used_percent: 20.0,
+                    resets_at: None,
+                },
+                RateLimit {
+                    label: "weekly".into(),
+                    used_percent: 45.0,
+                    resets_at: None,
+                },
+            ],
             rate_limits_updated_at: None,
         }
     }
 
     async fn authenticate(&self, method_id: &str) -> Result<AuthenticateResult> {
+        if method_id == "fake-device-code" {
+            return Ok(AuthenticateResult {
+                url: Some("https://example.test/device".into()),
+                code: Some("TEST-CODE".into()),
+                message: None,
+            });
+        }
         assert_eq!(method_id, "fake-login");
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         self.authenticated.store(true, Ordering::Relaxed);
         Ok(AuthenticateResult::default())
+    }
+
+    fn process_auth(&self) -> Option<AuthState> {
+        self.authenticated
+            .load(Ordering::Relaxed)
+            .then_some(AuthState::Ok)
     }
 
     fn options_need_session(&self) -> bool {
@@ -184,8 +222,14 @@ impl Agent for Fake {
 
     async fn start(&self, req: StartRequest, sink: EventSink) -> Result<Arc<dyn Session>> {
         require_auth(&self.authenticated)?;
-        assert_eq!(req.options.get("model").map(String::as_str), Some("chosen"));
-        let session = self.session("live", sink);
+        let count = self.starts.fetch_add(1, Ordering::Relaxed) + 1;
+        let selected = req.options.get("model").map_or("native", String::as_str);
+        let id = if count == 1 {
+            "live".into()
+        } else {
+            format!("live-{count}")
+        };
+        let session = self.session(&id, sink);
         session.input(req.content);
         session.item(
             "message",
@@ -203,7 +247,7 @@ impl Agent for Fake {
             delta: "stream".into(),
         });
         session.event(SessionEvent::Title("Agent title".into()));
-        session.event(SessionEvent::Options(vec![model("chosen")]));
+        session.event(SessionEvent::Options(vec![model(selected)]));
         session.item(
             "child-tool",
             ItemKind::ToolCall(ToolCall {
@@ -219,23 +263,7 @@ impl Agent for Fake {
                 child_thread_ids: Vec::new(),
             }),
         );
-        session.item(
-            "permission",
-            ItemKind::Request(InteractionRequest {
-                request_id: "permission".into(),
-                call_id: None,
-                title: "Confirm?".into(),
-                detail: None,
-                body: RequestBody::Permission {
-                    options: vec![PermissionOption {
-                        id: "allow".into(),
-                        label: "Allow once".into(),
-                        kind: PermissionOptionKind::AllowOnce,
-                    }],
-                },
-                resolution: None,
-            }),
-        );
+        session.request_permission();
         Ok(Arc::new(session))
     }
 
@@ -263,6 +291,7 @@ impl Fake {
             detaches: self.detaches.clone(),
             log: Arc::new(WireLog::default()),
             authenticated: self.authenticated.clone(),
+            background: self.background.clone(),
         }
     }
 }
@@ -274,6 +303,7 @@ struct FakeSession {
     detaches: Arc<AtomicUsize>,
     log: Arc<WireLog>,
     authenticated: Arc<AtomicBool>,
+    background: Arc<AtomicBool>,
 }
 
 impl FakeSession {
@@ -283,6 +313,26 @@ impl FakeSession {
 
     fn item(&self, id: &str, kind: ItemKind) {
         self.event(SessionEvent::Item(draft(id, kind)));
+    }
+
+    fn request_permission(&self) {
+        self.item(
+            "permission",
+            ItemKind::Request(InteractionRequest {
+                request_id: "permission".into(),
+                call_id: None,
+                title: "Confirm?".into(),
+                detail: None,
+                body: RequestBody::Permission {
+                    options: vec![PermissionOption {
+                        id: "allow".into(),
+                        label: "Allow once".into(),
+                        kind: PermissionOptionKind::AllowOnce,
+                    }],
+                },
+                resolution: None,
+            }),
+        );
     }
 
     fn input(&self, content: Vec<ContentBlock>) {
@@ -317,7 +367,13 @@ impl Session for FakeSession {
 
     async fn send(&self, content: Vec<ContentBlock>) -> Result<()> {
         require_auth(&self.authenticated)?;
+        let permission = content.iter().any(
+            |block| matches!(block, ContentBlock::Text { text } if text == "Request approval before stop"),
+        );
         self.input(content);
+        if permission {
+            self.request_permission();
+        }
         Ok(())
     }
 
@@ -345,7 +401,18 @@ impl Session for FakeSession {
                 streaming: false,
             },
         );
-        self.end("end", StopReason::EndTurn);
+        self.item(
+            "end",
+            ItemKind::TurnEnd {
+                stop_reason: StopReason::EndTurn,
+                usage: Some(TokenUsage {
+                    input: Some(12),
+                    output: Some(7),
+                    ..Default::default()
+                }),
+                duration_ms: Some(4_000),
+            },
+        );
         Ok(())
     }
 
@@ -355,6 +422,10 @@ impl Session for FakeSession {
 
     fn wire_log(&self) -> Arc<WireLog> {
         self.log.clone()
+    }
+
+    fn background_processes(&self) -> usize {
+        usize::from(self.background.load(Ordering::Relaxed))
     }
 }
 
@@ -374,7 +445,16 @@ fn model(value: &str) -> ConfigOption {
         description: None,
         category: ConfigCategory::Model,
         current_value: value.into(),
-        choices: Vec::new(),
+        choices: ["native", "chosen"]
+            .into_iter()
+            .map(|value| ConfigChoice {
+                value: value.into(),
+                name: value.into(),
+                description: None,
+                group: None,
+                danger: false,
+            })
+            .collect(),
     }
 }
 

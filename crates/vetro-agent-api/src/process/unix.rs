@@ -63,6 +63,8 @@ pub(super) fn spawn(
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .process_group(0);
+    #[cfg(target_os = "linux")]
+    super::remove_appimage_environment(command.as_std_mut());
     if let Some(cwd) = spec.cwd {
         command.current_dir(cwd);
     }

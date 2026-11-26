@@ -41,6 +41,7 @@ pub enum ErrorCode {
     Busy,
     /// Processes started by the thread are still running; retry with `force` to end them.
     BackgroundWork,
+    DeliveryUnknown,
     Internal,
 }
 
@@ -344,7 +345,7 @@ pub struct ThreadItemsResult {
 /// Create a native session and send the first message. `content` goes to the agent unchanged.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export)]
+#[ts(export, optional_fields)]
 pub struct ThreadStartParams {
     pub agent_id: String,
     pub cwd: String,
@@ -352,6 +353,10 @@ pub struct ThreadStartParams {
     /// Option id to value, for options the user changed from the agent's defaults.
     #[serde(default)]
     pub options: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_message_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recover_only: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -370,6 +375,9 @@ pub struct ThreadSendParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub client_message_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub recover_only: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -546,21 +554,6 @@ pub struct FsFindParams {
 pub struct FsFindResult {
     /// Paths relative to `cwd`, with forward slashes.
     pub paths: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export)]
-pub struct FsMkdirParams {
-    pub parent: String,
-    pub name: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export)]
-pub struct FsMkdirResult {
-    pub path: String,
 }
 
 // --- workspace (read-only Git inspection & desktop external open) ------------------------------
@@ -894,6 +887,11 @@ pub struct RemoteStatus {
     pub enabled: bool,
     pub port: u16,
     pub tailscale: TailscaleStatus,
+    #[serde(default)]
+    pub external_url: Option<String>,
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub pairing_expires_at: Option<i64>,
     pub devices: Vec<RemoteDevice>,
 }
 
@@ -903,7 +901,11 @@ pub struct RemoteStatus {
 pub struct RemoteSetParams {
     pub enabled: bool,
     /// Also start or stop `tailscale serve` for Vetro's port.
+    #[serde(default)]
     pub tailscale_serve: bool,
+    #[serde(default)]
+    #[ts(optional)]
+    pub external_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

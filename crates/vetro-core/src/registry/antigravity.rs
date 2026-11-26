@@ -52,7 +52,9 @@ impl Antigravity {
 
     async fn list_combined(&self, use_acp: bool) -> Result<SessionPage> {
         let roots = self.roots.clone();
-        let disk = tokio::task::spawn_blocking(move || roots.map(|root| Store::open(root).list()));
+        let disk = tokio::task::spawn_blocking(move || {
+            roots.map(|root| Store::open(root).list_with_native_activity())
+        });
         let acp = if use_acp {
             self.acp_list().await
         } else {
@@ -73,9 +75,9 @@ impl Antigravity {
         for result in disk.await.map_err(internal)? {
             match result {
                 Ok(records) => {
-                    for mut record in records {
+                    for (mut record, native_activity) in records {
                         if let Some(acp) = sessions.get(&record.native_id) {
-                            merge_acp_record(&mut record, acp);
+                            merge_acp_record(&mut record, native_activity, acp);
                         }
                         sessions.insert(record.native_id.clone(), record);
                     }
@@ -104,12 +106,17 @@ impl Antigravity {
     }
 }
 
-fn merge_acp_record(record: &mut SessionRecord, acp: &SessionRecord) {
+fn merge_acp_record(record: &mut SessionRecord, native_activity: Option<i64>, acp: &SessionRecord) {
     if record.source != ThreadSource::Desktop {
         record.resumable = acp.resumable;
     }
     record.model = record.model.take().or_else(|| acp.model.clone());
-    record.updated_at = record.updated_at.max(acp.updated_at);
+    let acp_activity = (acp.updated_at != 0)
+        .then_some(acp.updated_at)
+        .or(acp.created_at);
+    record.updated_at = native_activity
+        .max(acp_activity)
+        .unwrap_or(record.updated_at);
 }
 
 #[async_trait]
@@ -231,9 +238,12 @@ mod tests {
                 updated_at: 1,
                 ..acp.clone()
             };
-            merge_acp_record(&mut disk, &acp);
+            merge_acp_record(&mut disk, Some(1), &acp);
             assert_eq!(disk.resumable, resumable);
             assert_eq!(disk.model, acp.model);
+            assert_eq!(disk.updated_at, 2);
+            disk.updated_at = 3;
+            merge_acp_record(&mut disk, None, &acp);
             assert_eq!(disk.updated_at, 2);
         }
     }

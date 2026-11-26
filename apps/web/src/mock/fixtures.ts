@@ -1184,7 +1184,9 @@ export const settings: Settings = {
 export const remote: RemoteStatus = {
   enabled: true,
   port: 47600,
-  tailscale: { installed: true, running: true, dnsName: "chris-desk.tail4b21.ts.net", serveUrl: "https://chris-desk.tail4b21.ts.net" },
+  externalUrl: null,
+  pairingExpiresAt: null,
+  tailscale: { installed: true, running: true, dnsName: "vetro.example.ts.net", serveUrl: "https://vetro.example.ts.net:8443" },
   devices: [
     { id: "dev-iphone", name: "Alex's iPhone", createdAt: now - 12 * DAY, lastSeenAt: now - 40 * MIN, current: false },
     { id: "dev-ipad", name: "iPad Air", createdAt: now - 30 * DAY, lastSeenAt: now - 4 * DAY, current: false },

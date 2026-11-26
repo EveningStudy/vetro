@@ -247,7 +247,7 @@ export function NewThread({ projectPath, agentId: routeAgent }: { projectPath: s
         <div className="mx-auto mb-6 w-full max-w-(--chat-content-max-width) text-center max-sm:mb-4 max-sm:text-left">
           <h1 className="text-2xl font-semibold tracking-tight text-foreground max-sm:text-xl">{t("new.title")}</h1>
         </div>
-        {needsSignIn && agent ? <SignInCard agent={agent} /> : null}
+        {needsSignIn && agent ? <SignInCard key={agent.id} agent={agent} /> : null}
         <Composer
           draftKey="new"
           agentName={agentName}
@@ -276,7 +276,7 @@ export function NewThread({ projectPath, agentId: routeAgent }: { projectPath: s
             <>
               <AgentPicker agents={agents} current={agent} onChange={setAgentId} />
               {loadingOptions ? <Spinner className="mx-1.5 size-3.5 text-muted-foreground" /> : null}
-              {needsSession && options.length === 0 && !loadingOptions && agent ? (
+              {needsSession && !loadingOptions && agent ? (
                 <button
                   type="button"
                   onClick={prepareOptions}

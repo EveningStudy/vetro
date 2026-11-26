@@ -52,12 +52,13 @@ struct HttpState {
     address: SocketAddr,
     web_dir: Option<PathBuf>,
     stopping: watch::Receiver<bool>,
+    starts: rpc::StartReceipts,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone)]
 enum RequestHost {
     Local,
-    Remote,
+    Remote(Authority),
 }
 
 impl Server {
@@ -75,6 +76,7 @@ impl Server {
             address,
             web_dir: std::env::var_os("VETRO_WEB_DIR").map(PathBuf::from),
             stopping,
+            starts: rpc::StartReceipts::default(),
         });
         Ok(Self {
             listener,
@@ -95,6 +97,10 @@ impl Server {
         )
     }
 
+    pub fn enable_remote_proxy(&mut self, origin: &str) -> Result<()> {
+        self.state.auth.enable_remote_proxy(origin)
+    }
+
     pub async fn serve(
         self,
         shutdown: impl Future<Output = ()> + Send + 'static,
@@ -112,6 +118,10 @@ impl Server {
             .with_state(self.state);
         let history = tokio::spawn(core.clone().history_worker());
         let sessions = tokio::spawn(core.clone().session_worker());
+        let serve_watch = tokio::spawn({
+            let state = state.clone();
+            async move { state.auth.watch_serve(&state).await }
+        });
         let result = axum::serve(
             self.listener,
             app.into_make_service_with_connect_info::<SocketAddr>(),
@@ -121,6 +131,8 @@ impl Server {
             self.stop.send_replace(true);
         })
         .await;
+        serve_watch.abort();
+        let _ = serve_watch.await;
         state.auth.stop().await;
         history.abort();
         sessions.abort();
@@ -178,7 +190,7 @@ async fn check_origin(
     ) {
         RequestHost::Local
     } else if state.auth.allows(&host) {
-        RequestHost::Remote
+        RequestHost::Remote(host.clone())
     } else {
         return StatusCode::FORBIDDEN.into_response();
     };
@@ -189,7 +201,7 @@ async fn check_origin(
             .and_then(|value| value.parse::<Uri>().ok())
             .is_some_and(|origin| {
                 matches!(origin.scheme_str(), Some("http" | "https"))
-                    && (kind == RequestHost::Local || origin.scheme_str() == Some("https"))
+                    && (matches!(kind, RequestHost::Local) || origin.scheme_str() == Some("https"))
                     && origin
                         .path_and_query()
                         .is_none_or(|path| path.as_str() == "/")
@@ -238,9 +250,13 @@ async fn handshake(
         let client = (request.method == "app.hello")
             .then(|| serde_json::from_value::<HelloParams>(request.params.clone()).ok())
             .flatten()
-            .and_then(|params| state.auth.client(state, params.session.as_deref()?, host));
+            .and_then(|params| state.auth.client(state, params.session.as_deref()?, &host));
         let response = if let Some(client) = &client {
-            rpc::dispatch(state, client, connection, request).await
+            let response = rpc::dispatch(state, client, connection, request).await;
+            if connection.hello {
+                client.record_connection(state);
+            }
+            response
         } else {
             RpcResponse {
                 id: request.id,
@@ -289,6 +305,7 @@ async fn websocket(mut socket: WebSocket, state: Arc<HttpState>, host: RequestHo
     }
     loop {
         let mut completed = None;
+        let mut self_revoked = false;
         let message = tokio::select! {
             _ = &mut invalidated => break,
             _ = stopping.changed() => break,
@@ -302,14 +319,18 @@ async fn websocket(mut socket: WebSocket, state: Arc<HttpState>, host: RequestHo
                         if !client.valid(&state) {
                             break;
                         }
+                        let self_revoke = request.method == "remote.revokeDevice"
+                            && request.params["deviceId"] == client.device_key();
                         let thread_id = request.params["threadId"].as_str().map(str::to_owned);
-                        if matches!(request.method.as_str(), "threads.close" | "prefs.set") {
+                        if self_revoke || matches!(request.method.as_str(), "threads.close" | "prefs.set") {
                             if request.method == "threads.close" {
                                 if let Some(id) = thread_id {
                                     pending_opens.remove(&id);
                                 }
                             }
-                            serde_json::to_string(&rpc::dispatch(&state, &client, &mut connection, request).await)
+                            let response = rpc::dispatch(&state, &client, &mut connection, request).await;
+                            self_revoked = self_revoke && response.error.is_none();
+                            serde_json::to_string(&response)
                         } else if requests.len() >= MAX_REQUESTS {
                             serde_json::to_string(&json!({
                                 "id": request.id,
@@ -370,6 +391,14 @@ async fn websocket(mut socket: WebSocket, state: Arc<HttpState>, host: RequestHo
             }
         };
         let Ok(message) = message else { break };
+        if self_revoked {
+            let _ = tokio::time::timeout(Duration::from_secs(5), async {
+                socket.send(Message::Text(message.into())).await?;
+                socket.send(Message::Close(None)).await
+            })
+            .await;
+            break;
+        }
         let mut outgoing = vec![message];
         if let Some(completed) = completed {
             match connection.merge(completed) {

@@ -3,7 +3,7 @@
 ## Shape
 
 ```
- desktop window (Tauri, system WebView)      browser / phone (via tailscale serve)
+ desktop window (Tauri, system WebView)      browser / phone (private HTTPS)
               \                                   /
                \        HTTP + one WebSocket     /
                 +----------- vetro-core --------+        one Rust process
@@ -24,6 +24,7 @@ The desktop app and `vetro serve` are the same core. The Tauri shell only create
 
 Everything Vetro writes is under `~/.vetro` (`VETRO_HOME` overrides):
 
+- `core.lock`: an operating system lock held for the lifetime of the core. Each data directory has one owner. To run a desktop or CLI build alongside another core, give each a different `VETRO_HOME`.
 - `config.json`: `Settings` from `vetro-proto`.
 - `state.json`: local bootstrap token, session token hashes, paired devices, per-device preferences, thread and project overlays, cached agent options and official rate-limit snapshots.
 - `index.db`: thread index and full-text search. Disposable; rebuilt from the agents' stores.
@@ -35,6 +36,8 @@ Everything Vetro writes is under `~/.vetro` (`VETRO_HOME` overrides):
 Adapters implement `vetro_agent_api::Agent` and emit `SessionEvent`s. The core assigns item ordinals and produces the UI's `vetro_proto::ThreadEvent`s. A multiplexed session's raw log contains the process launch, handshake, and wire traffic for that session.
 
 Detection: a binary is looked up in `Settings.agents[id].binaryPath`, then `PATH`, then well-known install locations (npm global shims are resolved to the real executable; the Claude desktop app's bundled `claude` and Devin Desktop's bundled `devin` are fallbacks). Detection never installs or downloads anything.
+
+The Linux AppImage uses bundled paths for its WebView. Agent processes and the workspace's Git, system file opener, editor, and terminal commands inherit the host environment with AppImage mount paths removed. Paths outside the bundle and configured agent environment overrides remain available.
 
 ### Codex: `codex app-server`
 
@@ -64,7 +67,8 @@ One generic ACP v1 client (`agent-client-protocol` crate or a small hand-written
 
 - `initialize` with `clientCapabilities { fs: { readTextFile: false, writeTextFile: false }, terminal: false }` so the agent uses its own tools and Vetro adds nothing.
 - `session/new` with `cwd` and `mcpServers: []`. Prompts are forwarded as typed: text, images, resource links for mentioned files.
-- `session/update` notifications map one-to-one to items; `session/request_permission` and elicitation become `InteractionRequest`s; `session/cancel` stops a turn.
+- `session/update` notifications map to items; `session/request_permission` and elicitation become `InteractionRequest`s; `session/cancel` stops a turn.
+- Kiro uses `_session/steer` for plain text during an active turn, including while a permission is pending. The user message appears when Kiro reports injection. Structured inputs wait for the next turn. Kiro V3 persistent consent uses the requested resource and workspace scope. An explicitly selected permission preset is applied on session creation or live attachment. History reads and option preparation use native defaults.
 - Models, modes and thinking levels come from the agent's `configOptions` / `modes` and are changed with `session/set_config_option` / `session/set_mode`.
 - History: `session/list` where advertised, `session/load` to read and continue.
 - Auth: when the agent answers `auth_required`, the UI offers the agent's own `authMethods`; `authenticate` runs the agent's flow. Vetro never sees a credential.
@@ -76,7 +80,7 @@ One generic ACP v1 client (`agent-client-protocol` crate or a small hand-written
 - A thread id is `<agentId>:<nativeSessionId>`. Threads exist whether or not Vetro started them; attaching a live native session to one makes it `live`.
 - Each open thread keeps its items in memory and an event log with a per-thread `seq`. Clients open a thread, get the newest page of items plus the current `seq`, then receive `thread.event`s. After a reconnect the client opens the thread again and replaces its copy.
 - Sending to a thread that is not live resumes the native session first (`thread/resume`, `--resume`, `session/load` or `session/resume`). If the agent cannot resume it, the thread is read-only (`resumable: false`).
-- The `idleReleaseMinutes` setting controls live sessions with no running turn or open request. A thread waiting on a permission request stays live. An agent process with no live session or call in flight is released after about a minute regardless of that setting. Later calls restart it on demand. Dormant protocol history polls slow down to about once a minute. File changes and open history threads still trigger timely refreshes.
+- The `idleReleaseMinutes` setting controls live sessions with no running turn, open request, queued message, or post-prompt descendant still running. On multiplexed runtimes, descendant protection applies to all attached sessions. Runtime helpers that appear late can also hold the process open. Later calls restart released runtimes on demand. Dormant protocol history polls slow down to about once a minute. File changes and open history threads still trigger timely refreshes.
 - Windows uses a Job Object with `KILL_ON_JOB_CLOSE` for each owned process tree. On Unix a watchdog in the original process group detects stop, drop, and loss of the core, including a hard kill. It kills the original group. On Linux (`/proc`) and macOS (`libproc`) it also checks the descendant tree every 50 ms and at shutdown, and kills recorded descendants that moved to other groups or sessions after checking PID and start time. This covers up to 8,192 tracked processes per tree. A process that leaves the group and is reparented between snapshots can escape Unix tracking. Browsers launched through the system sign-in flow outside the owned process tree remain under system control.
 
 ## History (read-only)
@@ -104,7 +108,7 @@ Historical `TurnEnd` items carry completion metadata supported by the source. A 
 
 ## Background work
 
-An agent's tools can leave processes running after its turn ends (background shells, delegated agents). The core snapshots the agent process tree when a turn starts; processes that appear after that snapshot and are still alive count as the thread's background work. Processes that already existed (tool servers, console hosts) do not count, and a later turn absorbs any helper that started lazily. Idle release skips a thread with background work, because releasing the agent process ends its tree. `threads.detach` refuses with `background_work` until the client confirms with `force`. Every release is logged with its reason. Vetro never prompts the agent when background work finishes; whether the agent resumes on its own is native behaviour.
+An agent's tools can leave processes running after its turn ends (background shells, delegated agents). Each runtime records its existing child processes before the first user prompt. Live descendants that appear after that snapshot count as possible background work across turns and sessions on that runtime. Idle release waits for them because releasing the agent process ends its tree. `threads.detach` refuses with `background_work` until the client confirms with `force`. Every release is logged with its reason. Vetro never prompts the agent when background work finishes; whether the agent resumes on its own is native behaviour.
 
 ## Links between agents
 
@@ -122,8 +126,9 @@ Matching prefers exact evidence, then prompts, then matching directories and exe
 
 ## Server and remote access
 
-- The server binds only to `127.0.0.1`. The desktop client can explicitly enable remote access and start Tailscale Serve on HTTPS port `8443` for the machine's Tailscale DNS name. Vetro runs a process-scoped Serve entry in the background. Disabling remote access or exiting removes that entry. Vetro refuses to take an occupied port `8443`.
-- All HTTP routes and WebSocket upgrades check `Host` and any supplied `Origin`. Loopback is always accepted. The machine's Tailscale DNS name on HTTPS port `8443` is accepted only while remote access is enabled.
+- The server binds only to `127.0.0.1`. The desktop client can explicitly enable remote access and start Tailscale Serve on HTTPS port `8443` for the machine's Tailscale DNS name. Vetro runs a process-scoped Serve entry in the background. Disabling remote access or exiting removes that entry. If the Serve process exits, Core clears its address and pending pairing code, disconnects its clients, and publishes the new status. Vetro refuses to take an occupied port `8443`.
+- The host can instead explicitly allow one HTTPS origin served by an independently managed reverse proxy. The proxy forwards HTTP and WebSocket to the same loopback Core instance. A headless host can declare the origin with `vetro serve --port … --remote-url …`. See [remote access](remote.md).
+- All HTTP routes and WebSocket upgrades check `Host` and any supplied `Origin`. The active remote authority must match the configured proxy or Vetro's active Serve entry. Only the loopback origin supports local token exchange. Stopping remote access or switching its origin clears the pairing code and disconnects sockets on the old origin.
 - The desktop exchanges its bootstrap token for a local session token. Remote devices exchange a single-use, 10-minute code for a paired session token. Global and per-peer budgets apply to each pairing code. The core stores session hashes and validates the supplied token in `app.hello` or the HTTP bearer header. WebSockets must authenticate within four seconds. Disabling remote access or revoking a device closes its remote sockets. The local client can revoke its issued session tokens through `remote.revokeDevice` with device ID `local`.
 - HTTP endpoints: `GET /api/health`, `POST /api/auth/local`, `POST /api/auth/pair`, `GET /api/ws`, and the static UI with SPA fallback. Everything else goes over the WebSocket (see `docs/API.md`).
 - The UI is embedded in the binary from `apps/web/dist`. In development `VETRO_WEB_DIR` serves it from disk, and the Vite dev server proxies `/api` to the core.

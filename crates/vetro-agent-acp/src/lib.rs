@@ -14,7 +14,8 @@ use vetro_agent_api::{
 };
 use vetro_proto::{
     rpc::{AuthenticateResult, ErrorCode},
-    AgentAuth, AgentCapabilities, AgentInfo, AgentKind, AuthMethod, AuthState,
+    AgentAuth, AgentCapabilities, AgentInfo, AgentKind, AuthMethod, AuthState, ConfigCategory,
+    ConfigChoice, ConfigOption,
 };
 
 pub use vetro_agent_api::process::SpawnSpec;
@@ -51,11 +52,17 @@ struct Runtime {
 }
 
 const PREPARED_TTL: Duration = Duration::from_secs(60);
+const KIRO_PERMISSIONS: &str = "permissionPreset";
+const KIRO_DEFAULT_PERMISSIONS: &str = "native-default";
+const KIRO_ALLOW_ALL: &str = "allow-all";
+const KIRO_LIST_PRESETS: &str = "_kiro/permissions/presets/list";
 
 #[derive(Default)]
 pub(crate) struct Capabilities {
     image: bool,
     steering: bool,
+    kiro_steering: bool,
+    kiro_presets: bool,
     load: bool,
     resume: bool,
     list: bool,
@@ -145,6 +152,10 @@ impl AcpAgent {
         let agent = &initial["agentCapabilities"];
         let session = &agent["sessionCapabilities"];
         let supports = |key: &str| session[key].is_object() || session[key].as_bool() == Some(true);
+        let kiro_steering = self.id == "kiro" && agent["_meta"]["kiro"].is_object();
+        let kiro_presets = kiro_steering
+            && array(&agent["_meta"]["kiro"]["extensionMethods"])
+                .any(|method| method.as_str() == Some(KIRO_LIST_PRESETS));
         let runtime = Arc::new(Runtime {
             connection,
             prepared: Mutex::new(None),
@@ -158,6 +169,8 @@ impl AcpAgent {
                         .as_bool()
                         .unwrap_or_default()
                     || agent["_meta"]["cognition.ai/midTurnPrompts"].as_bool() == Some(true),
+                kiro_steering,
+                kiro_presets,
                 load: agent["loadSession"].as_bool().unwrap_or_default(),
                 resume: supports("resume"),
                 list: supports("list"),
@@ -335,10 +348,14 @@ impl AcpAgent {
         runtime: &Runtime,
         cwd: PathBuf,
         sink: Option<EventSink>,
+        permissions: Option<&ConfigOption>,
     ) -> Result<Arc<AcpSession>> {
         let _capture = runtime.connection.capture_new();
         let result = runtime
-            .call("session/new", json!({ "cwd": cwd, "mcpServers": [] }))
+            .call(
+                "session/new",
+                with_permissions(json!({ "cwd": cwd, "mcpServers": [] }), permissions),
+            )
             .await?;
         let id = string(&result, "sessionId").ok_or_else(|| {
             AgentError::new(ErrorCode::Internal, "ACP session/new omitted sessionId")
@@ -351,6 +368,7 @@ impl AcpAgent {
             sink,
             false,
         );
+        session.set_permission_preset(permissions.cloned());
         session.initialize(&result);
         runtime.connection.register(&id, &session)?;
         session.capture_initial_options();
@@ -359,6 +377,62 @@ impl AcpAgent {
 }
 
 impl Runtime {
+    async fn permission_preset(
+        &self,
+        cwd: &Path,
+        selected: Option<&str>,
+    ) -> Result<Option<ConfigOption>> {
+        let selected = selected.unwrap_or(KIRO_DEFAULT_PERMISSIONS);
+        let presets = if self.capabilities.kiro_presets {
+            self.call(KIRO_LIST_PRESETS, json!({ "cwd": cwd }))
+                .await
+                .ok()
+        } else {
+            None
+        };
+        let Some(allow_all) = presets.as_ref().and_then(|presets| {
+            array(&presets["presets"]).find(|preset| preset["id"].as_str() == Some(KIRO_ALLOW_ALL))
+        }) else {
+            return if selected == KIRO_DEFAULT_PERMISSIONS {
+                Ok(None)
+            } else {
+                Err(AgentError::new(
+                    ErrorCode::BadRequest,
+                    "This Kiro runtime does not offer the selected permission preset",
+                ))
+            };
+        };
+        if !matches!(selected, KIRO_DEFAULT_PERMISSIONS | KIRO_ALLOW_ALL) {
+            return Err(AgentError::new(
+                ErrorCode::BadRequest,
+                "Unknown Kiro permission preset",
+            ));
+        }
+        Ok(Some(ConfigOption {
+            id: KIRO_PERMISSIONS.into(),
+            name: "Permissions".into(),
+            description: Some("Tool approval policy for this Kiro session".into()),
+            category: ConfigCategory::Mode,
+            current_value: selected.to_owned(),
+            choices: vec![
+                ConfigChoice {
+                    value: KIRO_DEFAULT_PERMISSIONS.into(),
+                    name: "Kiro defaults".into(),
+                    description: Some("Use Kiro's configured permission rules".into()),
+                    group: None,
+                    danger: false,
+                },
+                ConfigChoice {
+                    value: KIRO_ALLOW_ALL.into(),
+                    name: string(allow_all, "name").unwrap_or_else(|| "Allow all".into()),
+                    description: string(allow_all, "description"),
+                    group: None,
+                    danger: true,
+                },
+            ],
+        }))
+    }
+
     async fn call(&self, method: &str, params: Value) -> Result<Value> {
         let result = self.connection.call(method, params).await;
         self.connection.observe_auth(method, &result);
@@ -443,7 +517,7 @@ impl Agent for AcpAgent {
                 let caps = &runtime.capabilities;
                 info.capabilities = AgentCapabilities {
                     image_input: caps.image,
-                    mid_turn_input: caps.steering,
+                    mid_turn_input: caps.steering || caps.kiro_steering,
                     resume: caps.load || caps.resume,
                     list_sessions: caps.list,
                     fork: vetro_proto::ForkCapabilities {
@@ -533,10 +607,26 @@ impl Agent for AcpAgent {
 
     async fn options(
         &self,
-        _cwd: Option<&Path>,
+        cwd: Option<&Path>,
         _selected: &BTreeMap<String, String>,
     ) -> Result<AgentOptions> {
-        Ok(AgentOptions::default())
+        self.options_without_session(cwd).await
+    }
+
+    async fn options_without_session(&self, cwd: Option<&Path>) -> Result<AgentOptions> {
+        if self.id != "kiro" {
+            return Ok(AgentOptions::default());
+        }
+        let cwd = self.cwd(cwd)?;
+        let runtime = self.runtime(Some(&cwd)).await?;
+        Ok(AgentOptions {
+            options: runtime
+                .permission_preset(&cwd, None)
+                .await?
+                .into_iter()
+                .collect(),
+            commands: Vec::new(),
+        })
     }
 
     async fn prepare_options(
@@ -556,10 +646,14 @@ impl Agent for AcpAgent {
                 if let Some((_, session)) = previous {
                     runtime.discard_prepared(session).await;
                 }
-                self.new_session(&runtime, cwd, None).await?
+                let permissions = runtime.permission_preset(&cwd, None).await?;
+                self.new_session(&runtime, cwd, None, permissions.as_ref())
+                    .await?
             }
         };
-        let applied = apply_options(&session, selected, true, true).await;
+        let mut selected = selected.clone();
+        selected.remove(KIRO_PERMISSIONS);
+        let applied = apply_options(&session, &selected, true, true).await;
         let options = session.options();
         *runtime.prepared.lock().unwrap() = Some((Instant::now(), session));
         applied?;
@@ -619,12 +713,21 @@ impl Agent for AcpAgent {
         let cwd = self.cwd(Some(&req.cwd))?;
         let runtime = self.runtime(Some(&cwd)).await?;
         mapping::prompt(&req.content, &cwd, runtime.capabilities.image)?;
+        let mut choices = req.options;
+        let permissions = runtime
+            .permission_preset(&cwd, choices.remove(KIRO_PERMISSIONS).as_deref())
+            .await?;
+        let uses_default_permissions = permissions
+            .as_ref()
+            .is_none_or(|option| option.current_value == KIRO_DEFAULT_PERMISSIONS);
         let (session, reused) = {
             let _lifecycle = runtime.connection.lifecycle.lock().await;
             let previous = runtime.prepared.lock().unwrap().take();
             match previous {
                 Some((created, session))
-                    if session.cwd == cwd && created.elapsed() < PREPARED_TTL =>
+                    if session.cwd == cwd
+                        && created.elapsed() < PREPARED_TTL
+                        && uses_default_permissions =>
                 {
                     session.activate(&Value::Null, sink);
                     (session, true)
@@ -634,7 +737,8 @@ impl Agent for AcpAgent {
                         runtime.discard_prepared(session).await;
                     }
                     (
-                        self.new_session(&runtime, cwd.clone(), Some(sink)).await?,
+                        self.new_session(&runtime, cwd.clone(), Some(sink), permissions.as_ref())
+                            .await?,
                         false,
                     )
                 }
@@ -642,7 +746,7 @@ impl Agent for AcpAgent {
         };
         session.capture_initial_options();
         self.remember(&session.id, &cwd);
-        let skipped = match apply_options(&session, &req.options, reused, true).await {
+        let skipped = match apply_options(&session, &choices, reused, true).await {
             Ok(skipped) => skipped,
             Err(error) => {
                 // Prompt has not been sent yet; clean up the empty native session when supported.
@@ -675,8 +779,27 @@ impl Agent for AcpAgent {
         cwd: Option<&Path>,
         sink: EventSink,
     ) -> Result<Arc<dyn Session>> {
+        self.attach_with_options(native_id, cwd, BTreeMap::new(), sink)
+            .await
+    }
+
+    fn resume_option_at_launch(&self, id: &str) -> bool {
+        self.id == "kiro" && id == KIRO_PERMISSIONS
+    }
+
+    fn resume_option_requires_detach(&self, id: &str) -> bool {
+        self.resume_option_at_launch(id)
+    }
+
+    async fn attach_with_options(
+        &self,
+        native_id: &str,
+        cwd: Option<&Path>,
+        options: BTreeMap<String, String>,
+        sink: EventSink,
+    ) -> Result<Arc<dyn Session>> {
         let runtime = self.runtime(cwd).await?;
-        let method = if runtime.capabilities.resume {
+        let method = if runtime.capabilities.resume && !runtime.capabilities.kiro_presets {
             "session/resume"
         } else if runtime.capabilities.load {
             "session/load"
@@ -687,6 +810,9 @@ impl Agent for AcpAgent {
             ));
         };
         let cwd = self.stored_cwd(&runtime, native_id, cwd).await?;
+        let permissions = runtime
+            .permission_preset(&cwd, options.get(KIRO_PERMISSIONS).map(String::as_str))
+            .await?;
         let _lifecycle = runtime.connection.lifecycle.lock().await;
         let session = AcpSession::new(
             Arc::clone(&runtime.connection),
@@ -696,15 +822,20 @@ impl Agent for AcpAgent {
             None,
             false,
         );
+        session.set_permission_preset(permissions.clone());
         runtime.connection.register(native_id, &session)?;
         let live = Arc::downgrade(&session);
         let reply = runtime
             .connection
-            .call_ordered(method, session_params(native_id, &cwd), move |reply| {
-                if let (Ok(value), Some(session)) = (reply, live.upgrade()) {
-                    session.activate(value, sink);
-                }
-            })
+            .call_ordered(
+                method,
+                with_permissions(session_params(native_id, &cwd), permissions.as_ref()),
+                move |reply| {
+                    if let (Ok(value), Some(session)) = (reply, live.upgrade()) {
+                        session.activate(value, sink);
+                    }
+                },
+            )
             .await;
         runtime.connection.observe_auth(method, &reply);
         if let Err(error) = reply {
@@ -787,6 +918,15 @@ impl Agent for AcpAgent {
 
 fn session_params(id: &str, cwd: &Path) -> Value {
     json!({ "sessionId": id, "cwd": cwd, "mcpServers": [] })
+}
+
+fn with_permissions(mut params: Value, permissions: Option<&ConfigOption>) -> Value {
+    if let Some(option) =
+        permissions.filter(|option| option.current_value != KIRO_DEFAULT_PERMISSIONS)
+    {
+        params["_meta"] = json!({ "kiro": { "policyPreset": [option.current_value] } });
+    }
+    params
 }
 
 async fn apply_options(
@@ -926,6 +1066,8 @@ async fn devin_auth_status(spec: &SpawnSpec) -> (AuthState, Option<String>) {
     }
     #[cfg(windows)]
     command.creation_flags(0x08000000);
+    #[cfg(target_os = "linux")]
+    vetro_agent_api::process::remove_appimage_environment(command.as_std_mut());
     match tokio::time::timeout(Duration::from_secs(5), command.output()).await {
         Ok(Ok(output)) => parse_devin_auth_status(&String::from_utf8_lossy(&output.stdout)),
         _ => (AuthState::Unknown, None),

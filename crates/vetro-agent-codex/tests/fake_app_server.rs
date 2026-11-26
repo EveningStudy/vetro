@@ -130,11 +130,14 @@ fn app_server() {
             }
             "config/read" => json!({"config": {
                 "sandbox_mode": "read-only",
+                "approval_policy": "on-request",
                 "model_provider": "magpie",
                 "model_providers": {"magpie": {"base_url": "http://127.0.0.1:3425/v1"}}
             }}),
             "permissionProfile/list" => json!({"data": [
-                {"id": ":read-only", "allowed": true}, {"id": ":blocked", "allowed": false},
+                {"id": ":read-only", "allowed": true},
+                {"id": ":danger-full-access", "allowed": true},
+                {"id": ":blocked", "allowed": false},
             ]}),
             "thread/start" => {
                 started += 1;
@@ -144,7 +147,8 @@ fn app_server() {
                 } else {
                     assert_eq!(
                         params,
-                        &json!({"cwd": cwd, "model": "alternative", "permissions": ":read-only"})
+                        &json!({"cwd": cwd, "model": "alternative",
+                            "permissions": ":danger-full-access", "approvalPolicy": "never"})
                     );
                 }
                 json!({"thread": {"id": format!("thread-{started}"), "status": {"type": "idle"}}, "model": "fixture"})
@@ -310,7 +314,29 @@ fn app_server() {
                 assert_eq!(params["threadId"], "saved");
                 assert_eq!(params["lastTurnId"], "history-turn");
                 assert_eq!(params["excludeTurns"], true);
-                json!({"thread": {"id": "saved-fork", "name": "Forked", "status": {"type": "idle"}}, "model": "fixture"})
+                json!({
+                    "thread": {"id": "saved-fork", "name": "Forked", "status": {"type": "idle"}},
+                    "model": "fixture",
+                    "activePermissionProfile": {"id": ":read-only"},
+                    "approvalPolicy": "never"
+                })
+            }
+            "thread/settings/update" if params.get("approvalPolicy").is_some() => {
+                assert_eq!(
+                    params,
+                    &json!({"threadId": "thread-1", "approvalPolicy": "never"})
+                );
+                send(event(
+                    "thread/settings/updated",
+                    json!({
+                        "threadId": "thread-1", "threadSettings": {
+                            "approvalPolicy": "never",
+                            "activePermissionProfile": {"id": ":read-only"},
+                            "sandboxPolicy": {"type": "readOnly"}
+                        }
+                    }),
+                ));
+                json!({})
             }
             "thread/settings/update" if params.get("collaborationMode").is_some() => {
                 assert_eq!(
@@ -386,8 +412,14 @@ async fn test_adapter() {
         .any(|option| option.id == "model" && option.choices.len() == 2));
     assert!(options.iter().any(|option| option.id == "permissions"
         && option.current_value == ":read-only"
-        && option.choices.len() == 1
+        && option.choices.len() == 2
         && option.choices[0].name == "Read only"));
+    assert!(options.iter().any(|option| option.id == "approvalPolicy"
+        && option.current_value == "on-request"
+        && option
+            .choices
+            .iter()
+            .any(|choice| choice.value == "never" && choice.danger)));
     assert!(options
         .iter()
         .any(|option| option.id == "mode" && option.current_value == "default"));
@@ -463,7 +495,8 @@ async fn test_adapter() {
                 cwd,
                 options: [
                     ("model".into(), "alternative".into()),
-                    ("permissions".into(), ":read-only".into()),
+                    ("permissions".into(), ":danger-full-access".into()),
+                    ("approvalPolicy".into(), "never".into()),
                     ("effort".into(), "high".into()),
                 ]
                 .into(),
@@ -533,6 +566,13 @@ async fn test_adapter() {
         }
     }
     assert!(running_output);
+    let options = first.set_option("approvalPolicy", "never").await.unwrap();
+    assert!(options
+        .iter()
+        .any(|option| option.id == "approvalPolicy" && option.current_value == "never"));
+    assert!(options
+        .iter()
+        .any(|option| option.id == "permissions" && option.current_value == ":read-only"));
     let options = first.set_option("model", "alternative").await.unwrap();
     assert!(options
         .iter()
@@ -594,6 +634,13 @@ async fn test_adapter() {
         .await
         .unwrap();
     assert_eq!(forked.native_id(), "saved-fork");
+    let options = forked.current_options().unwrap();
+    assert!(options
+        .iter()
+        .any(|option| option.id == "permissions" && option.current_value == ":read-only"));
+    assert!(options
+        .iter()
+        .any(|option| option.id == "approvalPolicy" && option.current_value == "never"));
     while recv(&mut forked_events).await != SessionEvent::Title("Forked".into()) {}
     forked.detach().await;
     let (sink, mut resumed_events) = mpsc::unbounded_channel();

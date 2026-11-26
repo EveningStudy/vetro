@@ -340,6 +340,9 @@ pub trait Agent: Send + Sync + 'static {
     fn options_need_session(&self) -> bool {
         false
     }
+    async fn options_without_session(&self, _cwd: Option<&Path>) -> Result<AgentOptions> {
+        Ok(AgentOptions::default())
+    }
     async fn options(
         &self,
         cwd: Option<&Path>,
@@ -370,6 +373,9 @@ pub trait Agent: Send + Sync + 'static {
         sink: EventSink,
     ) -> Result<Arc<dyn Session>>;
     fn resume_option_at_launch(&self, _id: &str) -> bool {
+        false
+    }
+    fn resume_option_requires_detach(&self, _id: &str) -> bool {
         false
     }
     fn retry_option_on_resume(&self, _id: &str, _error: &AgentError) -> bool {
@@ -422,6 +428,9 @@ pub trait Session: Send + Sync + 'static {
     fn current_options(&self) -> Option<Vec<ConfigOption>> {
         None
     }
+    fn can_send_during_turn(&self, _content: &[ContentBlock], awaiting_input: bool) -> bool {
+        !awaiting_input
+    }
     async fn send(&self, content: Vec<ContentBlock>) -> Result<()>;
     async fn interrupt(&self) -> Result<()>;
     async fn set_option(&self, option_id: &str, value: &str) -> Result<Vec<ConfigOption>>;
@@ -438,8 +447,8 @@ pub trait Session: Send + Sync + 'static {
     }
     async fn detach(&self);
     fn wire_log(&self) -> Arc<WireLog>;
-    /// Live processes started by the agent process that hosts this session.
-    fn descendants(&self) -> Vec<process::ProcessIdentity> {
-        Vec::new()
+    /// Live descendants that appeared after the runtime began processing prompts.
+    fn background_processes(&self) -> usize {
+        0
     }
 }

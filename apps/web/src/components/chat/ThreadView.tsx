@@ -519,12 +519,12 @@ function ThreadComposer({ thread }: { thread: OpenThread }) {
       onCancelQueued={(queueId) => void actions.cancelQueued(summary.id, queueId)}
       onOptionChange={(optionId, value) => {
         const option = thread.options.find((entry) => entry.id === optionId);
-        if (option) {
+        void actions.setOption(summary.id, optionId, value).then((applied) => {
+          if (!option || !applied) return;
           const activeModel =
             option.category === "model" ? value : thread.options.find((entry) => entry.category === "model")?.currentValue;
           rememberAgentOption(summary.agentId, realProjectCwd, option, value, undefined, activeModel, bypassMemoryScope);
-        }
-        void actions.setOption(summary.id, optionId, value);
+        });
       }}
       onSubmit={(content) =>
         actions.send(summary.id, content).catch((error: unknown) => {
