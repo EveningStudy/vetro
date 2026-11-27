@@ -35,10 +35,10 @@
 ## Why Verre
 
 - **Transparent like glass.** Prompts go straight to the official agent binary untouched — no injected system instructions, wrappers, tools, or MCP servers. `CLAUDE.md`, `config.toml`, hooks, skills, custom gateways, and rate limits work just like the terminal, and any thread's raw wire log lets you inspect every frame.
+- **Light native stack.** One Rust core (~14 MB binary) and OS WebView (~40 MB idle RAM, zero Electron or Node), with read-only Git diffs, 10 built-in & custom themes, optional offline voice input, and 8 UI languages.
 - **Zero footprint, clean exit.** Verre writes only inside `~/.verre` (`VERRE_HOME` overrides), reads other tools' stores read-only, leaves projects untouched, and terminates its managed child tree on exit. Remove the app and `~/.verre` to uninstall completely.
 - **One sidebar across tools.** Browse local sessions from Verre, vendor desktop apps, and CLIs, search full transcripts across English and CJK, and jump straight into linked child sessions (such as Claude Code calling `codex exec`).
 - **Private remote access.** Pair a phone or browser over Tailscale Serve or your own HTTPS reverse proxy (`127.0.0.1` only), handle approvals on the move, and steer running turns.
-- **Light native stack.** One Rust core (~14 MB binary) and OS WebView (~40 MB idle RAM, zero Electron or Node), with read-only Git diffs, 10 built-in & custom themes, optional offline voice input, and 8 UI languages.
 
 | Raw wire log & command line | Approval card & Warm Paper theme |
 |---|---|

@@ -35,10 +35,10 @@
 ## Warum Verre
 
 - **Durchsichtig wie Glas.** Eingaben gehen unverändert an das offizielle Binary – keine System-Prompts, keine Wrapper, keine extra MCP-Server. `CLAUDE.md`, `config.toml`, Hooks, Skills, eigene Gateways und Limits verhalten sich exakt wie im Terminal, und jedes Rohprotokoll zeigt jeden Frame live.
+- **Leichtes natives Fundament.** Ein Rust-Prozess (~14 MB Binary) plus System-WebView (~40 MB Ruhe-RAM, kein Electron oder Node), mit schreibgeschützten Git-Diffs, 10 integrierten & eigenen Themes, optionaler Offline-Spracheingabe und 8 UI-Sprachen.
 - **Keine Spuren, sauberes Ende.** Verre schreibt nur nach `~/.verre` (`VERRE_HOME` überschreibt den Pfad), liest fremde Stores strikt schreibgeschützt, lässt Projekte unberührt und beendet beim Schließen seine komplette Kindprozess-Hierarchie. App und `~/.verre` löschen genügt zum Deinstallieren.
 - **Eine Seitenleiste für alle Tools.** Durchsuche lokale Sitzungen aus Verre, offiziellen Desktop-Apps und CLIs in Englisch und CJK und springe direkt in verknüpfte Subsitzungen (etwa wenn Claude Code `codex exec` startet).
 - **Privater Fernzugriff.** Kopple Smartphone oder Browser per Tailscale Serve oder eigenem HTTPS-Reverse-Proxy (nur `127.0.0.1`), gib Befehle unterwegs frei und steuere laufende Züge nach.
-- **Leichtes natives Fundament.** Ein Rust-Prozess (~14 MB Binary) plus System-WebView (~40 MB Ruhe-RAM, kein Electron oder Node), mit schreibgeschützten Git-Diffs, 10 integrierten & eigenen Themes, optionaler Offline-Spracheingabe und 8 UI-Sprachen.
 
 | Rohprotokoll & Startbefehl | Freigabekarte & Warmes-Papier-Theme |
 |---|---|

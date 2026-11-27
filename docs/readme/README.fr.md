@@ -35,10 +35,10 @@
 ## Pourquoi « Verre »
 
 - **Transparent comme le verre.** Vos messages arrivent intacts au binaire officiel : aucune instruction système ajoutée, aucun enrobage, aucun serveur MCP injecté. Vos fichiers `CLAUDE.md`, `config.toml`, hooks, skills, passerelles et quotas fonctionnent comme dans le terminal, et le journal brut montre chaque trame échangée.
+- **Socle natif léger.** Un seul cœur Rust (~14 Mo) et la WebView du système (~40 Mo de RAM au repos, sans Electron ni Node), avec diffs Git en lecture seule, 10 thèmes intégrés et personnalisés, dictée vocale hors ligne optionnelle et 8 langues d’interface.
 - **Zéro trace, sortie propre.** Verre écrit uniquement dans `~/.verre` (`VERRE_HOME` permet de changer ce dossier), lit les autres bases en lecture seule, laisse vos projets intacts et ferme toute son arborescence de sous-processus à la sortie. Supprimer l’app et `~/.verre` suffit pour tout désinstaller.
 - **Une barre latérale unifiée.** Parcourez les sessions locales issues de Verre, des apps officielles et des CLI, recherchez en anglais et CJC, et ouvrez directement les sous-sessions liées (par exemple quand Claude Code lance `codex exec`).
 - **Accès distant privé.** Associez un téléphone ou un navigateur via Tailscale Serve ou votre propre proxy inverse HTTPS (`127.0.0.1` uniquement), approuvez des actions à distance et intervenez en cours de tour.
-- **Socle natif léger.** Un seul cœur Rust (~14 Mo) et la WebView du système (~40 Mo de RAM au repos, sans Electron ni Node), avec diffs Git en lecture seule, 10 thèmes intégrés et personnalisés, dictée vocale hors ligne optionnelle et 8 langues d’interface.
 
 | Journal brut et ligne de commande | Demande d’autorisation et thème Papier chaud |
 |---|---|

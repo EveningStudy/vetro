@@ -35,10 +35,10 @@
 ## Por qué Verre
 
 - **Transparente como el vidrio.** Lo que escribes llega intacto al binario oficial: sin prompts del sistema añadidos, sin envoltorios ni servidores MCP extra. Tu `CLAUDE.md`, `config.toml`, hooks, skills, pasarelas y límites de uso funcionan igual que en la terminal, con registro sin procesar visible en cada hilo.
+- **Ligero de verdad.** Un solo núcleo en Rust (~14 MB) y la WebView del sistema (~40 MB de RAM en reposo, sin Electron ni Node), con diffs Git de solo lectura, 10 temas integrados y personalizados, voz sin conexión opcional e interfaz en 8 idiomas.
 - **Cero rastro, salida limpia.** Solo escribe en `~/.verre` (`VERRE_HOME` lo cambia), abre las bases de otros agentes en modo solo lectura, deja tus proyectos intactos y detiene todos sus subprocesos al cerrar. Para desinstalarlo, borra la app y `~/.verre`.
 - **Una barra lateral para todo.** Explora sesiones locales de Verre, apps oficiales y CLIs, busca en inglés y CJK, y salta directo a sesiones secundarias lanzadas por otro agente (como Claude Code ejecutando `codex exec`).
 - **Acceso remoto privado.** Empareja un teléfono o navegador mediante Tailscale Serve o tu propio proxy inverso HTTPS (`127.0.0.1`), aprueba permisos desde cualquier lugar e interviene en turnos activos.
-- **Ligero de verdad.** Un solo núcleo en Rust (~14 MB) y la WebView del sistema (~40 MB de RAM en reposo, sin Electron ni Node), con diffs Git de solo lectura, 10 temas integrados y personalizados, voz sin conexión opcional e interfaz en 8 idiomas.
 
 | Registro sin procesar y línea de comandos | Aprobación de permisos y tema Papel cálido |
 |---|---|
