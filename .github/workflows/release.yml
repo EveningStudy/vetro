@@ -263,7 +263,7 @@ jobs:
               ;;
             macOS)
               copy_bundle "$B"/dmg/*.dmg
-              ditto -c -k --keepParent "$B/macos/Verre.app" "dist-release/Verre-macos-$ASSET_TARGET.zip"
+              ditto -c -k --keepParent "$B/macos/Verre.app" "dist-release/Verre-$ASSET_TARGET.zip"
               ;;
             Linux)
               copy_bundle "$B"/appimage/*.AppImage
