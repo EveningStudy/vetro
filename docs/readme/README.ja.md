@@ -27,45 +27,43 @@
 </p>
 
 <p align="center">
-  <img src="../images/ja/hero.webp" width="100%" alt="ツールログと入力コントロールを備えた Verre の Codex スレッド">
+  <img src="../images/ja/hero.webp" width="100%" alt="T3 Chat ダークテーマで Codex スレッドを表示している Verre">
 </p>
 
-Verre（フランス語で「ガラス」の意、発音は vair）は、ローカルの CLI コーディングエージェント向けの軽量なネイティブフロントエンドです。**Claude Code**、**Codex**、**Antigravity**、**Devin**、**Kiro**、**DeepSeek Harness**、**CodeBuddy / WorkBuddy**、さらに [Agent Client Protocol](https://agentclientprotocol.com)（ACP）対応のあらゆるエージェントを、既存の認証・設定のまま起動し、[T3 Code](https://github.com/pingdotgg/t3code) をベースにした統一 UI で扱えます。
+**Verre**（フランス語で「ガラス」、発音は vair）は、**21 の組み込みコーディングエージェント**（**Claude Code**、**Codex**、**Cursor**、**Antigravity**、**Gemini CLI**、**DeepSeek Harness**、**Grok**、**GitHub Copilot**、**OpenCode**、**Cline**、**CodeBuddy / WorkBuddy**、**Kiro**、**Devin** など）とあらゆる [Agent Client Protocol](https://agentclientprotocol.com)（ACP）ツールに対応した軽量ネイティブ UI です。[T3 Code](https://github.com/pingdotgg/t3code) をベースに設計されています。
 
-## 主な特徴
+## なぜ「ガラス（Verre）」なのか
 
-- **エージェントを書き換えない。** 入力内容は一字一句そのまま送信され、システムプロンプト、ラッパー指示、独自ツールや MCP は一切注入しません。`CLAUDE.md`、`config.toml`、hooks、skills、カスタムゲートウェイ、各社のサブスクリプションも端末と同様に動きます。
-- **21 の組み込みエージェント + カスタム ACP。** Claude Code と Codex のネイティブアダプターに加え、19 の ACP プリセットを内蔵。設定から任意の stdio ACP コマンドも追加できます。
-- **統合サイドバーとエージェント間リンク。** Verre だけでなく各社公式アプリや CLI が保存したローカル履歴も一覧・検索でき、対応ランタイムではそのまま再開可能。あるエージェントが別のエージェント（例：Claude Code が `codex exec`）を呼び出した場合、子セッションがツール呼び出しの直下に紐づきます。
-- **全文検索・差分表示・生プロトコルログ。** 英語および CJK の全文検索、読み取り専用の Git 差分／Worktree 確認に加え、任意のスレッドで起動コマンドと JSON フレームをそのまま確認できる生ログパネルを備えています。
-- **プライベートなリモート操作。** Tailscale Serve や自前の HTTPS リバースプロキシ経由でスマートフォンや別ブラウザーをペアリング可能（サーバーは `127.0.0.1` のみ待ち受け）。外出先から承認や割り込み送信を行えます。
-- **軽量設計。** 単一の Rust プロセス（デスクトップ実行ファイル約 14 MB）と OS 標準の WebView（WebView2 / WKWebView / WebKitGTK）のみで構成。Electron や Node は不要で待機時メモリは約 40 MB。ローカル音声入力、カスタムテーマ、8 言語 UI に対応しています。
+- **ガラスのように透過。** 入力したテキストを公式バイナリへそのまま届けます。システムプロンプトやラッパー、余計な MCP サーバーは一切注入せず、`CLAUDE.md`・`config.toml`・hooks・skills・独自ゲートウェイやレート制限も端末どおりに動き、生ログパネルで全フレームを確認できます。
+- **痕跡ゼロ・後腐れなし。** Verre が書くのは `~/.verre`（`VERRE_HOME` で変更可）だけ。他ツールの履歴 DB は読み取り専用で開き、プロジェクトを汚さず、終了時は子プロセスツリーもすべて停止します。アンインストールはアプリと `~/.verre` を消すだけです。
+- **ツール横断の単一サイドバー。** Verre や各社公式アプリ・CLI のローカル履歴をまとめて表示し、英語・CJK の全文検索や、Claude Code が起動した `codex exec` のような子セッションへのジャンプも行えます。
+- **プライベートなリモート操作。** Tailscale Serve や自前の HTTPS リバースプロキシ経由でスマートフォンやブラウザーをペアリング可能（`127.0.0.1` のみ待機）。移動中でも承認や割り込み送信ができます。
+- **軽量ネイティブ構成。** 単一 Rust コア（約 14 MB）と OS 標準 WebView（待機時約 40 MB、Electron / Node 不使用）で動作し、読み取り専用 Git 差分、10 種のテーマ、オフライン音声入力、8 言語 UI を備えています。
 
-| 生プロトコルログと起動コマンド | 承認プロンプトとウォームペーパーテーマ |
+| 生プロトコルログと起動コマンド | 承認カードとウォームペーパーテーマ |
 |---|---|
 | ![Codex スレッド横に開いた生ログパネル](../images/ja/raw-log.webp) | ![ウォームペーパーテーマ上の Devin 権限リクエスト](../images/ja/permission.webp) |
-| **リンクされた子セッション** | **モバイル向けリモート画面** |
-| ![Claude Code スレッド内で展開した Codex 子セッション](../images/ja/linked-child.webp) | <p align="center"><img src="../images/ja/phone.webp" width="260" alt="モバイルレイアウトの対話式質問カード"></p> |
+| **リンクされた子セッション** | **組み込み・カスタムテーマ** |
+| ![Claude Code スレッド内で展開した Codex 子セッション](../images/ja/linked-child.webp) | ![全 10 種類の組み込みテーマを表示した外観設定画面](../images/ja/themes.webp) |
+
+<p align="center">
+  <img src="../images/ja/phone.webp" width="260" alt="モバイルレイアウトの対話式質問カード">
+</p>
 
 ## 対応エージェント
 
-各ベンダーの公式クライアントプロトコルへ直接接続するため、モデル一覧・思考レベル・権限モード・レート制限はエージェント自身が返す値がそのまま表示されます。
+Verre は各エージェントの公式プロトコルを既存の設定・認証のまま直接起動します：
 
 | エージェント | プロトコル | 維持されるローカル設定 |
 |---|---|---|
-| Claude Code | `claude -p`（双方向 `stream-json`） | `CLAUDE.md`、hooks、skills、プラグイン、MCP、ログイン状態 |
-| Codex | `codex app-server` | `~/.codex/config.toml`、ChatGPT / API ログイン、カスタムプロバイダー、MCP |
-| Antigravity | `agy acp` | 公式ツール・設定・Google サインイン（[詳細](../agents/antigravity.md)） |
-| Devin | `devin acp` | ネイティブツール・設定・ブラウザー認証 |
-| Kiro | `kiro-cli acp` | ネイティブ CLI ツール・設定・認証 |
-
-**その他の組み込み ACP プリセット（16 種）：** DeepSeek Harness、CodeBuddy / WorkBuddy、Gemini CLI、OpenCode、Cursor、GitHub Copilot、Cline、Qwen Code、Kimi Code、Goose、Factory Droid、Amp、Auggie、Mistral Vibe、Kilo、Grok。**設定 → エージェント**から独自の stdio ACP コマンドも登録できます。
-
-> Claude Code、Codex、Antigravity、Devin、Kiro は実機バイナリで直接動作確認済みです。残りの 16 プリセットは各ツールの公開 ACP フラグ（`--acp` / `acp` / `--profile acp`）に合わせて定義しているため、バージョン変更に伴うフラグ差異があれば Issue でお知らせください。
+| **Claude Code** | `claude -p`（双方向 `stream-json`） | `CLAUDE.md`、hooks、skills、プラグイン、MCP、サインイン |
+| **Codex** | `codex app-server` | `~/.codex/config.toml`、ChatGPT / API ログイン、独自プロバイダー、MCP |
+| **19 の組み込み ACP エージェント**<br>Cursor、Antigravity、Gemini CLI、GitHub Copilot、DeepSeek Harness、Grok、OpenCode、Cline、CodeBuddy / WorkBuddy、Qwen Code、Kimi Code、Kiro、Devin、Goose、Factory Droid、Amp、Auggie、Mistral Vibe、Kilo | 公式 ACP（`acp` / `--acp` / `--profile acp`） | 各エージェントのネイティブツール・設定・認証 |
+| **カスタム ACP** | 任意の stdio ACP コマンド | **設定 → エージェント**から追加 |
 
 ## インストール
 
-[Releases](https://github.com/EveningStudy/verre/releases) からプラットフォーム向けのインストーラーまたはヘッドレス版 `verre` CLI をダウンロードしてください：
+[Releases](https://github.com/EveningStudy/verre/releases) からインストーラーまたはヘッドレス版 `verre` CLI をダウンロードしてください：
 
 - **Windows:** NSIS インストーラー（`*-setup.exe`）および単体 `verre` CLI。
 - **macOS:** Apple Silicon / Intel 向け `.dmg`・`.app` および `verre` CLI。
@@ -74,7 +72,7 @@ Verre（フランス語で「ガラス」の意、発音は vair）は、ロー�
 バイナリにはアプリ内アップデーター用の署名のみが付与されており、商用の OS コード署名証明書はまだ組み込まれていません：
 
 - **Windows SmartScreen:** **詳細情報** → **実行** を選択してください。
-- **macOS Gatekeeper:** 開発元を確認できないと表示される場合は、ターミナルで `xattr -cr /Applications/Verre.app` を実行してください。
+- **macOS Gatekeeper:** 未確認の開発元と表示される場合は `xattr -cr /Applications/Verre.app` を実行してください。
 
 ### ヘッドレスモード
 
@@ -84,16 +82,7 @@ Verre（フランス語で「ガラス」の意、発音は vair）は、ロー�
 verre serve --open
 ```
 
-主なサブコマンド：`verre agents`（検出されたバイナリとバージョン）、`verre threads`（ローカルインデックス検索）、`verre show <thread-id>`、`verre probe`。
-
-利用前に、対象となるエージェントを少なくとも 1 つローカルへインストールし、サインインを完了しておいてください。
-
-## なぜ「ガラス（Verre）」なのか
-
-- **ゼロ注入。** 入力したテキストを加工せずに渡します。システムプロンプトやスキル、モデル設定はすべて各エージェント側と明示的な操作に委ねます。
-- **ゼロフットプリント。** Verre が書き込む先は `~/.verre`（`VERRE_HOME` で変更可）のみ。他ツールの設定フォルダーや SQLite DB は読み取り専用で開き、ワークスペースへ隠し設定を書き込むことはありません。アンインストールはアプリ本体と `~/.verre` を消すだけです。
-- **孤立プロセスを残さない。** Verre 終了時に管理下の子プロセスツリーをすべて停止します（Windows Job Object / Unix プロセスグループ監視）。バックグラウンド処理が動いている場合は解放・終了前に確認を出します。
-- **薄いクライアントに徹する。** 会話、権限承認、履歴、読み取り専用の差分確認、ローカル音声入力、プライベートなリモート接続に特化し、IDE やターミナルエミュレーター、ワークフロー制御ツールには拡張しません。
+主なサブコマンド：`verre agents`、`verre threads`、`verre show <thread-id>`、`verre probe`。利用前に少なくとも 1 つの対応エージェントをインストールしてサインインしておいてください。
 
 ## ソースからのビルド
 

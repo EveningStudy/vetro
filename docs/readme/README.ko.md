@@ -27,41 +27,39 @@
 </p>
 
 <p align="center">
-  <img src="../images/ko/hero.webp" width="100%" alt="도구 로그와 입력 컨트롤을 보여주는 Verre의 Codex 스레드">
+  <img src="../images/ko/hero.webp" width="100%" alt="T3 Chat 다크 테마에서 Codex 스레드를 표시하는 Verre">
 </p>
 
-Verre(프랑스어로 ‘유리’, 발음 vair)는 로컬 CLI 코딩 에이전트를 위한 가벼운 네이티브 프런트엔드입니다. **Claude Code**, **Codex**, **Antigravity**, **Devin**, **Kiro**, **DeepSeek Harness**, **CodeBuddy / WorkBuddy**와 모든 [Agent Client Protocol](https://agentclientprotocol.com)(ACP) 도구를 기존 설정과 로그인 상태 그대로 실행하고, [T3 Code](https://github.com/pingdotgg/t3code)를 바탕으로 만든 통합 UI로 보여 줍니다.
+**Verre**(프랑스어로 ‘유리’, 발음 vair)는 **Claude Code**, **Codex**, **Cursor**, **Antigravity**, **Gemini CLI**, **DeepSeek Harness**, **Grok**, **GitHub Copilot**, **OpenCode**, **Cline**, **CodeBuddy / WorkBuddy**, **Kiro**, **Devin** 등 **21개 기본 내장 코딩 에이전트**와 모든 [Agent Client Protocol](https://agentclientprotocol.com)(ACP) 도구를 위한 가벼운 네이티브 UI입니다. 인터페이스는 [T3 Code](https://github.com/pingdotgg/t3code)를 참고했습니다.
 
-## 주요 특징
+## 왜 이름이 ‘유리(Verre)’인가요?
 
-- **에이전트를 건드리지 않습니다.** 입력한 텍스트를 한 글자도 바꾸지 않고 그대로 전달합니다. 시스템 프롬프트나 래퍼 지시문, 추가 도구나 MCP를 주입하지 않으므로 `CLAUDE.md`, `config.toml`, hooks, skills, 사용자 지정 게이트웨이와 구독 요금제가 터미널과 똑같이 동작합니다.
-- **21개 기본 내장 에이전트 + 사용자 지정 ACP.** Claude Code와 Codex 네이티브 어댑터, 19개 ACP 프리셋을 기본 제공하며 설정에서 원하는 stdio ACP 명령도 직접 등록할 수 있습니다.
-- **통합 사이드바와 에이전트 간 연결.** Verre뿐 아니라 각 벤더 데스크톱 앱과 CLI의 로컬 기록을 한곳에서 탐색하고 지원 시 이어서 대화할 수 있습니다. 한 에이전트가 다른 에이전트(예: Claude Code가 `codex exec`)를 호출하면 하위 세션이 해당 도구 호출 바로 아래에 연결됩니다.
-- **전체 검색, 읽기 전용 Diff, 원본 로그.** 영어와 한중일 텍스트 전체 검색, 읽기 전용 Git 변경 내역·Worktree 확인은 물론, 모든 스레드에서 실제 실행 명령과 JSON 프레임을 보여 주는 원본 로그 패널을 열 수 있습니다.
-- **비공개 원격 액세스.** Tailscale Serve나 직접 구성한 HTTPS 리버스 프록시(`127.0.0.1`만 수신)를 통해 스마트폰이나 다른 브라우저를 페어링하고, 이동 중에도 승인 요청에 답하거나 실행 중인 턴에 개입할 수 있습니다.
-- **가벼운 네이티브 구조.** 단일 Rust 프로세스(데스크톱 바이너리 약 14 MB)와 OS 기본 WebView(WebView2 / WKWebView / WebKitGTK)만 사용합니다. Electron이나 Node 런타임 없이 유휴 메모리 약 40 MB로 동작하며, 선택적 오프라인 음성 입력, 테마 편집기, 8개 언어 UI를 제공합니다.
+- **유리처럼 투명한 전달.** 입력한 프롬프트가 공식 에이전트 바이너리에 그대로 전달됩니다. 시스템 프롬프트나 래퍼, 추가 MCP 서버를 주입하지 않으므로 `CLAUDE.md`, `config.toml`, hooks, skills, 사용자 지정 게이트웨이와 사용량 한도가 터미널과 똑같이 동작하며 원본 로그 패널에서 모든 프레임을 직접 확인할 수 있습니다.
+- **흔적 없이, 깔끔한 종료.** Verre는 오직 `~/.verre`(`VERRE_HOME`으로 변경 가능)에만 기록하고 다른 도구의 저장소는 읽기 전용으로만 엽니다. 작업 폴더를 건드리지 않으며 종료 시 자식 프로세스 트리까지 모두 정리합니다. 앱과 `~/.verre`만 삭제하면 완전히 제거됩니다.
+- **도구를 아우르는 하나의 사이드바.** Verre, 공식 데스크톱 앱, CLI의 로컬 기록을 한곳에서 탐색하고 영어·한중일 전체 검색과 에이전트 간 하위 세션(예: Claude Code가 실행한 `codex exec`) 이동을 지원합니다.
+- **비공개 원격 액세스.** Tailscale Serve 또는 직접 구성한 HTTPS 리버스 프록시(`127.0.0.1`만 수신)로 스마트폰이나 브라우저를 페어링해 이동 중에도 승인 요청을 처리하고 실행 중인 턴에 개입할 수 있습니다.
+- **가벼운 네이티브 스택.** 단일 Rust 코어(약 14 MB)와 OS 기본 WebView(유휴 RAM 약 40 MB, Electron/Node 없음) 위에 읽기 전용 Git diff, 10가지 기본/사용자 지정 테마, 선택적 오프라인 음성 입력, 8개 언어 UI를 담았습니다.
 
 | 원본 통신 로그 및 실행 명령 | 승인 카드 및 웜 페이퍼 테마 |
 |---|---|
 | ![Codex 스레드 옆에 열린 원본 로그 패널](../images/ko/raw-log.webp) | ![웜 페이퍼 라이트 테마의 Devin 권한 요청 카드](../images/ko/permission.webp) |
-| **연결된 하위 세션** | **모바일 원격 화면** |
-| ![Claude Code 스레드에서 확인하는 Codex 하위 세션](../images/ko/linked-child.webp) | <p align="center"><img src="../images/ko/phone.webp" width="260" alt="모바일 레이아웃의 대화형 질문 선택지"></p> |
+| **연결된 하위 세션** | **기본 및 사용자 지정 테마** |
+| ![Claude Code 스레드에서 확인하는 Codex 하위 세션](../images/ko/linked-child.webp) | ![10가지 기본 테마 전체를 보여 주는 화면 스타일 설정](../images/ko/themes.webp) |
+
+<p align="center">
+  <img src="../images/ko/phone.webp" width="260" alt="모바일 레이아웃의 대화형 질문 선택지">
+</p>
 
 ## 지원 에이전트
 
-Verre는 각 공급업체의 공식 클라이언트 인터페이스에 직접 연결되며, 화면의 모델·추론 강도·권한 모드·사용량 한도는 에이전트가 보고한 값 그대로 표시합니다.
+Verre는 각 에이전트의 공식 CLI 인터페이스를 기존 설정과 로그인 상태 그대로 직접 실행합니다:
 
 | 에이전트 | 프로토콜 | 유지되는 로컬 설정 |
 |---|---|---|
-| Claude Code | `claude -p` (양방향 `stream-json`) | `CLAUDE.md`, hooks, skills, 플러그인, MCP, 로그인 상태 |
-| Codex | `codex app-server` | `~/.codex/config.toml`, ChatGPT / API 로그인, 사용자 지정 공급자, MCP |
-| Antigravity | `agy acp` | 공식 도구·설정·Google 로그인([참고](../agents/antigravity.md)) |
-| Devin | `devin acp` | 기본 도구·설정·브라우저 인증 |
-| Kiro | `kiro-cli acp` | 기본 CLI 도구·설정·인증 |
-
-**추가 내장 ACP 프리셋(16종):** DeepSeek Harness, CodeBuddy / WorkBuddy, Gemini CLI, OpenCode, Cursor, GitHub Copilot, Cline, Qwen Code, Kimi Code, Goose, Factory Droid, Amp, Auggie, Mistral Vibe, Kilo, Grok. **설정 → 에이전트**에서 사용자 지정 stdio ACP 명령도 추가할 수 있습니다.
-
-> Claude Code, Codex, Antigravity, Devin, Kiro는 실제 설치된 바이너리로 직접 검증했습니다. 나머지 16개 프리셋은 각 도구의 공개 ACP 플래그(`--acp` / `acp` / `--profile acp`)를 기준으로 연결했으므로, 버전 변경에 따른 경로·플래그 차이가 있으면 이슈를 남겨 주세요.
+| **Claude Code** | `claude -p` (양방향 `stream-json`) | `CLAUDE.md`, hooks, skills, 플러그인, MCP, 로그인 상태 |
+| **Codex** | `codex app-server` | `~/.codex/config.toml`, ChatGPT / API 로그인, 사용자 지정 공급자, MCP |
+| **19개 기본 내장 ACP 에이전트**<br>Cursor, Antigravity, Gemini CLI, GitHub Copilot, DeepSeek Harness, Grok, OpenCode, Cline, CodeBuddy / WorkBuddy, Qwen Code, Kimi Code, Kiro, Devin, Goose, Factory Droid, Amp, Auggie, Mistral Vibe, Kilo | 공식 ACP (`acp` / `--acp` / `--profile acp`) | 각 에이전트 고유의 도구·설정·인증 |
+| **사용자 지정 ACP** | 모든 stdio ACP 명령 | **설정 → 에이전트**에서 추가 |
 
 ## 설치
 
@@ -74,7 +72,7 @@ Verre는 각 공급업체의 공식 클라이언트 인터페이스에 직접 �
 앱 내 자동 업데이트 서명은 적용되어 있으나, 상용 OS 코드 서명 인증서는 아직 적용되지 않았습니다:
 
 - **Windows SmartScreen:** **추가 정보** → **실행**을 클릭하세요.
-- **macOS Gatekeeper:** 확인되지 않은 개발자 경고가 뜨면 터미널에서 `xattr -cr /Applications/Verre.app`을 실행하세요.
+- **macOS Gatekeeper:** 확인되지 않은 개발자로 차단되면 `xattr -cr /Applications/Verre.app`을 실행하세요.
 
 ### 헤드리스 서버
 
@@ -84,16 +82,7 @@ Verre는 각 공급업체의 공식 클라이언트 인터페이스에 직접 �
 verre serve --open
 ```
 
-주요 CLI 명령: `verre agents`(감지된 바이너리 및 버전), `verre threads`(로컬 인덱스 검색), `verre show <thread-id>`, `verre probe`.
-
-실행 전 컴퓨터에 지원하는 에이전트 중 하나 이상이 설치되고 로그인되어 있어야 합니다.
-
-## 왜 이름이 ‘유리(Verre)’인가요?
-
-- **제로 인젝션.** 사용자가 입력한 내용을 변형 없이 그대로 전달합니다. 시스템 프롬프트·스킬·도구·모델 설정은 에이전트 본연의 값과 사용자가 직접 바꾼 제어 항목만 반영합니다.
-- **제로 풋프린트.** Verre는 오직 `~/.verre`(`VERRE_HOME`으로 변경 가능)에만 기록합니다. 다른 에이전트 폴더와 SQLite 저장소는 읽기 전용으로만 열며, 작업 폴더에 숨김 설정을 남기지 않습니다. 앱과 `~/.verre`만 지우면 완전히 제거됩니다.
-- **고아 프로세스 없음.** Verre가 종료되면 관리하던 모든 자식 프로세스 트리가 함께 종료됩니다(Windows Job Object / Unix 프로세스 그룹 감시). 백그라운드 작업이 실행 중일 때는 세션을 해제하거나 종료하기 전에 먼저 경고합니다.
-- **간결한 범위.** 대화, 권한 승인, 기록 탐색, 읽기 전용 Git diff, 오프라인 음성 입력, 비공개 원격 연결에만 집중하며 내장 IDE나 터미널, 워크플로 오케스트레이터로 비대화하지 않습니다.
+주요 명령: `verre agents`, `verre threads`, `verre show <thread-id>`, `verre probe`. 실행 전 컴퓨터에 지원하는 에이전트가 하나 이상 설치되고 로그인되어 있어야 합니다.
 
 ## 소스에서 빌드
 

@@ -5,7 +5,7 @@
 <h1 align="center">Verre</h1>
 
 <p align="center">
-  One fast, clean window for the coding agents already on your machine.
+  One fast, clean window for every coding agent on your machine.
 </p>
 
 <p align="center">
@@ -27,41 +27,39 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/en/hero.webp" width="100%" alt="Verre showing a Codex thread with tool logs and composer controls">
+  <img src="docs/images/en/hero.webp" width="100%" alt="Verre with T3 Chat dark theme showing a Codex thread">
 </p>
 
-Verre (French for "glass") is a lightweight native front-end for CLI coding agents: **Claude Code**, **Codex**, **Antigravity**, **Devin**, **Kiro**, **DeepSeek Harness**, **CodeBuddy / WorkBuddy**, and any [Agent Client Protocol](https://agentclientprotocol.com) (ACP) tool. It launches the official binaries installed on your computer with your existing config and sign-in, and renders their sessions in an interface inspired by [T3 Code](https://github.com/pingdotgg/t3code).
+**Verre** (French for "glass") is a lightweight native UI for **21 built-in coding agents** — including **Claude Code**, **Codex**, **Cursor**, **Antigravity**, **Gemini CLI**, **DeepSeek Harness**, **Grok**, **GitHub Copilot**, **OpenCode**, **Cline**, **CodeBuddy / WorkBuddy**, **Kiro**, and **Devin** — plus any [Agent Client Protocol](https://agentclientprotocol.com) (ACP) tool, styled after [T3 Code](https://github.com/pingdotgg/t3code).
 
-## What you get
+## Why Verre
 
-- **Your agents, untouched.** Prompts pass straight through verbatim — no injected system instructions, wrappers, tools, or MCP servers. Your `CLAUDE.md`, `config.toml`, hooks, skills, custom gateways, and subscriptions work identically to the terminal.
-- **21 built-in agents + custom ACP.** Native adapters for Claude Code and Codex alongside 19 built-in ACP presets, plus custom stdio ACP commands in Settings.
-- **One sidebar and cross-agent links.** Browse local history from Verre, vendor desktop apps, and CLIs; resume sessions where supported; and jump straight into child sessions when one agent invokes another (such as Claude Code running `codex exec`).
-- **Full-text search, diffs, and raw wire logs.** Search across English and CJK transcripts, inspect read-only Git changes and worktrees, and open the live raw wire log on any thread to see the exact spawn command and JSON frames.
-- **Private remote access.** Pair a phone or another browser over Tailscale Serve or your own HTTPS reverse proxy (`127.0.0.1` only), answer approvals on the move, and steer active turns.
-- **Light by design.** One Rust process (~14 MB desktop binary), OS WebView (WebView2 / WKWebView / WebKitGTK), no Electron or Node at runtime, ~40 MB idle RAM, optional offline voice input, custom themes, and 8 UI languages.
+- **Transparent like glass.** Prompts go straight to the official agent binary untouched — no injected system instructions, wrappers, tools, or MCP servers. `CLAUDE.md`, `config.toml`, hooks, skills, custom gateways, and rate limits work just like the terminal, and any thread's raw wire log lets you inspect every frame.
+- **Zero footprint, clean exit.** Verre writes only inside `~/.verre` (`VERRE_HOME` overrides), reads other tools' stores read-only, leaves projects untouched, and terminates its managed child tree on exit. Remove the app and `~/.verre` to uninstall completely.
+- **One sidebar across tools.** Browse local sessions from Verre, vendor desktop apps, and CLIs, search full transcripts across English and CJK, and jump straight into linked child sessions (such as Claude Code calling `codex exec`).
+- **Private remote access.** Pair a phone or browser over Tailscale Serve or your own HTTPS reverse proxy (`127.0.0.1` only), handle approvals on the move, and steer running turns.
+- **Light native stack.** One Rust core (~14 MB binary) and OS WebView (~40 MB idle RAM, zero Electron or Node), with read-only Git diffs, 10 built-in & custom themes, optional offline voice input, and 8 UI languages.
 
 | Raw wire log & command line | Approval card & Warm Paper theme |
 |---|---|
 | ![Raw wire log drawer next to a Codex thread](docs/images/en/raw-log.webp) | ![Devin permission prompt in Warm Paper light theme](docs/images/en/permission.webp) |
-| **Linked child session** | **Mobile remote view** |
-| ![Claude Code thread inspecting a child Codex session](docs/images/en/linked-child.webp) | <p align="center"><img src="docs/images/en/phone.webp" width="260" alt="Mobile layout showing interactive question choices"></p> |
+| **Linked child session** | **Built-in & custom themes** |
+| ![Claude Code thread inspecting a child Codex session](docs/images/en/linked-child.webp) | ![Appearance settings showing all 10 built-in themes](docs/images/en/themes.webp) |
+
+<p align="center">
+  <img src="docs/images/en/phone.webp" width="260" alt="Mobile layout showing interactive question choices">
+</p>
 
 ## Supported agents
 
-Verre talks directly to each vendor's official interface and surfaces the models, reasoning levels, permission modes, and rate limits the agent itself reports.
+Verre launches each agent's official CLI interface directly with your existing configuration and sign-in:
 
-| Agent | Protocol | Local setup preserved |
+| Agent | Protocol | What keeps working |
 |---|---|---|
-| Claude Code | `claude -p` (bidirectional `stream-json`) | `CLAUDE.md`, hooks, skills, plugins, MCP, sign-in |
-| Codex | `codex app-server` | `~/.codex/config.toml`, ChatGPT/API login, custom providers, MCP |
-| Antigravity | `agy acp` | Official tools, settings, and Google sign-in ([notes](docs/agents/antigravity.md)) |
-| Devin | `devin acp` | Native tools, settings, and browser auth |
-| Kiro | `kiro-cli acp` | Native CLI tools, settings, and auth |
-
-**Built-in ACP presets (16 more):** DeepSeek Harness, CodeBuddy / WorkBuddy, Gemini CLI, OpenCode, Cursor, GitHub Copilot, Cline, Qwen Code, Kimi Code, Goose, Factory Droid, Amp, Auggie, Mistral Vibe, Kilo, and Grok. Custom stdio ACP commands can be added in **Settings → Agents**.
-
-> Claude Code, Codex, Antigravity, Devin, and Kiro are directly verified against live agent binaries. Other presets follow each CLI's documented ACP flags — if a vendor updates flags or binary paths, please open an issue.
+| **Claude Code** | `claude -p` (`stream-json`) | `CLAUDE.md`, hooks, skills, plugins, MCP, sign-in |
+| **Codex** | `codex app-server` | `~/.codex/config.toml`, ChatGPT / API login, custom providers, MCP |
+| **19 built-in ACP agents**<br>Cursor, Antigravity, Gemini CLI, GitHub Copilot, DeepSeek Harness, Grok, OpenCode, Cline, CodeBuddy / WorkBuddy, Qwen Code, Kimi Code, Kiro, Devin, Goose, Factory Droid, Amp, Auggie, Mistral Vibe, Kilo | Official ACP (`acp` / `--acp` / `--profile acp`) | Each agent's native tools, settings, and auth |
+| **Custom ACP** | Any stdio ACP command | Added in **Settings → Agents** |
 
 ## Install
 
@@ -74,30 +72,21 @@ Download desktop installers or the headless `verre` CLI from [Releases](https://
 Builds are signed for Verre's built-in updater, not yet with commercial OS code-signing certificates:
 
 - **Windows SmartScreen:** click **More info** → **Run anyway**.
-- **macOS Gatekeeper:** if macOS flags the app as unverified, run `xattr -cr /Applications/Verre.app`.
+- **macOS Gatekeeper:** if blocked as unverified, run `xattr -cr /Applications/Verre.app`.
 
 ### Headless server
 
-Run the same core without a desktop window and open the UI in any browser:
+Run the same core without a window and open the UI in any browser:
 
 ```sh
 verre serve --open
 ```
 
-Useful CLI utilities: `verre agents` (detected binaries & versions), `verre threads` (search local index), `verre show <thread-id>`, and `verre probe`.
-
-Before starting, make sure at least one supported agent is installed and signed in on your machine.
-
-## Why "glass"?
-
-- **Zero injection.** Verre forwards what you typed untouched. System prompts, skills, tools, and model choices come solely from your agent and the controls you toggle.
-- **Zero footprint.** Verre writes only to `~/.verre` (`VERRE_HOME` overrides). Other agents' directories and SQLite stores are opened read-only; workspaces are touched only by explicit user actions. Delete the app and `~/.verre` to uninstall completely.
-- **No orphans.** Managed child trees terminate when Verre exits (Windows Job Object; Unix process group watchdog), and Verre warns before releasing a session with active background processes.
-- **Thin client scope.** Conversation, approvals, history, read-only Git diffs, offline voice input, and private remote access — never a bundled IDE, terminal emulator, or multi-agent orchestrator.
+CLI utilities: `verre agents`, `verre threads`, `verre show <thread-id>`, and `verre probe`. Make sure at least one supported agent is installed and signed in on your machine.
 
 ## Build from source
 
-Requires stable Rust ([rust-toolchain.toml](rust-toolchain.toml)), Node.js 24, and pnpm 10 (see [docs/desktop.md](docs/desktop.md) for platform system packages).
+Requires stable Rust ([rust-toolchain.toml](rust-toolchain.toml)), Node.js 24, and pnpm 10 (see [docs/desktop.md](docs/desktop.md) for Linux packages).
 
 ```sh
 # 1. Web UI (embedded into Rust core at build time)
@@ -113,7 +102,7 @@ cargo build --release -p verre-cli --features claude,codex,acp,antigravity-store
 ./target/release/verre serve --open
 ```
 
-Verification suite before opening a PR:
+Checks before opening a PR:
 
 ```sh
 pnpm --dir apps/web check:i18n
