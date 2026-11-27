@@ -2,6 +2,6 @@
 import type { RawDirection } from "./RawDirection";
 
 /**
- * One line of the raw wire log: exactly what Vetro sent to or received from the agent process.
+ * One line of the raw wire log: exactly what Verre sent to or received from the agent process.
  */
 export type RawEntry = { ts: number, direction: RawDirection, text: string, };

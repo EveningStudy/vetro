@@ -3,6 +3,6 @@ import type { RawEntry } from "./RawEntry";
 
 export type ThreadRawResult = { 
 /**
- * Oldest first. Empty for history that was never attached in Vetro.
+ * Oldest first. Empty for history that was never attached in Verre.
  */
 entries: Array<RawEntry>, };

@@ -1,0 +1,15 @@
+[package]
+name = "verre-store-antigravity"
+description = "Read-only reader for Antigravity's local conversation store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rusqlite = { version = "0.43", default-features = false, features = ["bundled"] }
+serde_json.workspace = true
+verre-agent-api = { path = "../verre-agent-api" }
+verre-proto = { path = "../verre-proto" }
+verre-store-sqlite = { version = "0.3.0", path = "../verre-store-sqlite" }

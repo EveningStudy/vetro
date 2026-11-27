@@ -62,7 +62,7 @@ import {
 } from "../ui/overlay";
 import { Kbd } from "../ui/primitives";
 import { useHeaderChromeClass, useWindowDragProps } from "../WindowChrome";
-import { VetroMark } from "../VetroMark";
+import { VerreMark } from "../VerreMark";
 
 const PAGE = 5;
 const QUICK_KEY = "\u0000quick";
@@ -146,7 +146,7 @@ export function isScratchOrTempPath(path: string) {
   if (base.startsWith("tmp.") || base.startsWith("scratch-") || base.startsWith("temp-")) return true;
   return (
     /(^|\/)\.orchestra(\/|$)/.test(p) ||
-    /(^|\/)\.vetro(\/|$)/.test(p) ||
+    /(^|\/)\.verre(\/|$)/.test(p) ||
     /(^|\/)temp(\/|$)/.test(p) ||
     /^(\/private)?\/tmp(\/|$)/.test(p) ||
     /^\/var\/folders\//.test(p)
@@ -157,10 +157,10 @@ const QUICK_CHAT_PATHS = [
   /(?:^|[\\/])Documents[\\/]Codex[\\/]\d{4}-\d{2}-\d{2}(?:[\\/]|$)/i,
   /(?:^|[\\/])\.codex[\\/]worktrees[\\/]/i,
   /(?:^|[\\/])Claude-Data[\\/].*[\\/]scratch-workspaces[\\/]/i,
-  /(?:^|[\\/])\.vetro[\\/]scratch(?:[\\/]|$)/i,
+  /(?:^|[\\/])\.verre[\\/]scratch(?:[\\/]|$)/i,
 ];
 
-/** Folders an agent's desktop app or Vetro creates for a one-off quick chat. Their threads are
+/** Folders an agent's desktop app or Verre creates for a one-off quick chat. Their threads are
  * listed flat under Quick chats instead of as one-thread projects. */
 export function isQuickChatPath(path: string | null, dataDir?: string | null) {
   if (!path || !path.trim()) return true;
@@ -725,7 +725,7 @@ function FilterMenu() {
   const scope = usePrefs((s) => s.sidebarScope);
   const hiddenCount = useStore((s) => s.projects.filter((p) => p.hidden).length);
   const active =
-    (scope === "vetro" ? 1 : 0) +
+    (scope === "verre" ? 1 : 0) +
     filters.agentIds.length +
     filters.sources.length +
     (filters.showArchived ? 1 : 0) +
@@ -754,8 +754,8 @@ function FilterMenu() {
           <MenuRadioItem value="all" closeOnClick={false}>
             {t("sidebar.scopeAllFull")}
           </MenuRadioItem>
-          <MenuRadioItem value="vetro" closeOnClick={false}>
-            {t("sidebar.scopeVetroFull")}
+          <MenuRadioItem value="verre" closeOnClick={false}>
+            {t("sidebar.scopeVerreFull")}
           </MenuRadioItem>
         </MenuRadioGroup>
         <MenuSeparator />
@@ -848,7 +848,7 @@ export function SidebarContent() {
   const [renaming, setRenaming] = useState<ThreadSummary | null>(null);
 
   const filtering = filters.agentIds.length > 0 || filters.sources.length > 0;
-  const scoped = scope === "vetro";
+  const scoped = scope === "verre";
   const sidebarOrder = usePrefs((s) => s.sidebarOrder);
 
   const groups = useMemo(() => {
@@ -858,7 +858,7 @@ export function SidebarContent() {
     const disabled = (agentId: string) =>
       hideDisabled && settings?.agents[agentId]?.enabled === false && !filters.agentIds.includes(agentId);
     const matches = (thread: ThreadSummary) =>
-      (scope === "all" || thread.source === "vetro") &&
+      (scope === "all" || thread.source === "verre") &&
       (filters.showArchived || !thread.archived) &&
       (filters.agentIds.length === 0 || filters.agentIds.includes(thread.agentId)) &&
       (filters.sources.length === 0 || filters.sources.includes(thread.source)) &&
@@ -1137,7 +1137,7 @@ export function SidebarContent() {
     <RenameContext value={setRenaming}>
       <div className="flex h-full min-h-0 flex-col">
         <div {...drag} className={cn("flex h-(--workspace-topbar-height) shrink-0 items-center gap-1 ps-4 pe-2", chromeClass)}>
-          <VetroMark className="size-4.5" />
+          <VerreMark className="size-4.5" />
           <span className="ms-1 flex-1 truncate font-medium text-sm tracking-tight">{t("app.name")}</span>
           <Tip label={`${t("sidebar.collapse")} · ${isMac ? "⌘B" : "Ctrl B"}`}>
             <Button size="icon-xs" variant="ghost-muted" aria-label={t("sidebar.collapse")} className="max-md:hidden" onClick={actions.toggleSidebar}>
@@ -1158,14 +1158,14 @@ export function SidebarContent() {
             onClick={() => useStore.setState({ paletteOpen: true })}
             trailing={<Kbd className="pointer-coarse:hidden">{isMac ? "⌘K" : "Ctrl K"}</Kbd>}
           />
-          {scope === "vetro" ? (
+          {scope === "verre" ? (
             <div className="mt-1 flex items-center px-1">
               <button
                 type="button"
                 onClick={() => setSidebarScope("all")}
                 className="inline-flex h-6 cursor-pointer items-center gap-1 rounded-md border border-sidebar-border/80 bg-sidebar-row-hover/70 px-2 text-xs text-sidebar-foreground/85 transition-colors hover:bg-sidebar-row-hover hover:text-sidebar-foreground"
               >
-                <span>{t("sidebar.scopeVetroFull")}</span>
+                <span>{t("sidebar.scopeVerreFull")}</span>
                 <XIcon className="size-3 text-sidebar-muted-foreground" />
               </button>
             </div>

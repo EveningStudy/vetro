@@ -6,6 +6,6 @@ export type Pairing = {
  */
 code: string, 
 /**
- * Link that opens Vetro on the new device with the code filled in, when a remote URL is known.
+ * Link that opens Verre on the new device with the code filled in, when a remote URL is known.
  */
 url: string | null, expiresAt: number, };

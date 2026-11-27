@@ -6,7 +6,7 @@ export type AppInfo = { version: string, protocolVersion: number,
  */
 platform: string, hostname: string, homeDir: string, 
 /**
- * Vetro's only writable location.
+ * Verre's only writable location.
  */
 dataDir: string, 
 /**

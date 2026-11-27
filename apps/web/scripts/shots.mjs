@@ -58,7 +58,7 @@ const shots = [
   ["child-session-expanded", `/t/${PARENT}?theme=dark&expand=children`, desktop],
   ["raw-log-panel", `/t/${MAIN}?theme=dark&panel=raw`, desktop],
   ["changes-panel", `/t/${PARENT}?theme=light&panel=changes`, desktop, [{ type: "wait", ms: 300 }, { type: "focus", selector: "[data-right-drawer] [role=button]" }, { type: "key", key: "Enter" }, { type: "wait", ms: 500 }]],
-  ["sidebar-vetro-scope", `/t/${MAIN}?theme=dark`, desktop, [{ type: "click", text: "Vetro" }, { type: "wait", ms: 300 }]],
+  ["sidebar-verre-scope", `/t/${MAIN}?theme=dark`, desktop, [{ type: "click", text: "Verre" }, { type: "wait", ms: 300 }]],
   ["long-thread", `/t/${LONG}?theme=dark`, desktop],
   ["read-only", `/t/${READONLY}?theme=light`, desktop],
   ["palette", `/t/${MAIN}?theme=dark&palette=1`, desktop, [{ type: "text", text: "raw" }, { type: "wait", ms: 600 }]],

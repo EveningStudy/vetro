@@ -135,7 +135,7 @@ export class RpcFailure extends Error {
   }
 }
 
-/** One connection to a Vetro core, real or mocked. */
+/** One connection to a Verre core, real or mocked. */
 export interface Transport {
   request<M extends Method>(method: M, params: Params<M>): Promise<Result<M>>;
   onEvent(listener: (event: ServerEvent) => void): () => void;

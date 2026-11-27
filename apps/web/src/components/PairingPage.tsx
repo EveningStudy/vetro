@@ -4,7 +4,7 @@ import { newPairingSession } from "~/api/session";
 import { useT } from "~/i18n";
 import { Button } from "./ui/button";
 import { Input, Label, Spinner } from "./ui/primitives";
-import { VetroMark } from "./VetroMark";
+import { VerreMark } from "./VerreMark";
 
 function defaultDeviceName() {
   const ua = navigator.userAgent;
@@ -43,7 +43,7 @@ export function PairingPage({ initialCode = "", onPaired }: { initialCode?: stri
     return (
       <div className="flex min-h-dvh items-center justify-center bg-background px-4 py-10">
         <div className="flex w-full max-w-sm flex-col items-center gap-3 rounded-2xl border bg-card/80 p-6 text-center shadow-composer dark:bg-surface-raised/80">
-          <VetroMark className="size-9" />
+          <VerreMark className="size-9" />
           <h1 className="text-lg font-semibold">{t("pair.localTitle")}</h1>
           <p className="text-sm text-muted-foreground">{t("pair.local")}</p>
         </div>
@@ -77,7 +77,7 @@ export function PairingPage({ initialCode = "", onPaired }: { initialCode?: stri
         }}
       >
         <div className="flex flex-col items-center gap-3 text-center">
-          <VetroMark className="size-9" />
+          <VerreMark className="size-9" />
           <div>
             <h1 className="text-lg font-semibold">{t("pair.title")}</h1>
             <p className="mt-1 text-sm text-muted-foreground">{t("pair.body")}</p>

@@ -7,7 +7,7 @@ commit `65b2e6dae66f15caa03abf57ba2fe67da1d769aa`). Only presentational code was
 T3 Code's data layer, accounts, telemetry, cloud, translation, git, worktree, pull-request,
 terminal or browser-preview code is included.
 
-| Vetro file | Taken from T3 Code |
+| Verre file | Taken from T3 Code |
 | --- | --- |
 | `src/index.css` | Theme tokens (light and dark palettes, sidebar, message and composer surfaces), `surface-glass` / `dropdown-glass` / `dialog-glass` / `dialog-backdrop` / `live-tool-shine` utilities, the 2xs/3xs text sizes, status pulse animation, scrollbar styling and the chat markdown rules, from `src/index.css`. |
 | `src/components/ui/button.tsx` | Button variants and sizes from `src/components/ui/button.tsx`. |

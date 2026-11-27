@@ -1,5 +1,5 @@
-const KEY = "vetro:session";
-const REMOTE_KEY = "vetro:remote-session";
+const KEY = "verre:session";
+const REMOTE_KEY = "verre:remote-session";
 let memory: string | null = null;
 
 export function newPairingSession(): string {
@@ -23,7 +23,7 @@ export function getSession(): string | null {
 
 export function pairedDraftStorageKey(session: string | null): string | null {
   const id = session?.match(/^([a-f0-9]{32})\.[a-f0-9]{64}$/)?.[1];
-  return id ? `vetro:remote-drafts:${id}` : null;
+  return id ? `verre:remote-drafts:${id}` : null;
 }
 
 function readSession(storage: "sessionStorage" | "localStorage", key: string) {

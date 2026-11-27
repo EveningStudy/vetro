@@ -4,7 +4,7 @@ import type { AuthState } from "./AuthState";
 
 export type AgentAuth = { state: AuthState, 
 /**
- * Sign-in methods the agent itself offers. Vetro never handles credentials.
+ * Sign-in methods the agent itself offers. Verre never handles credentials.
  */
 methods: Array<AuthMethod>, 
 /**

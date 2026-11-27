@@ -4,6 +4,6 @@ import type { ConfigChoice } from "./ConfigChoice";
 
 /**
  * A session setting reported by the agent (model, mode, thinking level, ...). The UI renders
- * these generically; Vetro never invents options the agent does not have.
+ * these generically; Verre never invents options the agent does not have.
  */
 export type ConfigOption = { id: string, name: string, description: string | null, category: ConfigCategory, currentValue: string, choices: Array<ConfigChoice>, };

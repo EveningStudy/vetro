@@ -5245,20 +5245,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
-name = "version-compare"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03c2856837ef78f57382f06b2b8563a2f512f7185d732608fd9176cb3b8edf0e"
-
-[[package]]
-name = "version_check"
-version = "0.9.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
-
-[[package]]
-name = "vetro-agent-acp"
-version = "0.2.0"
+name = "verre-agent-acp"
+version = "0.3.0"
 dependencies = [
  "humantime",
  "percent-encoding",
@@ -5266,14 +5254,14 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
- "vetro-agent-api",
- "vetro-proto",
- "vetro-store-sqlite",
+ "verre-agent-api",
+ "verre-proto",
+ "verre-store-sqlite",
 ]
 
 [[package]]
-name = "vetro-agent-api"
-version = "0.2.0"
+name = "verre-agent-api"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "libc",
@@ -5282,13 +5270,13 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "url",
- "vetro-proto",
+ "verre-proto",
  "windows-sys 0.61.2",
 ]
 
 [[package]]
-name = "vetro-agent-claude"
-version = "0.2.0"
+name = "verre-agent-claude"
+version = "0.3.0"
 dependencies = [
  "getrandom 0.3.4",
  "memchr",
@@ -5296,38 +5284,38 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
- "vetro-agent-api",
- "vetro-proto",
+ "verre-agent-api",
+ "verre-proto",
 ]
 
 [[package]]
-name = "vetro-agent-codex"
-version = "0.2.0"
+name = "verre-agent-codex"
+version = "0.3.0"
 dependencies = [
  "serde_json",
  "tokio",
- "vetro-agent-api",
- "vetro-proto",
+ "verre-agent-api",
+ "verre-proto",
  "windows-sys 0.61.2",
 ]
 
 [[package]]
-name = "vetro-cli"
-version = "0.2.0"
+name = "verre-cli"
+version = "0.3.0"
 dependencies = [
  "clap",
  "open",
  "serde_json",
  "tempfile",
  "tokio",
- "vetro-agent-api",
- "vetro-core",
- "vetro-proto",
+ "verre-agent-api",
+ "verre-core",
+ "verre-proto",
 ]
 
 [[package]]
-name = "vetro-core"
-version = "0.2.0"
+name = "verre-core"
+version = "0.3.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -5351,20 +5339,20 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-tungstenite",
- "vetro-agent-acp",
- "vetro-agent-api",
- "vetro-agent-claude",
- "vetro-agent-codex",
- "vetro-proto",
- "vetro-store-antigravity",
+ "verre-agent-acp",
+ "verre-agent-api",
+ "verre-agent-claude",
+ "verre-agent-codex",
+ "verre-proto",
+ "verre-store-antigravity",
  "windows-sys 0.61.2",
  "winreg 0.55.0",
  "zstd",
 ]
 
 [[package]]
-name = "vetro-desktop"
-version = "0.2.0"
+name = "verre-desktop"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "serde_json",
@@ -5375,15 +5363,15 @@ dependencies = [
  "tauri-plugin-opener",
  "tauri-plugin-single-instance",
  "tokio",
- "vetro-core",
- "vetro-proto",
+ "verre-core",
+ "verre-proto",
  "webview2-com",
  "windows-core",
 ]
 
 [[package]]
-name = "vetro-proto"
-version = "0.2.0"
+name = "verre-proto"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5391,22 +5379,34 @@ dependencies = [
 ]
 
 [[package]]
-name = "vetro-store-antigravity"
-version = "0.2.0"
+name = "verre-store-antigravity"
+version = "0.3.0"
 dependencies = [
  "rusqlite",
  "serde_json",
- "vetro-agent-api",
- "vetro-proto",
- "vetro-store-sqlite",
+ "verre-agent-api",
+ "verre-proto",
+ "verre-store-sqlite",
 ]
 
 [[package]]
-name = "vetro-store-sqlite"
-version = "0.2.0"
+name = "verre-store-sqlite"
+version = "0.3.0"
 dependencies = [
  "rusqlite",
 ]
+
+[[package]]
+name = "version-compare"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "03c2856837ef78f57382f06b2b8563a2f512f7185d732608fd9176cb3b8edf0e"
+
+[[package]]
+name = "version_check"
+version = "0.9.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vswhom"

@@ -93,7 +93,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Enable macOS signing and notarization (optional)
-        # Tauri signs Vetro.app and the DMG. With notarization credentials it staples the ticket to Vetro.app.
+        # Tauri signs Verre.app and the DMG. With notarization credentials it staples the ticket to Verre.app.
         #   APPLE_CERTIFICATE            base64-encoded .p12 Developer ID cert
         #   APPLE_CERTIFICATE_PASSWORD   .p12 password
         #   APPLE_SIGNING_IDENTITY       e.g. "Developer ID Application: Name (TEAMID)"
@@ -116,7 +116,7 @@ jobs:
             echo "APPLE_TEAM_ID=$APPLE_TEAM_ID"
           } >> "$GITHUB_ENV"
           if [ -n "$APPLE_ID" ] && [ -n "$APPLE_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ]; then
-            echo "VETRO_VERIFY_NOTARIZATION=true" >> "$GITHUB_ENV"
+            echo "VERRE_VERIFY_NOTARIZATION=true" >> "$GITHUB_ENV"
           fi
 
       - name: Configure Windows signing (optional)
@@ -126,7 +126,7 @@ jobs:
           WINDOWS_CODESIGN_PFX: ${{ secrets.WINDOWS_CODESIGN_PFX }}
           WINDOWS_CODESIGN_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_PASSWORD }}
         run: |
-          $pfx = Join-Path $env:RUNNER_TEMP "vetro-signing.pfx"
+          $pfx = Join-Path $env:RUNNER_TEMP "verre-signing.pfx"
           $import = @{ FilePath = $pfx; CertStoreLocation = "Cert:\CurrentUser\My" }
           if ($env:WINDOWS_CODESIGN_PASSWORD) {
             $import.Password = ConvertTo-SecureString $env:WINDOWS_CODESIGN_PASSWORD -AsPlainText -Force
@@ -139,7 +139,7 @@ jobs:
             if (Test-Path -LiteralPath $pfx) { Remove-Item -LiteralPath $pfx -Force }
           }
           $thumbprint = $certificates[0].Thumbprint
-          $config = Join-Path $env:RUNNER_TEMP "vetro-windows-signing.json"
+          $config = Join-Path $env:RUNNER_TEMP "verre-windows-signing.json"
           @{
             bundle = @{ windows = @{
               certificateThumbprint = $thumbprint
@@ -148,8 +148,8 @@ jobs:
               tsp = $true
             } }
           } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $config
-          "VETRO_WINDOWS_SIGNING_CONFIG=$config" >> $env:GITHUB_ENV
-          "VETRO_WINDOWS_SIGNING_THUMBPRINT=$thumbprint" >> $env:GITHUB_ENV
+          "VERRE_WINDOWS_SIGNING_CONFIG=$config" >> $env:GITHUB_ENV
+          "VERRE_WINDOWS_SIGNING_THUMBPRINT=$thumbprint" >> $env:GITHUB_ENV
 
       - name: Build desktop app
         working-directory: apps/desktop
@@ -160,7 +160,7 @@ jobs:
         run: |
           $tauriArgs = @("build")
           if ($env:RUNNER_OS -eq "Windows") { $tauriArgs += @("--bundles", "nsis") }
-          if ($env:VETRO_WINDOWS_SIGNING_CONFIG) { $tauriArgs += @("--config", $env:VETRO_WINDOWS_SIGNING_CONFIG) }
+          if ($env:VERRE_WINDOWS_SIGNING_CONFIG) { $tauriArgs += @("--config", $env:VERRE_WINDOWS_SIGNING_CONFIG) }
           pnpm dlx @tauri-apps/cli@2.12.6 @tauriArgs
 
       - name: Test Linux AppImage
@@ -177,20 +177,20 @@ jobs:
           DISTRIBUTION_SIGNED: ${{ steps.signing.outputs.apple }}
         run: |
           bundles=apps/desktop/src-tauri/target/desktop/release/bundle
-          app="$bundles/macos/Vetro.app"
+          app="$bundles/macos/Verre.app"
           codesign --verify --strict "$app"
           test -n "$(plutil -extract NSMicrophoneUsageDescription raw -expect string -o - "$app/Contents/Info.plist")"
-          codesign -d --xml --entitlements - "$app" > "$RUNNER_TEMP/vetro-entitlements.plist"
-          test "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.device.audio-input' "$RUNNER_TEMP/vetro-entitlements.plist")" = true
+          codesign -d --xml --entitlements - "$app" > "$RUNNER_TEMP/verre-entitlements.plist"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.device.audio-input' "$RUNNER_TEMP/verre-entitlements.plist")" = true
           if [ "$DISTRIBUTION_SIGNED" = true ]; then
             codesign --verify --strict "$bundles"/dmg/*.dmg
           fi
-          if [ "${VETRO_VERIFY_NOTARIZATION:-false}" = true ]; then
+          if [ "${VERRE_VERIFY_NOTARIZATION:-false}" = true ]; then
             xcrun stapler validate "$app"
           fi
 
-      - name: Build vetro CLI
-        run: cargo build --release -p vetro-cli --features claude,codex,acp,antigravity-store
+      - name: Build verre CLI
+        run: cargo build --release -p verre-cli --features claude,codex,acp,antigravity-store
 
       - name: Sign Windows CLI (optional)
         if: runner.os == 'Windows' && steps.signing.outputs.windows == 'true'
@@ -198,8 +198,8 @@ jobs:
         run: |
           $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
             Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
-          & $signtool sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com /sha1 $env:VETRO_WINDOWS_SIGNING_THUMBPRINT target\release\vetro.exe
-          if ($LASTEXITCODE -ne 0) { throw "signtool failed for vetro.exe" }
+          & $signtool sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com /sha1 $env:VERRE_WINDOWS_SIGNING_THUMBPRINT target\release\verre.exe
+          if ($LASTEXITCODE -ne 0) { throw "signtool failed for verre.exe" }
 
       - name: Verify Windows installation and signatures
         if: runner.os == 'Windows'
@@ -209,10 +209,10 @@ jobs:
           $installers = @(Get-ChildItem "apps\desktop\src-tauri\target\desktop\release\bundle\nsis\*.exe" -File)
           if ($installers.Count -ne 1) { throw "Expected one Windows installer" }
           $installer = $installers[0].FullName
-          $installDir = Join-Path $env:RUNNER_TEMP "vetro-nsis-smoke"
-          $app = Join-Path $installDir "vetro-desktop.exe"
+          $installDir = Join-Path $env:RUNNER_TEMP "verre-nsis-smoke"
+          $app = Join-Path $installDir "verre-desktop.exe"
           $uninstaller = Join-Path $installDir "uninstall.exe"
-          $registration = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Vetro"
+          $registration = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Verre"
           if ((Test-Path -LiteralPath $installDir) -or (Test-Path -LiteralPath $registration)) {
             throw "Windows installer verification requires a fresh install location"
           }
@@ -222,10 +222,10 @@ jobs:
                 !(Test-Path -LiteralPath $uninstaller -PathType Leaf) -or !(Test-Path -LiteralPath $registration)) {
               throw "Windows installation failed with exit code $($install.ExitCode)"
             }
-            if ($env:VETRO_WINDOWS_SIGNING_THUMBPRINT) {
-              foreach ($file in @($installer, $app, $uninstaller, "target\release\vetro.exe")) {
+            if ($env:VERRE_WINDOWS_SIGNING_THUMBPRINT) {
+              foreach ($file in @($installer, $app, $uninstaller, "target\release\verre.exe")) {
                 $signature = Get-AuthenticodeSignature -LiteralPath $file
-                if ($signature.Status -ne "Valid" -or $signature.SignerCertificate.Thumbprint -ne $env:VETRO_WINDOWS_SIGNING_THUMBPRINT) {
+                if ($signature.Status -ne "Valid" -or $signature.SignerCertificate.Thumbprint -ne $env:VERRE_WINDOWS_SIGNING_THUMBPRINT) {
                   throw "Unexpected Authenticode signature for $file ($($signature.Status))"
                 }
               }
@@ -263,7 +263,7 @@ jobs:
               ;;
             macOS)
               copy_bundle "$B"/dmg/*.dmg
-              ditto -c -k --keepParent "$B/macos/Vetro.app" "dist-release/Vetro-macos-$ASSET_TARGET.zip"
+              ditto -c -k --keepParent "$B/macos/Verre.app" "dist-release/Verre-macos-$ASSET_TARGET.zip"
               ;;
             Linux)
               copy_bundle "$B"/appimage/*.AppImage
@@ -274,8 +274,8 @@ jobs:
               exit 1
               ;;
           esac
-          test -s "target/release/vetro$ext"
-          cp "target/release/vetro$ext" "dist-release/vetro-$ASSET_TARGET$ext"
+          test -s "target/release/verre$ext"
+          cp "target/release/verre$ext" "dist-release/verre-$ASSET_TARGET$ext"
           ls -la dist-release
 
       - name: Upload platform release artifacts
@@ -316,6 +316,6 @@ jobs:
         with:
           draft: true
           tag_name: ${{ env.RELEASE_TAG }}
-          name: Vetro ${{ env.RELEASE_TAG }}
+          name: Verre ${{ env.RELEASE_TAG }}
           fail_on_unmatched_files: true
           files: dist-release/*

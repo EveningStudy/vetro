@@ -5,7 +5,7 @@ import { cn, isMac } from "~/lib/utils";
 import { MobileSidebarButton, useSidebarCollapsed } from "./Shell";
 import { Button } from "./ui/button";
 import { Kbd } from "./ui/primitives";
-import { VetroMark } from "./VetroMark";
+import { VerreMark } from "./VerreMark";
 import { useHeaderChromeClass, useIntegratedTitleBar, useWindowDragProps } from "./WindowChrome";
 
 export function EmptyState() {
@@ -20,7 +20,7 @@ export function EmptyState() {
         <MobileSidebarButton />
       </header>
       <div className="flex flex-1 flex-col items-center justify-center gap-4 px-6 text-center">
-        <VetroMark className="size-9 opacity-90" />
+        <VerreMark className="size-9 opacity-90" />
         <div className="max-w-sm">
           <h1 className="text-base font-medium text-foreground">{t("empty.title")}</h1>
         </div>

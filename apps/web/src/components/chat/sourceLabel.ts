@@ -23,7 +23,7 @@ const knownOrigins: Record<string, string> = {
 export function sourceLabel(thread: ThreadSummary, agentName: string | undefined, t: Translate) {
   const origin = thread.origin?.trim();
   if (origin && knownOrigins[origin]) return knownOrigins[origin];
-  if (thread.source === "vetro") return "Vetro";
+  if (thread.source === "verre") return "Verre";
   if (thread.source === "exec") return execCommands[thread.agentId] ?? `${thread.agentId} exec`;
   if (origin && /[A-Z ]/.test(origin)) return origin;
   if (thread.source === "unknown") return agentName ?? thread.agentId;

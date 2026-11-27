@@ -1,8 +1,8 @@
 # Antigravity
 
-## How Vetro connects
+## How Verre connects
 
-Vetro starts the unmodified Antigravity CLI that is installed on the machine as an Agent Client Protocol server: `agy acp`, over stdio, in the project directory. The agent, its tools, its sign-in and its settings are Antigravity's own. Vetro forwards what the user typed and renders what comes back. It adds no system prompt, no tools, no MCP servers and no replayed history, and it never reads or stores Antigravity credentials.
+Verre starts the unmodified Antigravity CLI that is installed on the machine as an Agent Client Protocol server: `agy acp`, over stdio, in the project directory. The agent, its tools, its sign-in and its settings are Antigravity's own. Verre forwards what the user typed and renders what comes back. It adds no system prompt, no tools, no MCP servers and no replayed history, and it never reads or stores Antigravity credentials.
 
 This is the integration Google documents for ACP clients ("Any ACP client can launch Antigravity CLI", <https://antigravity.google/docs/ide/extensions/acp/>) and the same path Zed, JetBrains IDEs and T3 Code use.
 
@@ -18,9 +18,9 @@ Google's statements, newest first. Forum replies are from Google staff and descr
 | 2026-10-26, 2026-10-31 | Forum threads 192027 and 197131 (solved) | Running Google's official ACP agent inside an ACP-compatible client (T3 Code, Zed) with its native sign-in, for single-user interactive development, is supported and permitted. Token extraction, proxies and wrapping `agy -p` in third-party agent loops are enforced against. |
 | ongoing | FAQ, <https://antigravity.google/docs/faq/> | "Antigravity CLI headless mode (`agy -p`) is intended for direct scripting and CI workflows. Wrapping `agy` inside third-party coding agents or applications, or automating account rotation, is not supported under consumer plans." |
 
-## What this means in Vetro
+## What this means in Verre
 
-- Using Antigravity in Vetro with a personal Google sign-in is the supported case: an interactive client, the official binary, the user's own prompts.
-- Antigravity gets the same features as every other agent. Vetro has no orchestration features for any agent, so there is nothing to switch off.
-- Vetro shows sessions that were started by another agent through a CLI (for example Claude running `agy -p`) like any other linked session; it only reads them. Whether to delegate work to Antigravity from another agent is the user's decision. Google's supported route for that is API-key mode (`"modelProvider": "gemini"` with `GEMINI_API_KEY`, or Google Cloud), which is outside the consumer-plan restriction. In Vetro, an API key can be given to the Antigravity agent as an environment variable in Settings, and the agent's `gemini-api-key` sign-in method is offered next to the others.
+- Using Antigravity in Verre with a personal Google sign-in is the supported case: an interactive client, the official binary, the user's own prompts.
+- Antigravity gets the same features as every other agent. Verre has no orchestration features for any agent, so there is nothing to switch off.
+- Verre shows sessions that were started by another agent through a CLI (for example Claude running `agy -p`) like any other linked session; it only reads them. Whether to delegate work to Antigravity from another agent is the user's decision. Google's supported route for that is API-key mode (`"modelProvider": "gemini"` with `GEMINI_API_KEY`, or Google Cloud), which is outside the consumer-plan restriction. In Verre, an API key can be given to the Antigravity agent as an environment variable in Settings, and the agent's `gemini-api-key` sign-in method is offered next to the others.
 - Outside first-party IDE integrations, the models Antigravity offers over ACP are decided by Google and may be limited to Gemini models.

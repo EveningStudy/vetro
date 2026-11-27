@@ -17,7 +17,7 @@ nativeId: string, title: string, preview: string | null, cwd: string | null, cre
  */
 origin: string | null, status: ThreadStatus, 
 /**
- * A native session is currently attached inside Vetro.
+ * A native session is currently attached inside Verre.
  */
 live: boolean, 
 /**
@@ -25,7 +25,7 @@ live: boolean,
  */
 resumable: boolean, parent: ThreadParent | null, childCount: number, model: string | null, archived: boolean, 
 /**
- * Vetro-local pin flag; never written to the agent's own store.
+ * Verre-local pin flag; never written to the agent's own store.
  */
 pinned: boolean, 
 /**

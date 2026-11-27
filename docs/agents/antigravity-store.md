@@ -1,6 +1,6 @@
 # Antigravity conversation store (read-only)
 
-Crate: `crates/vetro-store-antigravity`. It lists and reads the conversations that Antigravity keeps on disk, so sessions that were not started through Vetro show up with their full history. The format has no published schema; everything below was worked out from real stores (structure only) and may change with Antigravity updates. Unknown data never causes an error: it is skipped or shown as a generic item.
+Crate: `crates/verre-store-antigravity`. It lists and reads the conversations that Antigravity keeps on disk, so sessions that were not started through Verre show up with their full history. The format has no published schema; everything below was worked out from real stores (structure only) and may change with Antigravity updates. Unknown data never causes an error: it is skipped or shown as a generic item.
 
 ```rust
 let store = Store::open(home.join(".gemini/antigravity"));      // never creates anything
@@ -29,7 +29,7 @@ All files are in WAL mode. The app opens them briefly and deletes `-wal`/`-shm` 
 
 `sqlite::open_readonly` never writes, creates or deletes a file:
 
-- SQLite's `mode=ro` still creates `-wal` and `-shm` next to a WAL database when they are missing, and on Windows it opens `-shm` with `OPEN_ALWAYS`. Vetro therefore registers a VFS shim (`vetro-readonly`) over the platform VFS. For every named file it refuses to open a file that does not exist, refuses a `-wal` whose `-shm` is missing, strips `READWRITE`/`CREATE` and forces `READONLY`; `xDelete` always fails.
+- SQLite's `mode=ro` still creates `-wal` and `-shm` next to a WAL database when they are missing, and on Windows it opens `-shm` with `OPEN_ALWAYS`. Verre therefore registers a VFS shim (`verre-readonly`) over the platform VFS. For every named file it refuses to open a file that does not exist, refuses a `-wal` whose `-shm` is missing, strips `READWRITE`/`CREATE` and forces `READONLY`; `xDelete` always fails.
 - `-wal` present: open `mode=ro&readonly_shm=1`. The reader sees committed frames that are not checkpointed yet. `-shm` is opened read-only, so the app's wal-index is never modified. The connection holds a shared lock only while it is open (a few ms to a few hundred ms); WAL writers are not blocked.
 - No `-wal` (or the shim refused one, for example an orphaned `-wal` without `-shm`): open `immutable=1`, which takes no locks and ignores WAL.
 - `query_only` and `temp_store=memory` are set, connections are closed right after use, and steps are streamed row by row (only the decoded items are kept).

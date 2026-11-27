@@ -15,7 +15,7 @@ import {
 
 export type ThemePref = "light" | "dark" | "system";
 export type LanguagePref = "en" | "zh" | "system";
-export type SidebarScope = "all" | "vetro";
+export type SidebarScope = "all" | "verre";
 export type SidebarOrder = "projects" | "quickChats";
 export type FontStyle = "sans" | "serif" | "mono";
 export type FontScale = "compact" | "default" | "large";
@@ -31,7 +31,7 @@ export interface Filters {
   showInternal: boolean;
 }
 
-export const THREAD_SOURCES = ["vetro", "desktop", "cli", "exec", "ide", "cloud", "unknown"] as const satisfies readonly ThreadSource[];
+export const THREAD_SOURCES = ["verre", "desktop", "cli", "exec", "ide", "cloud", "unknown"] as const satisfies readonly ThreadSource[];
 
 export function sanitizeFilters(value: unknown): Filters {
   const filters = value && typeof value === "object" ? (value as Partial<Record<keyof Filters, unknown>>) : {};
@@ -65,7 +65,7 @@ export interface PrefsData {
   /** Projects active within this many days stay in the main list; 0 keeps all of them. */
   sidebarActivityDays?: number;
   sidebarCollapsed?: boolean;
-  /** `vetro` limits the sidebar to threads started in Vetro; search still covers everything. */
+  /** `verre` limits the sidebar to threads started in Verre; search still covers everything. */
   sidebarScope?: SidebarScope;
   /** Which of Projects and Quick chats comes first in the sidebar. */
   sidebarOrder?: SidebarOrder;
@@ -95,7 +95,7 @@ export interface PrefsData {
   agentOptions?: Record<string, AgentOptionMemory>;
 }
 
-const CACHE_KEY = "vetro:prefs";
+const CACHE_KEY = "verre:prefs";
 const query = new URLSearchParams(location.search);
 
 function readCache(): PrefsData {
@@ -242,7 +242,7 @@ function derived(prefs: PrefsData): UiPrefs {
     sidebarActivityDays: activityDays(prefs.sidebarActivityDays),
     hideDisabledAgentHistory: prefs.hideDisabledAgentHistory ?? true,
     sidebarCollapsed: prefs.sidebarCollapsed ?? false,
-    sidebarScope: prefs.sidebarScope === "vetro" ? "vetro" : "all",
+    sidebarScope: prefs.sidebarScope === "verre" ? "verre" : "all",
     sidebarOrder: prefs.sidebarOrder === "quickChats" ? "quickChats" : "projects",
     sidebarGroupsOpen: prefs.sidebarGroupsOpen && typeof prefs.sidebarGroupsOpen === "object" ? prefs.sidebarGroupsOpen : {},
     drawerWidth: clampDrawerWidth(typeof prefs.drawerWidth === "number" ? prefs.drawerWidth : 480),
@@ -265,8 +265,8 @@ export const usePrefs = create<UiPrefs>(() => derived(data));
 const FONT_FAMILIES: Record<FontStyle, string> = { sans: "var(--font-sans)", serif: "var(--font-serif)", mono: "var(--font-mono)" };
 const FONT_SIZES: Record<FontScale, string> = { compact: "0.8125rem", default: "0.875rem", large: "0.96875rem" };
 const CHAT_MAX_WIDTHS: Record<ChatWidth, string> = { standard: "46rem", wide: "60rem", full: "100%" };
-const BOOT_BG_KEY = "vetro:boot-bg";
-const BOOT_MODE_KEY = "vetro:boot-mode";
+const BOOT_BG_KEY = "verre:boot-bg";
+const BOOT_MODE_KEY = "verre:boot-mode";
 
 let preview: { mode: ThemeMode; tokens: ThemePaletteTokens } | null = null;
 

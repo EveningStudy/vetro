@@ -1,0 +1,11 @@
+[package]
+name = "verre-store-sqlite"
+description = "Read-only access to foreign SQLite stores"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rusqlite = { version = "0.43", default-features = false, features = ["bundled"] }

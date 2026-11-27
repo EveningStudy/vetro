@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Vetro",
-  "version": "0.2.0",
-  "identifier": "dev.vetro.desktop",
+  "productName": "Verre",
+  "version": "0.3.0",
+  "identifier": "io.github.eveningstudy.verre",
   "build": {
     "frontendDist": "../frontend"
   },

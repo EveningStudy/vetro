@@ -334,7 +334,7 @@ function ThreadHeader({ thread, threadId }: { thread: OpenThread | undefined; th
   const idle = summary.status === "idle" || summary.status === "error";
   const modelOption = thread?.options.find((option) => option.category === "model");
   const model = (modelOption && prepare(modelOption).find((choice) => choice.value === modelOption.currentValue)?.label) ?? summary.model;
-  const source = summary.source !== "vetro" ? t("thread.from", { source: sourceLabel(summary, agent?.name, t) }) : null;
+  const source = summary.source !== "verre" ? t("thread.from", { source: sourceLabel(summary, agent?.name, t) }) : null;
 
   useEffect(() => {
     if (cwd && !quickChat && idle) {

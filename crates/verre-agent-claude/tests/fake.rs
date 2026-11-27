@@ -1,0 +1,733 @@
+use std::{
+    collections::BTreeMap,
+    env, fs,
+    io::{self, BufRead, Write},
+    time::Duration,
+};
+
+use serde_json::{json, Value};
+use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
+use verre_agent_api::{process::SpawnSpec, Agent, SessionEvent, StartRequest};
+use verre_agent_claude::ClaudeAgent;
+use verre_proto::{
+    rpc::ErrorCode, ContentBlock, ItemKind, NoticeLevel, RawDirection, RequestResolution,
+    StopReason, ThreadSource, ThreadStatus, ToolKind, ToolStatus,
+};
+
+const PROMPT: &str = "  Original prompt: \"你好\"\r\n\n  ";
+const ID: &str = "00c02626-cafe-4abc-baba-000010000019";
+const ASSISTANT_ID: &str = "811be3aa-d4ae-4457-b2f1-304fb4114dbd";
+const PREFIX: &[&str] = &[
+    "-p",
+    "--input-format",
+    "stream-json",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--include-partial-messages",
+    "--permission-prompts",
+    "host",
+    "--permission-prompt-tool=stdio",
+    "--allow-dangerously-skip-permissions",
+    "--include-hook-events",
+    "--replay-user-messages",
+    "--forward-subagent-text",
+];
+
+fn main() {
+    let args = env::args().skip(1).collect::<Vec<_>>();
+    if args.first().is_some_and(|arg| arg == "-p") {
+        fake(&args);
+    } else if !args
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "--ignored" | "--list"))
+    {
+        env::remove_var("CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING");
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(test());
+    }
+}
+
+async fn test() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut spec = SpawnSpec::new(env::current_exe().unwrap());
+    spec.env.insert(
+        "ANTHROPIC_BASE_URL".into(),
+        "https://user:fake@gateway.example:8443/v1?key=fake".into(),
+    );
+    let agent = ClaudeAgent::from_spec(Some(spec), temp.path());
+    let starter = agent
+        .options(Some(temp.path()), &BTreeMap::new())
+        .await
+        .unwrap();
+    assert_eq!(starter.options[0].choices[0].value, "haiku");
+    assert_eq!(starter.commands[0].name, "help");
+    let selected = BTreeMap::from([("model".into(), "haiku".into())]);
+    let options = agent
+        .options(Some(temp.path()), &selected)
+        .await
+        .unwrap()
+        .options;
+    assert!(options
+        .iter()
+        .any(|option| option.id == "effort" && option.current_value == "low"));
+    assert!(options.iter().any(|option| option.id == "mode"
+        && option.current_value == "default"
+        && option
+            .choices
+            .iter()
+            .any(|choice| choice.value == "default")));
+    let info = agent.info().await;
+    assert_eq!(info.auth.account.as_deref(), Some("Claude Pro"));
+    assert_eq!(info.auth.provider.as_deref(), Some("Vertex AI"));
+    assert_eq!(
+        info.auth.endpoint.as_deref(),
+        Some("https://gateway.example:8443")
+    );
+    assert_eq!(info.version.as_deref(), Some("test-version"));
+    assert!(info.capabilities.mid_turn_input);
+    assert!(info.capabilities.history_edit.rewind_files);
+    assert!(info.capabilities.history_edit.preview_rewind_files);
+
+    let (sink, mut receiver) = unbounded_channel();
+    let session = agent
+        .start(
+            StartRequest {
+                cwd: temp.path().to_path_buf(),
+                content: vec![
+                    text(PROMPT),
+                    ContentBlock::File {
+                        path: "file.rs".into(),
+                        name: None,
+                    },
+                ],
+                options: BTreeMap::new(),
+            },
+            sink,
+        )
+        .await
+        .unwrap();
+    let mut streaming = Vec::new();
+    let mut reasoning = Vec::new();
+    let mut prompt_id = None;
+    let mut final_id = None;
+    let mut completed = false;
+    let mut notified = false;
+    let mut resolved = false;
+    for step in ["always", "questions", "plan"] {
+        loop {
+            match next(&mut receiver).await {
+                SessionEvent::TextDelta { item_id, delta } => streaming.push((item_id, delta)),
+                SessionEvent::Item(item) => match item.kind {
+                    ItemKind::UserMessage { content } => {
+                        if content.first() == Some(&text(PROMPT)) {
+                            prompt_id = Some(item.id);
+                        } else {
+                            assert_eq!(content, vec![text("fold this turn")]);
+                        }
+                    }
+                    ItemKind::Reasoning { text, streaming } => {
+                        reasoning.push((item.id, text, streaming));
+                    }
+                    ItemKind::AgentMessage {
+                        text,
+                        streaming: false,
+                    } if text == "hello" => final_id = Some(item.id),
+                    ItemKind::ToolCall(call)
+                        if call.kind == ToolKind::Agent && call.status == ToolStatus::Completed =>
+                    {
+                        assert_eq!(
+                            call.output.unwrap()["subagentItems"][0]["kind"]["text"],
+                            "child text"
+                        );
+                        completed = true;
+                    }
+                    ItemKind::Notice {
+                        level: NoticeLevel::Info,
+                        text,
+                        ..
+                    } if text == "Background task completed: Child finished" => {
+                        assert!(prompt_id.is_some());
+                        assert_eq!(item.turn_id, prompt_id);
+                        notified = true;
+                    }
+                    ItemKind::Request(request)
+                        if request.request_id == step && request.resolution.is_none() =>
+                    {
+                        break
+                    }
+                    ItemKind::Request(request) if request.resolution.is_some() => resolved = true,
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
+        let resolution = match step {
+            "always" => RequestResolution::Selected {
+                option_id: "always".into(),
+            },
+            "questions" => RequestResolution::Answered {
+                answers: BTreeMap::from([("Which?".into(), vec!["A".into(), "B".into()])]),
+            },
+            _ => RequestResolution::Selected {
+                option_id: "deny".into(),
+            },
+        };
+        if step == "always" {
+            let checkpoint = prompt_id.as_deref().unwrap();
+            assert_eq!(
+                session
+                    .rewind_files(checkpoint, true)
+                    .await
+                    .unwrap_err()
+                    .code,
+                ErrorCode::Busy
+            );
+        }
+        if step == "plan" {
+            session.send(vec![text("fold this turn")]).await.unwrap();
+        }
+        session.respond(step, resolution).await.unwrap();
+    }
+    assert_eq!(
+        streaming,
+        vec![
+            ("message:0".into(), "ing".into()),
+            ("message:1".into(), "hello".into())
+        ]
+    );
+    assert_eq!(final_id.as_deref(), Some("message:1"));
+    let mut limits = Vec::new();
+    loop {
+        match next(&mut receiver).await {
+            SessionEvent::Item(item) => match item.kind {
+                ItemKind::Reasoning { text, streaming } => {
+                    reasoning.push((item.id, text, streaming));
+                }
+                ItemKind::Request(request) if request.resolution.is_some() => resolved = true,
+                ItemKind::TurnEnd {
+                    stop_reason: StopReason::EndTurn,
+                    duration_ms: Some(123),
+                    usage: Some(usage),
+                } => {
+                    assert_eq!(usage.input, Some(7));
+                    assert_eq!(item.turn_id.as_deref(), Some(ASSISTANT_ID));
+                    assert_eq!(item.id, format!("turn:{ASSISTANT_ID}"));
+                    break;
+                }
+                _ => {}
+            },
+            SessionEvent::Usage(usage)
+                if usage.last_turn.is_none() && !usage.rate_limits.is_empty() =>
+            {
+                let limit = &usage.rate_limits[0];
+                assert_eq!(limit.label, "five_hour");
+                assert_eq!(limit.resets_at, Some(1_795_392_000_000));
+                limits.push(limit.used_percent);
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(
+        reasoning,
+        [
+            ("message:0".into(), "think".into(), true),
+            ("message:0".into(), "thinking".into(), false),
+        ]
+    );
+    assert_eq!(limits, [75.0, 0.0, 100.0, 100.0]);
+    assert!(completed && notified && resolved);
+    assert_eq!(
+        next(&mut receiver).await,
+        SessionEvent::Status(ThreadStatus::Idle)
+    );
+    assert_eq!(
+        session
+            .rewind_files("invalid", true)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::BadRequest
+    );
+    let checkpoint = prompt_id.as_deref().unwrap();
+    let preview = session.rewind_files(checkpoint, true).await.unwrap();
+    assert!(preview.can_rewind && preview.dry_run);
+    assert_eq!(preview.files_changed, ["file.rs"]);
+    assert_eq!(preview.insertions, Some(2));
+    assert_eq!(preview.deletions, Some(1));
+    assert!(preview.error.is_none() && preview.skipped_links.is_empty());
+    let applied = session.rewind_files(checkpoint, false).await.unwrap();
+    assert!(applied.can_rewind && !applied.dry_run);
+    assert_eq!(applied.files_changed, ["file.rs"]);
+    assert_eq!(applied.skipped_links, ["unsafe-link"]);
+    assert_eq!(applied.insertions, None);
+    let unavailable = session.rewind_files(ID, true).await.unwrap();
+    assert!(!unavailable.can_rewind && unavailable.dry_run);
+    assert_eq!(unavailable.error.as_deref(), Some("No checkpoint"));
+    assert!(unavailable.files_changed.is_empty());
+    assert!(session
+        .set_option("model", "haiku")
+        .await
+        .unwrap()
+        .iter()
+        .any(|option| option.current_value == "haiku"));
+    session.set_option("mode", "plan").await.unwrap();
+    session.send(vec![text("interrupt me")]).await.unwrap();
+    session.interrupt().await.unwrap();
+    let mut cumulative = None;
+    loop {
+        match next(&mut receiver).await {
+            SessionEvent::Usage(usage) => cumulative = usage.total,
+            SessionEvent::Item(item) => {
+                if let ItemKind::TurnEnd {
+                    stop_reason: StopReason::Cancelled,
+                    usage,
+                    ..
+                } = item.kind
+                {
+                    assert_eq!(usage.unwrap().input, Some(8));
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let cumulative = cumulative.unwrap();
+    assert_eq!(cumulative.input, Some(22));
+    assert_eq!(cumulative.reasoning, Some(2));
+    let log = session.wire_log().snapshot();
+    let spawn: Value = serde_json::from_str(
+        &log.iter()
+            .find(|entry| entry.direction == RawDirection::Spawn)
+            .unwrap()
+            .text,
+    )
+    .unwrap();
+    let mut expected = PREFIX.to_vec();
+    expected.extend(["--session-id", session.native_id()]);
+    assert_eq!(spawn["args"], json!(expected));
+    assert_eq!(
+        spawn["env"],
+        json!({
+            "ANTHROPIC_BASE_URL": "<redacted>",
+            "CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING": "<redacted>"
+        })
+    );
+    let sent: Vec<Value> = log
+        .iter()
+        .filter(|entry| entry.direction == RawDirection::Sent)
+        .map(|entry| serde_json::from_str(&entry.text).unwrap())
+        .collect();
+    assert_eq!(sent[0]["request"], json!({"subtype":"initialize"}));
+    assert_eq!(
+        sent[1]["message"],
+        json!({"role":"user","content":[{"type":"text","text":PROMPT}]})
+    );
+    session.detach().await;
+    assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 0);
+
+    let project = temp.path().join("encoded-project");
+    let original = temp.path().join("original-cwd");
+    fs::create_dir_all(&original).unwrap();
+    let side = project.join(ID).join("subagents");
+    fs::create_dir_all(&side).unwrap();
+    let rows = [
+        json!({"type":"user","uuid":"history-user","sessionId":ID,"cwd":original,"entrypoint":"sdk-cli","timestamp":"2026-11-23T00:00:00.100Z","message":{"content":"Initial title"}}),
+        json!({"type":"summary","summary":"Generated summary"}),
+        json!({"type":"custom-title","customTitle":"Own Title"}),
+        json!({"type":"assistant","uuid":ASSISTANT_ID,"message":{"id":"history-api","model":"haiku","content":[{"type":"tool_use","id":"call","name":"Agent","input":{}}]}}),
+        json!({"type":"user","uuid":"history-result","message":{"content":[{"type":"tool_result","tool_use_id":"call","content":"done"}]},"toolUseResult":{"agentId":"child"}}),
+        json!({"type":"assistant","uuid":"history-inline","isSidechain":true,"agentId":"child","message":{"content":[{"type":"text","text":"inline"}]}}),
+        json!({"type":"system","subtype":"compact_boundary","uuid":"compact"}),
+    ];
+    let content = rows
+        .iter()
+        .map(Value::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let log_path = project.join(format!("{ID}.jsonl"));
+    fs::write(&log_path, format!("{content}\n{{\"type\":\"user\"")).unwrap();
+    fs::write(side.join("agent-child.jsonl"), rows[5].to_string()
+        + "\n"
+        + &json!({"type":"assistant","uuid":"history-child","isSidechain":true,"message":{"content":[{"type":"thinking","thinking":"child thoughts"}]}}).to_string()).unwrap();
+    fs::write(
+        side.join("agent-child.meta.json"),
+        r#"{"toolUseId":"call"}"#,
+    )
+    .unwrap();
+    let list = agent.list(None).await.unwrap();
+    assert_eq!(list.sessions.len(), 1);
+    let record = &list.sessions[0];
+    assert_eq!(record.title, "Own Title");
+    assert_eq!(record.preview.as_deref(), Some("Initial title"));
+    assert_eq!(record.origin.as_deref(), Some("sdk-cli"));
+    assert_eq!(record.source, ThreadSource::Exec);
+    assert_eq!(record.cwd.as_deref(), Some(original.as_path()));
+    assert_eq!(record.created_at, Some(1_795_392_000_100));
+    let history = agent.read(ID, None).await.unwrap();
+    assert_eq!(history.items.len(), 4);
+    let anchor = history.items.last().unwrap();
+    assert!(matches!(anchor.kind, ItemKind::TurnEnd { .. }));
+    assert_eq!(anchor.turn_id.as_deref(), Some(ASSISTANT_ID));
+    let ItemKind::ToolCall(call) = &history.items[1].kind else {
+        panic!("missing Agent call")
+    };
+    assert_eq!(call.status, ToolStatus::Completed);
+    let children = call.output.as_ref().unwrap()["subagentItems"]
+        .as_array()
+        .unwrap();
+    assert_eq!(children.len(), 2);
+    assert_eq!(children[0]["kind"]["text"], "inline");
+    assert_eq!(children[1]["kind"]["text"], "child thoughts");
+    assert_eq!(
+        fs::read_to_string(log_path).unwrap(),
+        format!("{content}\n{{\"type\":\"user\"")
+    );
+    let (sink, _events) = unbounded_channel();
+    assert!(agent.resume_option_at_launch("effort"));
+    let resumed = agent
+        .attach_with_options(
+            ID,
+            Some(temp.path()),
+            BTreeMap::from([("effort".into(), "low".into())]),
+            sink,
+        )
+        .await
+        .unwrap();
+    let log = resumed.wire_log().snapshot();
+    let spawn: Value = serde_json::from_str(&log[0].text).unwrap();
+    let mut expected = PREFIX.to_vec();
+    expected.extend(["--resume", ID, "--effort", "low"]);
+    assert_eq!(spawn["args"], json!(expected));
+    assert_eq!(spawn["cwd"], json!(original));
+    assert!(resumed
+        .current_options()
+        .unwrap()
+        .iter()
+        .any(|option| option.id == "mode" && option.current_value == "default"));
+    assert!(resumed
+        .set_option("mode", "bypassPermissions")
+        .await
+        .unwrap()
+        .iter()
+        .any(|option| option.id == "mode" && option.current_value == "bypassPermissions"));
+    assert!(resumed
+        .set_option("effort", "high")
+        .await
+        .unwrap()
+        .iter()
+        .any(|option| option.id == "effort" && option.current_value == "high"));
+    assert_eq!(resumed.wire_log().snapshot()[0], log[0]);
+    assert!(info.capabilities.fork.whole);
+    assert!(info.capabilities.fork.at_turn);
+    let (sink, _events) = unbounded_channel();
+    assert!(agent
+        .fork(ID, Some(temp.path()), Some("turn-1"), sink)
+        .await
+        .is_err());
+    for turn_id in [None, anchor.turn_id.as_deref()] {
+        let (sink, _events) = unbounded_channel();
+        let forked = agent
+            .fork(ID, Some(temp.path()), turn_id, sink)
+            .await
+            .unwrap();
+        assert_ne!(forked.native_id(), ID);
+        let log = forked.wire_log().snapshot();
+        let spawn: Value = serde_json::from_str(&log[0].text).unwrap();
+        let mut expected = PREFIX.to_vec();
+        expected.extend(["--resume", ID, "--fork-session"]);
+        if let Some(turn_id) = turn_id {
+            expected.extend(["--resume-session-at", turn_id]);
+        }
+        expected.extend(["--session-id", forked.native_id()]);
+        assert_eq!(spawn["args"], json!(expected));
+        assert_eq!(spawn["cwd"], json!(original));
+        forked.detach().await;
+    }
+    agent.shutdown().await;
+    println!(
+        "fake Claude passed: no injection, streaming, permissions, interrupt, history, resume, fork, rewind"
+    );
+}
+
+async fn next(receiver: &mut UnboundedReceiver<SessionEvent>) -> SessionEvent {
+    let event = tokio::time::timeout(Duration::from_secs(5), receiver.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!matches!(event, SessionEvent::Closed { .. }), "{event:?}");
+    event
+}
+
+fn text(text: &str) -> ContentBlock {
+    ContentBlock::Text { text: text.into() }
+}
+
+fn fake(args: &[String]) {
+    assert_eq!(&args[..PREFIX.len()], PREFIX);
+    assert!(matches!(
+        args[PREFIX.len()].as_str(),
+        "--session-id" | "--resume"
+    ));
+    let extra = &args[PREFIX.len() + 2..];
+    assert!(
+        extra.is_empty()
+            || extra == ["--effort", "low"]
+            || extra == ["--no-session-persistence"]
+            || matches!(
+                extra
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+                    .as_slice(),
+                ["--fork-session", "--session-id", _]
+                    | [
+                        "--fork-session",
+                        "--resume-session-at",
+                        ASSISTANT_ID,
+                        "--session-id",
+                        _
+                    ]
+            )
+    );
+    let mut first = true;
+    let mut folded = None;
+    let mut checkpoint = Value::Null;
+    for line in io::stdin().lock().lines() {
+        let row: Value = serde_json::from_str(&line.unwrap()).unwrap();
+        match row["type"].as_str().unwrap() {
+            "control_request" => {
+                let req = &row["request"];
+                let response = match req["subtype"].as_str().unwrap() {
+                    "initialize" => {
+                        assert_eq!(req, &json!({"subtype":"initialize"}));
+                        json!({
+                            "models":[
+                                {"value":"haiku","displayName":"Haiku","supportedEffortLevels":["low"],"defaultEffortLevel":"low"},
+                                {"value":"default","displayName":"Default","supportedEffortLevels":["low","high"],"defaultEffortLevel":"low"}
+                            ],
+                            "commands":[{"name":"help","description":"Help","argumentHint":""}],
+                            "claude_code_version":"test-version","current_permission_mode":"default",
+                            "account":{"subscriptionType":"pro","apiProvider":"vertex"}
+                        })
+                    }
+                    "set_model" => {
+                        assert_eq!(req["model"], "haiku");
+                        json!({})
+                    }
+                    "set_permission_mode" => {
+                        assert!(matches!(
+                            req["mode"].as_str(),
+                            Some("plan" | "bypassPermissions")
+                        ));
+                        json!({"mode":req["mode"]})
+                    }
+                    "apply_flag_settings" => {
+                        assert_eq!(req["settings"], json!({"effortLevel":"high"}));
+                        json!({})
+                    }
+                    "interrupt" => json!({}),
+                    "rewind_files" => {
+                        assert_eq!(
+                            env::var("CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING").as_deref(),
+                            Ok("true")
+                        );
+                        let dry_run = req["dry_run"].as_bool().unwrap();
+                        let id = &req["user_message_id"];
+                        assert!(*id == checkpoint || *id == ID);
+                        assert_eq!(
+                            req,
+                            &json!({"subtype": "rewind_files", "user_message_id": id, "dry_run": dry_run})
+                        );
+                        if *id == ID {
+                            assert!(dry_run);
+                            json!({"canRewind": false, "error": "No checkpoint"})
+                        } else if dry_run {
+                            json!({"canRewind": true, "filesChanged": ["file.rs"], "insertions": 2, "deletions": 1})
+                        } else {
+                            json!({"canRewind": true, "filesChanged": ["file.rs"], "skippedLinks": ["unsafe-link"]})
+                        }
+                    }
+                    _ => panic!("unexpected control request"),
+                };
+                emit(
+                    json!({"type":"control_response","response":{"subtype":"success","request_id":row["request_id"],"response":response}}),
+                );
+                if req["subtype"] == "interrupt" {
+                    emit(json!({
+                        "type":"result","uuid":"interrupted","is_error":true,
+                        "usage":{"input_tokens":8,"output_tokens":2},
+                        "modelUsage":{
+                            "primary":{"inputTokens":10,"outputTokens":6,"cacheReadInputTokens":4,"cacheCreationInputTokens":1},
+                            "child":{"inputTokens":7,"outputTokens":3,"thinkingTokens":2}
+                        }
+                    }));
+                }
+            }
+            "user" if first => {
+                first = false;
+                checkpoint = row["uuid"].clone();
+                assert_eq!(
+                    row["message"],
+                    json!({"role":"user","content":[{"type":"text","text":PROMPT}]})
+                );
+                emit(row);
+                stream(json!({"type":"message_start","message":{"id":"message"}}));
+                stream(
+                    json!({"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}),
+                );
+                stream(
+                    json!({"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"think"}}),
+                );
+                stream(
+                    json!({"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"ing"}}),
+                );
+                assistant(
+                    "thought",
+                    None,
+                    json!({"type":"thinking","thinking":"  ","signature":"signed"}),
+                );
+                stream(
+                    json!({"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}),
+                );
+                stream(
+                    json!({"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"hello"}}),
+                );
+                assistant("answer", None, json!({"type":"text","text":"hello"}));
+                stream(
+                    json!({"type":"content_block_start","index":2,"content_block":{"type":"thinking","thinking":""}}),
+                );
+                stream(
+                    json!({"type":"content_block_delta","index":2,"delta":{"type":"thinking_delta","thinking":""}}),
+                );
+                stream(
+                    json!({"type":"content_block_delta","index":2,"delta":{"type":"signature_delta","signature":"signed"}}),
+                );
+                assistant(
+                    "signature-only",
+                    None,
+                    json!({"type":"thinking","thinking":"","signature":"signed"}),
+                );
+                assistant(
+                    "agent",
+                    None,
+                    json!({"type":"tool_use","name":"Agent","id":"call","input":{"description":"Child"}}),
+                );
+                stream(
+                    json!({"type":"content_block_start","index":4,"content_block":{"type":"thinking","thinking":""}}),
+                );
+                assistant(
+                    "child",
+                    Some("call"),
+                    json!({"type":"text","text":"child text"}),
+                );
+                emit(
+                    json!({"type":"user","uuid":"output","tool_use_result":{"status":"async_launched"},"message":{"content":[{"type":"tool_result","tool_use_id":"call","content":"done"}]}}),
+                );
+                emit(json!({"type":"user","message":{"role":"user","content":
+                    "<task-notification><task-id>child</task-id><tool-use-id>call</tool-use-id><status>completed</status><summary>Child finished</summary></task-notification>"
+                }}));
+                permission(
+                    "always",
+                    "Bash",
+                    json!({"command":"echo answer"}),
+                    json!([suggestion()]),
+                );
+            }
+            "user" if row["message"]["content"][0]["text"] == "fold this turn" => {
+                folded = Some(row);
+            }
+            "user" => assert_eq!(row["message"]["content"][0]["text"], "interrupt me"),
+            "control_response" => {
+                let response = &row["response"];
+                assert_eq!(response["subtype"], "success");
+                let answer = &response["response"];
+                match response["request_id"].as_str().unwrap() {
+                    "always" => {
+                        assert_eq!(
+                            answer,
+                            &json!({"behavior":"allow","updatedInput":{"command":"echo answer"},"toolUseID":"always-call","updatedPermissions":[suggestion()]})
+                        );
+                        permission(
+                            "questions",
+                            "AskUserQuestion",
+                            json!({"questions":[{"question":"Which?","multiSelect":true}]}),
+                            json!([]),
+                        );
+                    }
+                    "questions" => {
+                        assert_eq!(answer["updatedInput"]["answers"], json!({"Which?":"A, B"}));
+                        permission(
+                            "plan",
+                            "ExitPlanMode",
+                            json!({"plan":"Example plan"}),
+                            json!([]),
+                        );
+                    }
+                    "plan" => {
+                        assert_eq!(answer["behavior"], "deny");
+                        let mut replay = folded.take().unwrap();
+                        replay["isReplay"] = json!(true);
+                        emit(replay);
+                        emit(json!({"type":"assistant","uuid":ASSISTANT_ID,
+                            "message":{"id":"folded-message","content":[{"type":"text","text":"Folded."}]}}));
+                        for (status, utilization) in [
+                            ("allowed_warning", Some(0.75)),
+                            ("allowed", Some(-0.2)),
+                            ("allowed_warning", Some(1.2)),
+                            ("rejected", None),
+                        ] {
+                            emit(json!({"type":"rate_limit_event","rate_limit_info":{
+                                "status":status,"rateLimitType":"five_hour","resetsAt":1795392000,
+                                "unifiedWindows":{"five_hour":{
+                                    "status":status,"utilization":utilization,"resetsAt":1795392000
+                                }}
+                            }}));
+                        }
+                        emit(
+                            json!({"type":"result","uuid":"result","subtype":"success","duration_ms":123,"usage":{"input_tokens":2,"cache_creation_input_tokens":1,"cache_read_input_tokens":4,"output_tokens":4}}),
+                        );
+                    }
+                    _ => panic!("unexpected permission answer"),
+                }
+            }
+            _ => panic!("unexpected frame"),
+        }
+    }
+}
+
+fn suggestion() -> Value {
+    json!({"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"echo answer"}],"behavior":"allow","destination":"localSettings"})
+}
+
+fn permission(id: &str, tool: &str, input: Value, suggestions: Value) {
+    emit(json!({"type":"control_request","request_id":id,"request":{
+        "subtype":"can_use_tool","tool_name":tool,"tool_use_id":format!("{id}-call"),
+        "input":input,"permission_suggestions":suggestions
+    }}));
+}
+
+fn stream(event: Value) {
+    emit(json!({"type":"stream_event","event":event,"parent_tool_use_id":null}));
+}
+
+fn assistant(id: &str, parent: Option<&str>, block: Value) {
+    let message_id = if parent.is_some() {
+        "subagent-message"
+    } else {
+        "message"
+    };
+    emit(
+        json!({"type":"assistant","uuid":id,"parent_tool_use_id":parent,
+        "message":{"id":message_id,"content":[block]}}),
+    );
+}
+
+fn emit(row: Value) {
+    let mut stdout = io::stdout().lock();
+    writeln!(stdout, "{row}").unwrap();
+    stdout.flush().unwrap();
+}

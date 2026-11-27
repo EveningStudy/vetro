@@ -1,0 +1,31 @@
+[package]
+name = "verre-cli"
+description = "Verre command-line interface"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+claude = ["verre-core/claude"]
+codex = ["verre-core/codex"]
+acp = ["verre-core/acp"]
+antigravity-store = ["verre-core/antigravity-store"]
+
+[[bin]]
+name = "verre"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+open = "5"
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+verre-agent-api = { path = "../verre-agent-api" }
+verre-core = { path = "../verre-core" }
+verre-proto = { path = "../verre-proto" }
+
+[dev-dependencies]
+tempfile = "3"

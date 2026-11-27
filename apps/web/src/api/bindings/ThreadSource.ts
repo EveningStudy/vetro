@@ -3,4 +3,4 @@
 /**
  * Where a session was created.
  */
-export type ThreadSource = "vetro" | "desktop" | "cli" | "exec" | "ide" | "cloud" | "unknown";
+export type ThreadSource = "verre" | "desktop" | "cli" | "exec" | "ide" | "cloud" | "unknown";

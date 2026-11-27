@@ -8,7 +8,7 @@
     />
     <meta name="color-scheme" content="light dark" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <title>Vetro</title>
+    <title>Verre</title>
     <script>
       (() => {
         try {
@@ -16,7 +16,7 @@
           const forced = url.searchParams.get("theme");
           const palette = url.searchParams.get("palette");
           let stored = "system";
-          try { stored = JSON.parse(localStorage.getItem("vetro:prefs") || "{}").theme || "system"; } catch {}
+          try { stored = JSON.parse(localStorage.getItem("verre:prefs") || "{}").theme || "system"; } catch {}
           const pref = forced || stored;
           let dark = pref === "dark" || (pref === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
           const hex = /^#[0-9a-f]{6}$/i;
@@ -39,8 +39,8 @@
             let bootBg = null;
             let bootMode = null;
             try {
-              bootBg = localStorage.getItem("vetro:boot-bg");
-              bootMode = localStorage.getItem("vetro:boot-mode");
+              bootBg = localStorage.getItem("verre:boot-bg");
+              bootMode = localStorage.getItem("verre:boot-mode");
             } catch {}
             if (bootMode === "forced-dark" || bootMode === "forced-light") dark = bootMode === "forced-dark";
             if (bootBg && hex.test(bootBg) && (bootMode === (dark ? "dark" : "light") || bootMode === (dark ? "forced-dark" : "forced-light"))) bg = bootBg;

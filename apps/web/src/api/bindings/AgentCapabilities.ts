@@ -8,7 +8,7 @@ export type AgentCapabilities = { imageInput: boolean,
  */
 midTurnInput: boolean, 
 /**
- * Sessions created outside Vetro can be continued.
+ * Sessions created outside Verre can be continued.
  */
 resume: boolean, 
 /**

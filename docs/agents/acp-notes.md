@@ -1,11 +1,11 @@
 # ACP v1 adapter notes
 
-`vetro_agent_acp::AcpAgent` implements `vetro_agent_api::Agent` and returns
+`verre_agent_acp::AcpAgent` implements `verre_agent_api::Agent` and returns
 `Arc<dyn Session>`. Use `antigravity()` for `agy acp`, `devin()` for `devin acp --process-model in-process`,
 or `new(id, name, SpawnSpec)` to specify a native executable, arguments,
 environment overrides and an optional process working directory. The core
 also uses `--process-model in-process` for the built-in Devin agent, keeping
-its sessions in the child process Vetro owns. On Windows, the core checks the
+its sessions in the child process Verre owns. On Windows, the core checks the
 installed Devin Desktop application's uninstall registry entries.
 `with_mid_turn_input` enables steering for a custom agent that supports it.
 `wire_log()` inspects the currently started process.
@@ -26,7 +26,7 @@ advertised. Core callers can use `read()` to build the history and then attach
 without emitting that replay a second time. `shutdown()` releases the shared
 process. The next agent call starts a fresh one after shutdown or a crash.
 Devin requires native browser authentication for each fresh process.
-`vetro probe devin --auth` selects the first advertised method. The wire log
+`verre probe devin --auth` selects the first advertised method. The wire log
 records environment override names and masks their values.
 
 ## Contract gaps
@@ -40,7 +40,7 @@ records environment override names and masks their values.
   Session info timestamps are available on list records, context token counts
   map to `ThreadUsage`, and supported non-text agent content is carried as a
   notice. Terminal references require a client terminal capability, which
-  Vetro disables.
+  Verre disables.
 - `RequestBody` supports permission choices and question lists. The adapter
   advertises form elicitation and translates session-scoped fields and typed
   answers. URL and request-scoped elicitation, including forms opened outside a
@@ -75,7 +75,7 @@ and large capability payloads.
 
 The handshake passed. The installed version also emitted `load_session` and
 `session_capabilities` alongside their standard camelCase counterparts, plus
-an extra `sessionCapabilities.load` marker. Vetro uses `loadSession` for
+an extra `sessionCapabilities.load` marker. Verre uses `loadSession` for
 replay capability. The agent advertised a system-prompt append extension in
 `_meta`. The adapter did not invoke that extension or send a prompt.
 

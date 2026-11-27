@@ -256,7 +256,7 @@ export const agentOptions: Record<string, { options: ConfigOption[]; commands: S
 };
 
 export const projects: Project[] = [
-  { path: "D:\\Dev\\Projects\\vetro", name: "vetro", exists: true, pinned: true, hidden: false, threadCount: 0, lastActivityAt: null, rootThreadCount: 0, lastRootActivityAt: null },
+  { path: "D:\\Dev\\Projects\\verre", name: "verre", exists: true, pinned: true, hidden: false, threadCount: 0, lastActivityAt: null, rootThreadCount: 0, lastRootActivityAt: null },
   { path: "D:\\Dev\\Projects\\atlas-api", name: "atlas-api", exists: true, pinned: false, hidden: false, threadCount: 0, lastActivityAt: null, rootThreadCount: 0, lastRootActivityAt: null },
   { path: "D:\\Dev\\Projects\\field-notes", name: "field-notes", exists: true, pinned: false, hidden: false, threadCount: 0, lastActivityAt: null, rootThreadCount: 0, lastRootActivityAt: null },
   { path: `${HOME}\\scratch\\tauri-spike`, name: "tauri-spike", exists: false, pinned: false, hidden: false, threadCount: 0, lastActivityAt: null, rootThreadCount: 0, lastRootActivityAt: null },
@@ -266,7 +266,7 @@ export const projects: Project[] = [
 
 const QUICK = projects[5]!.path;
 
-const VETRO = projects[0]!.path;
+const VERRE = projects[0]!.path;
 const ATLAS = projects[1]!.path;
 const NOTES = projects[2]!.path;
 const SPIKE = projects[3]!.path;
@@ -388,10 +388,10 @@ const RAW_LOG_PANEL_DIFF = `@@ -1,9 +1,14 @@
    );
  }`;
 
-const CARGO_TEST_OUTPUT = `   Compiling vetro-proto v0.1.0 (D:\\Dev\\Projects\\vetro\\crates\\vetro-proto)
-   Compiling vetro-core v0.1.0 (D:\\Dev\\Projects\\vetro\\crates\\vetro-core)
+const CARGO_TEST_OUTPUT = `   Compiling verre-proto v0.1.0 (D:\\Dev\\Projects\\verre\\crates\\verre-proto)
+   Compiling verre-core v0.1.0 (D:\\Dev\\Projects\\verre\\crates\\verre-core)
     Finished \`test\` profile [unoptimized + debuginfo] target(s) in 14.82s
-     Running unittests src\\lib.rs (target\\debug\\deps\\vetro_core-4f1c2a9e.exe)
+     Running unittests src\\lib.rs (target\\debug\\deps\\verre_core-4f1c2a9e.exe)
 
 running 23 tests
 test adapters::codex::tests::start_sends_cwd_only ... ok
@@ -407,7 +407,7 @@ function mainThread(): MockThread {
   const start = now - 2 * HOUR;
   const b = new Builder(start, "m");
   b.user(
-    "Add a raw log panel to the thread view. It should list every line Vetro sent to or received from the agent, newest at the bottom, so people can check that nothing is injected. Use the existing `threads.raw` method.",
+    "Add a raw log panel to the thread view. It should list every line Verre sent to or received from the agent, newest at the bottom, so people can check that nothing is injected. Use the existing `threads.raw` method.",
     [{ type: "file", path: "docs/API.md", name: "API.md" }],
   )
     .reasoning(
@@ -428,7 +428,7 @@ function mainThread(): MockThread {
         {
           type: "terminal",
           command: 'rg -n "threads.raw" apps/web/src',
-          cwd: VETRO,
+          cwd: VERRE,
           output: "apps/web/src/api/protocol.ts:63:  \"threads.raw\": [ThreadRawParams, ThreadRawResult];",
           exitCode: 0,
         },
@@ -438,21 +438,21 @@ function mainThread(): MockThread {
       kind: "read",
       name: "read_file",
       title: "Read apps/web/src/components/chat/ThreadView.tsx",
-      locations: [{ path: `${VETRO}\\apps\\web\\src\\components\\chat\\ThreadView.tsx`, line: 1 }],
+      locations: [{ path: `${VERRE}\\apps\\web\\src\\components\\chat\\ThreadView.tsx`, line: 1 }],
       content: [{ type: "text", text: "42 lines" }],
     })
     .tool({
       kind: "edit",
       name: "apply_patch",
       title: "Edit apps/web/src/components/chat/ThreadView.tsx",
-      locations: [{ path: `${VETRO}\\apps\\web\\src\\components\\chat\\ThreadView.tsx`, line: 1 }],
+      locations: [{ path: `${VERRE}\\apps\\web\\src\\components\\chat\\ThreadView.tsx`, line: 1 }],
       content: [{ type: "diff", path: "apps/web/src/components/chat/ThreadView.tsx", oldText: null, newText: null, unified: RAW_LOG_PANEL_DIFF }],
     })
     .tool({
       kind: "edit",
       name: "apply_patch",
       title: "Add apps/web/src/components/RawLogPanel.tsx",
-      locations: [{ path: `${VETRO}\\apps\\web\\src\\components\\RawLogPanel.tsx`, line: null }],
+      locations: [{ path: `${VERRE}\\apps\\web\\src\\components\\RawLogPanel.tsx`, line: null }],
       content: [
         {
           type: "diff",
@@ -483,13 +483,13 @@ function mainThread(): MockThread {
       kind: "execute",
       name: "shell",
       title: "pnpm --dir apps/web typecheck",
-      input: { command: ["pnpm", "--dir", "apps/web", "typecheck"], cwd: VETRO },
+      input: { command: ["pnpm", "--dir", "apps/web", "typecheck"], cwd: VERRE },
       content: [
         {
           type: "terminal",
           command: "pnpm --dir apps/web typecheck",
-          cwd: VETRO,
-          output: "> @vetro/web@0.1.0 typecheck D:\\Dev\\Projects\\vetro\\apps\\web\n> tsc -b --noEmit\n",
+          cwd: VERRE,
+          output: "> @verre/web@0.1.0 typecheck D:\\Dev\\Projects\\verre\\apps\\web\n> tsc -b --noEmit\n",
           exitCode: 0,
         },
       ],
@@ -512,7 +512,7 @@ function mainThread(): MockThread {
         "| Direction | Meaning |",
         "| --- | --- |",
         "| `spawn` | The exact command line and env overrides used to start the agent |",
-        "| `sent` | A JSON line Vetro wrote to the agent's stdin |",
+        "| `sent` | A JSON line Verre wrote to the agent's stdin |",
         "| `received` | A line the agent wrote to stdout |",
         "",
         "Typecheck passes. I did not run the web build yet.",
@@ -521,13 +521,13 @@ function mainThread(): MockThread {
     .end(94_000, usage(48_210, 3_480));
 
   b.user("Also run the core tests so we know the wire log tests still pass.")
-    .reasoning("Running `cargo test -p vetro-core` covers the raw log rotation tests.")
+    .reasoning("Running `cargo test -p verre-core` covers the raw log rotation tests.")
     .tool({
       kind: "execute",
       name: "shell",
-      title: "cargo test -p vetro-core",
-      input: { command: ["cargo", "test", "-p", "vetro-core"], cwd: VETRO },
-      content: [{ type: "terminal", command: "cargo test -p vetro-core", cwd: VETRO, output: CARGO_TEST_OUTPUT, exitCode: 0 }],
+      title: "cargo test -p verre-core",
+      input: { command: ["cargo", "test", "-p", "verre-core"], cwd: VERRE },
+      content: [{ type: "terminal", command: "cargo test -p verre-core", cwd: VERRE, output: CARGO_TEST_OUTPUT, exitCode: 0 }],
     })
     .tool({
       kind: "fetch",
@@ -544,7 +544,7 @@ function mainThread(): MockThread {
       output: { id: "VET-42", title: "Raw log panel", state: "In Progress" },
     })
     .notice("warning", "Codex compacted the conversation to stay within the context window.")
-    .agent("All 23 `vetro-core` tests pass, including `raw::tests::rotates_at_size_cap`. Nothing else changed.")
+    .agent("All 23 `verre-core` tests pass, including `raw::tests::rotates_at_size_cap`. Nothing else changed.")
     .end(41_000, usage(61_904, 812));
 
   return {
@@ -553,8 +553,8 @@ function mainThread(): MockThread {
       agentId: "codex",
       nativeId: "019a7f3e-raw-log",
       title: "Add raw log panel to the thread view",
-      preview: "All 23 vetro-core tests pass",
-      cwd: VETRO,
+      preview: "All 23 verre-core tests pass",
+      cwd: VERRE,
       createdAt: start,
       updatedAt: b.lastTs,
       source: "desktop",
@@ -580,7 +580,7 @@ function mainThread(): MockThread {
         { label: "Weekly", usedPercent: 61, resetsAt: now + 3 * DAY },
       ],
     },
-    raw: rawLog("codex", VETRO, b.items),
+    raw: rawLog("codex", VERRE, b.items),
   };
 }
 
@@ -593,7 +593,7 @@ function rawLog(agentId: string, cwd: string, items: Item[]): RawEntry[] {
   };
   if (agentId === "codex") {
     push("spawn", `"${agents[1]!.path}" app-server   (cwd ${cwd}; env overrides: none)`);
-    push("sent", JSON.stringify({ id: 0, method: "initialize", params: { clientInfo: { name: "vetro", title: "Vetro", version: "0.1.0" } } }));
+    push("sent", JSON.stringify({ id: 0, method: "initialize", params: { clientInfo: { name: "verre", title: "Verre", version: "0.1.0" } } }));
     push("received", JSON.stringify({ id: 0, result: { userAgent: "codex_cli_rs/0.98.0 (Windows 10.0.26200; x86_64)" } }));
     push("sent", JSON.stringify({ method: "initialized" }));
     push("sent", JSON.stringify({ id: 1, method: "thread/start", params: { cwd } }));
@@ -637,22 +637,22 @@ function childThreads(): { parent: MockThread; child: MockThread } {
     .tool({
       kind: "read",
       name: "Read",
-      title: "Read crates/vetro-core/src/adapters/acp.rs",
-      locations: [{ path: `${VETRO}\\crates\\vetro-core\\src\\adapters\\acp.rs`, line: null }],
+      title: "Read crates/verre-core/src/adapters/acp.rs",
+      locations: [{ path: `${VERRE}\\crates\\verre-core\\src\\adapters\\acp.rs`, line: null }],
       content: [{ type: "text", text: "412 lines" }],
     })
     .tool({
       kind: "execute",
       name: "Bash",
       callId: "toolu_01exec",
-      title: 'codex exec "Review crates/vetro-core/src/adapters/acp.rs for prompt injection…"',
-      input: { command: 'codex exec "Review crates/vetro-core/src/adapters/acp.rs for prompt injection. Reply with findings only."' },
+      title: 'codex exec "Review crates/verre-core/src/adapters/acp.rs for prompt injection…"',
+      input: { command: 'codex exec "Review crates/verre-core/src/adapters/acp.rs for prompt injection. Reply with findings only."' },
       content: [
         {
           type: "terminal",
-          command: 'codex exec "Review crates/vetro-core/src/adapters/acp.rs for prompt injection. Reply with findings only."',
-          cwd: VETRO,
-          output: "OpenAI Codex v0.98.0\n--------\nworkdir: D:\\Dev\\Projects\\vetro\nmodel: gpt-5.5-codex\nsession id: 019a7c21-exec-review\n--------\n[codex] No injection found. One note: `session/new` passes `mcpServers: []` explicitly, which is correct.\ntokens used: 18,204",
+          command: 'codex exec "Review crates/verre-core/src/adapters/acp.rs for prompt injection. Reply with findings only."',
+          cwd: VERRE,
+          output: "OpenAI Codex v0.98.0\n--------\nworkdir: D:\\Dev\\Projects\\verre\nmodel: gpt-5.5-codex\nsession id: 019a7c21-exec-review\n--------\n[codex] No injection found. One note: `session/new` passes `mcpServers: []` explicitly, which is correct.\ntokens used: 18,204",
           exitCode: 0,
         },
       ],
@@ -664,17 +664,17 @@ function childThreads(): { parent: MockThread; child: MockThread } {
     .end(212_000, usage(31_002, 1_920, 200_000));
 
   const c = new Builder(start + 40_000, "c");
-  c.user("Review crates/vetro-core/src/adapters/acp.rs for prompt injection. Reply with findings only.")
+  c.user("Review crates/verre-core/src/adapters/acp.rs for prompt injection. Reply with findings only.")
     .reasoning("Look at every place that builds an outgoing `session/prompt`, `session/new` and `initialize` message.")
     .tool({
       kind: "search",
       name: "shell",
-      title: "rg -n \"session/prompt|session/new\" crates/vetro-core/src/adapters/acp.rs",
+      title: "rg -n \"session/prompt|session/new\" crates/verre-core/src/adapters/acp.rs",
       content: [
         {
           type: "terminal",
-          command: 'rg -n "session/prompt|session/new" crates/vetro-core/src/adapters/acp.rs',
-          cwd: VETRO,
+          command: 'rg -n "session/prompt|session/new" crates/verre-core/src/adapters/acp.rs',
+          cwd: VERRE,
           output: "118:        self.call(\"session/new\", json!({ \"cwd\": cwd, \"mcpServers\": [] }))\n204:        self.call(\"session/prompt\", json!({ \"sessionId\": id, \"prompt\": blocks }))",
           exitCode: 0,
         },
@@ -683,7 +683,7 @@ function childThreads(): { parent: MockThread; child: MockThread } {
     .tool({
       kind: "read",
       name: "shell",
-      title: "Read crates/vetro-core/src/adapters/acp.rs (lines 180-240)",
+      title: "Read crates/verre-core/src/adapters/acp.rs (lines 180-240)",
       content: [{ type: "text", text: "61 lines" }],
     })
     .agent("No injection found. One note: `session/new` passes `mcpServers: []` explicitly, which is correct.")
@@ -696,7 +696,7 @@ function childThreads(): { parent: MockThread; child: MockThread } {
       nativeId: "6c1d2e4f-acp-review",
       title: "Review the ACP adapter for injection",
       preview: "Both reviews agree",
-      cwd: VETRO,
+      cwd: VERRE,
       createdAt: start,
       updatedAt: b.lastTs,
       source: "cli",
@@ -722,16 +722,16 @@ function childThreads(): { parent: MockThread; child: MockThread } {
         { label: "7d", usedPercent: 42, resetsAt: now + 4 * DAY },
       ],
     },
-    raw: rawLog("claude", VETRO, b.items),
+    raw: rawLog("claude", VERRE, b.items),
   };
   const child: MockThread = {
     summary: {
       id: childId,
       agentId: "codex",
       nativeId: "019a7c21-exec-review",
-      title: "Review crates/vetro-core/src/adapters/acp.rs for prompt injection",
+      title: "Review crates/verre-core/src/adapters/acp.rs for prompt injection",
       preview: "No injection found",
-      cwd: VETRO,
+      cwd: VERRE,
       createdAt: start + 40_000,
       updatedAt: c.lastTs,
       source: "exec",
@@ -790,11 +790,11 @@ function pendingThread(): MockThread {
       nativeId: "lovely-quartz-4821",
       title: "Clean target folders and rebuild release",
       preview: "Allow Devin to run a command?",
-      cwd: VETRO,
+      cwd: VERRE,
       createdAt: start,
       updatedAt: b.lastTs,
-      source: "vetro",
-      origin: "vetro",
+      source: "verre",
+      origin: "verre",
       status: "awaiting_input",
       live: true,
       resumable: true,
@@ -809,7 +809,7 @@ function pendingThread(): MockThread {
     options: structuredClone(agentOptions.devin!.options),
     commands: agentOptions.devin!.commands,
     usage: { lastTurn: null, total: usage(9_812, 402, 200_000), rateLimits: [] },
-    raw: rawLog("devin", VETRO, b.items),
+    raw: rawLog("devin", VERRE, b.items),
   };
 }
 
@@ -863,8 +863,8 @@ function questionThread(): MockThread {
       cwd: ATLAS,
       createdAt: start,
       updatedAt: b.lastTs,
-      source: "vetro",
-      origin: "vetro",
+      source: "verre",
+      origin: "verre",
       status: "awaiting_input",
       live: true,
       resumable: true,
@@ -894,17 +894,17 @@ function longThread(): MockThread {
       .tool({
         kind: "read",
         name: "shell",
-        title: `Read crates/vetro-core/${file}`,
+        title: `Read crates/verre-core/${file}`,
         content: [{ type: "text", text: `${120 + turn} lines` }],
       })
       .tool({
         kind: "edit",
         name: "apply_patch",
-        title: `Edit crates/vetro-core/${file}`,
+        title: `Edit crates/verre-core/${file}`,
         content: [
           {
             type: "diff",
-            path: `crates/vetro-core/${file}`,
+            path: `crates/verre-core/${file}`,
             oldText: null,
             newText: null,
             unified: `@@ -${turn},4 +${turn},4 @@\n-    let rows = stmt.query_map([], map_row).unwrap();\n+    let rows = stmt.query_map([], map_row)?;\n     for row in rows {\n         out.push(row?);\n     }`,
@@ -914,8 +914,8 @@ function longThread(): MockThread {
       .tool({
         kind: "execute",
         name: "shell",
-        title: "cargo test -p vetro-core index",
-        content: [{ type: "terminal", command: "cargo test -p vetro-core index", cwd: VETRO, output: `running ${4 + (turn % 5)} tests\ntest result: ok. ${4 + (turn % 5)} passed; 0 failed`, exitCode: 0 }],
+        title: "cargo test -p verre-core index",
+        content: [{ type: "terminal", command: "cargo test -p verre-core index", cwd: VERRE, output: `running ${4 + (turn % 5)} tests\ntest result: ok. ${4 + (turn % 5)} passed; 0 failed`, exitCode: 0 }],
       })
       .agent(`Replaced the \`unwrap()\` in \`${file}\` with \`?\`; the caller already maps the error into \`RpcError::internal\`. Tests pass.`)
       .end(20_000 + turn * 300, usage(20_000 + turn * 900, 300 + turn));
@@ -927,7 +927,7 @@ function longThread(): MockThread {
       nativeId: "0199e0aa-index-hardening",
       title: "Harden index rebuild error handling",
       preview: "Tests pass.",
-      cwd: VETRO,
+      cwd: VERRE,
       createdAt: start,
       updatedAt: now - 2 * DAY,
       source: "cli",
@@ -1099,7 +1099,7 @@ export function buildThreads(): MockThread[] {
         nativeId: "0199c2-ci",
         title: "Nightly CI for Windows",
         preview: "Added a windows-latest job",
-        cwd: VETRO,
+        cwd: VERRE,
         updatedAt: now - 9 * DAY,
         source: "cloud",
         origin: "codex_cloud",
@@ -1117,7 +1117,7 @@ export function buildThreads(): MockThread[] {
         nativeId: "subAgent04d7-index-sweep",
         title: "subAgent · index sweep",
         preview: "Removed 0 stale entries",
-        cwd: VETRO,
+        cwd: VERRE,
         updatedAt: now - 40 * MIN,
         source: "exec",
         origin: "codex_exec",
@@ -1152,7 +1152,7 @@ export function buildThreads(): MockThread[] {
         nativeId: "old-archived",
         title: "Old spike: Electron shell",
         preview: "Dropped in favour of Tauri",
-        cwd: VETRO,
+        cwd: VERRE,
         updatedAt: now - 20 * DAY,
         source: "cli",
         origin: "cli",
@@ -1195,7 +1195,7 @@ export const remote: RemoteStatus = {
   port: 47600,
   externalUrl: null,
   pairingExpiresAt: null,
-  tailscale: { installed: true, running: true, dnsName: "vetro.example.ts.net", serveUrl: "https://vetro.example.ts.net:8443" },
+  tailscale: { installed: true, running: true, dnsName: "verre.example.ts.net", serveUrl: "https://verre.example.ts.net:8443" },
   devices: [
     { id: "dev-iphone", name: "Alex's iPhone", createdAt: now - 12 * DAY, lastSeenAt: now - 40 * MIN, current: false },
     { id: "dev-ipad", name: "iPad Air", createdAt: now - 30 * DAY, lastSeenAt: now - 4 * DAY, current: false },
@@ -1206,11 +1206,11 @@ export const fileTree: Record<string, string[]> = {
   "": ["C:\\", "D:\\"],
   "C:\\": ["Program Files", "Users", "Windows"],
   "C:\\Users": ["Alex", "Public"],
-  [HOME]: ["Desktop", "Documents", "Downloads", "scratch", ".vetro"],
+  [HOME]: ["Desktop", "Documents", "Downloads", "scratch", ".verre"],
   [`${HOME}\\scratch`]: ["tauri-spike-old", "notes.txt"],
   "D:\\": ["Dev", "Software", "Media"],
   "D:\\Dev": ["Projects", "Sandbox"],
-  "D:\\Dev\\Projects": ["vetro", "atlas-api", "field-notes", "ledger", "pixel-forge", "README.md"],
+  "D:\\Dev\\Projects": ["verre", "atlas-api", "field-notes", "ledger", "pixel-forge", "README.md"],
   "D:\\Dev\\Projects\\ledger": ["src", "Cargo.toml", "README.md"],
   "D:\\Dev\\Projects\\pixel-forge": ["src", "package.json"],
   "D:\\Dev\\Sandbox": ["playground"],
@@ -1222,16 +1222,16 @@ export const projectFiles = [
   "README.md",
   "docs/API.md",
   "docs/ARCHITECTURE.md",
-  "crates/vetro-proto/src/lib.rs",
-  "crates/vetro-core/src/lib.rs",
-  "crates/vetro-core/src/server.rs",
-  "crates/vetro-core/src/sessions.rs",
-  "crates/vetro-core/src/adapters/acp.rs",
-  "crates/vetro-core/src/adapters/claude.rs",
-  "crates/vetro-core/src/adapters/codex.rs",
-  "crates/vetro-core/src/history/codex.rs",
-  "crates/vetro-core/src/index/rebuild.rs",
-  "crates/vetro-cli/src/main.rs",
+  "crates/verre-proto/src/lib.rs",
+  "crates/verre-core/src/lib.rs",
+  "crates/verre-core/src/server.rs",
+  "crates/verre-core/src/sessions.rs",
+  "crates/verre-core/src/adapters/acp.rs",
+  "crates/verre-core/src/adapters/claude.rs",
+  "crates/verre-core/src/adapters/codex.rs",
+  "crates/verre-core/src/history/codex.rs",
+  "crates/verre-core/src/index/rebuild.rs",
+  "crates/verre-cli/src/main.rs",
   "apps/web/package.json",
   "apps/web/src/main.tsx",
   "apps/web/src/App.tsx",

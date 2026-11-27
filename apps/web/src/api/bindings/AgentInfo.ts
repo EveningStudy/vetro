@@ -10,7 +10,7 @@ export type AgentInfo = {
  */
 id: string, name: string, kind: AgentKind, installed: boolean, 
 /**
- * Resolved absolute path of the binary Vetro will launch.
+ * Resolved absolute path of the binary Verre will launch.
  */
 path: string | null, version: string | null, auth: AgentAuth, capabilities: AgentCapabilities, 
 /**

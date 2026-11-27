@@ -594,7 +594,7 @@ function sidebarOrder() {
       (thread) =>
         !thread.parent &&
         !ACTIVE.has(thread.status) &&
-        (prefs.sidebarScope === "all" || thread.source === "vetro") &&
+        (prefs.sidebarScope === "all" || thread.source === "verre") &&
         (filters.showArchived || !thread.archived) &&
         (filters.agentIds.length === 0 || filters.agentIds.includes(thread.agentId)) &&
         (filters.sources.length === 0 || filters.sources.includes(thread.source)) &&

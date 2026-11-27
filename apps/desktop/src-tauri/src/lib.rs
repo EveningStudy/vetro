@@ -21,7 +21,7 @@ use tauri::{
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
 use tokio::sync::broadcast::error::RecvError;
-use vetro_core::{Core, WindowTheme};
+use verre_core::{Core, WindowTheme};
 
 use crate::core::{CoreHandle, ShutdownHandle};
 
@@ -106,7 +106,7 @@ fn side_by_side_tag() -> Option<String> {
     let requested = std::env::args_os()
         .skip(1)
         .any(|arg| arg == "--new-instance");
-    let configured = std::env::var_os("VETRO_MULTI_INSTANCE");
+    let configured = std::env::var_os("VERRE_MULTI_INSTANCE");
     let executable = std::env::current_exe().ok();
     instance_tag(
         requested,
@@ -124,7 +124,7 @@ fn instance_tag(
         return Some(format!("pid-{}", std::process::id()));
     }
     let stem = stem?.to_string_lossy();
-    if stem.eq_ignore_ascii_case("vetro-desktop") {
+    if stem.eq_ignore_ascii_case("verre-desktop") {
         return None;
     }
     Some(
@@ -145,8 +145,8 @@ fn instance_title(base: &str, tag: Option<&str>) -> String {
         return base.into();
     };
     let label = tag
-        .strip_prefix("vetro-desktop-")
-        .or_else(|| tag.strip_prefix("vetro-"))
+        .strip_prefix("verre-desktop-")
+        .or_else(|| tag.strip_prefix("verre-"))
         .filter(|label| !label.is_empty())
         .unwrap_or(tag);
     format!("{base} ({label})")
@@ -193,7 +193,7 @@ fn core_window(
     let embedded_core = handle.embedded_core.strong_count() > 0;
     let window = builder
         .initialization_script(format!(
-            r#"window.__VETRO_DESKTOP__ = {{ platform: "{platform}", chrome: "{chrome}", maximized: false, embeddedCore: {embedded_core} }};"#
+            r#"window.__VERRE_DESKTOP__ = {{ platform: "{platform}", chrome: "{chrome}", maximized: false, embeddedCore: {embedded_core} }};"#
         ))
         .on_navigation({
             let app = app.clone();
@@ -324,7 +324,7 @@ fn error_window(
     lang: &str,
 ) -> Result<WebviewWindow> {
     let script = format!(
-        "window.__VETRO_ERROR__ = {}; window.__VETRO_LANG__ = {};",
+        "window.__VERRE_ERROR__ = {}; window.__VERRE_LANG__ = {};",
         serde_json::to_string(message)?,
         serde_json::to_string(lang)?,
     );
@@ -340,7 +340,7 @@ fn window_builder<'app>(
     tag: Option<&str>,
 ) -> WebviewWindowBuilder<'app, Wry, AppHandle> {
     let builder = WebviewWindowBuilder::new(app, MAIN_WINDOW, url)
-        .title(instance_title("Vetro", tag))
+        .title(instance_title("Verre", tag))
         .inner_size(1280.0, 820.0)
         .min_inner_size(900.0, 600.0)
         .center();
@@ -350,7 +350,7 @@ fn window_builder<'app>(
     }
     #[cfg(not(target_os = "macos"))]
     {
-        if let Some(dir) = vetro_home(app) {
+        if let Some(dir) = verre_home(app) {
             let data = match tag {
                 Some(tag) => dir.join("webview-instances").join(tag),
                 None => dir.join("webview"),
@@ -362,13 +362,13 @@ fn window_builder<'app>(
 }
 
 #[cfg(not(target_os = "macos"))]
-fn vetro_home(app: &AppHandle) -> Option<PathBuf> {
-    if let Ok(dir) = std::env::var("VETRO_HOME") {
+fn verre_home(app: &AppHandle) -> Option<PathBuf> {
+    if let Ok(dir) = std::env::var("VERRE_HOME") {
         if !dir.is_empty() {
             return Some(PathBuf::from(dir));
         }
     }
-    app.path().home_dir().ok().map(|home| home.join(".vetro"))
+    app.path().home_dir().ok().map(|home| home.join(".verre"))
 }
 
 fn watch_window_close(window: &WebviewWindow, core: Weak<Core>) {
@@ -430,8 +430,8 @@ fn watch_window_maximized(window: &WebviewWindow) {
             let current = target.is_maximized().unwrap_or(false);
             if maximized.swap(current, Ordering::Relaxed) != current {
                 let _ = target.eval(format!(
-                    r#"if (window.__VETRO_DESKTOP__) {{ window.__VETRO_DESKTOP__.maximized = {current}; }}
-window.dispatchEvent(new CustomEvent("vetro:window-state", {{ detail: {{ maximized: {current} }} }}));"#
+                    r#"if (window.__VERRE_DESKTOP__) {{ window.__VERRE_DESKTOP__.maximized = {current}; }}
+window.dispatchEvent(new CustomEvent("verre:window-state", {{ detail: {{ maximized: {current} }} }}));"#
                 ));
             }
         }
@@ -481,9 +481,9 @@ fn system_lang() -> &'static str {
 
 fn tray_labels(lang: &str, tag: Option<&str>) -> (String, String) {
     if lang == "zh" {
-        (instance_title("打开 Vetro", tag), "退出".into())
+        (instance_title("打开 Verre", tag), "退出".into())
     } else {
-        (instance_title("Open Vetro", tag), "Quit".into())
+        (instance_title("Open Verre", tag), "Quit".into())
     }
 }
 
@@ -645,7 +645,7 @@ mod tests {
 
     #[test]
     fn instance_tags_and_titles_distinguish_parallel_builds() {
-        let normal = Some(OsStr::new("VeTrO-DeSkToP"));
+        let normal = Some(OsStr::new("VeRrE-DeSkToP"));
         let pid_tag = format!("pid-{}", std::process::id());
         for configured in [None, Some(OsStr::new("")), Some(OsStr::new("0"))] {
             assert_eq!(instance_tag(false, configured, normal), None);
@@ -658,19 +658,19 @@ mod tests {
             instance_tag(false, Some(OsStr::new("1")), normal).as_deref(),
             Some(pid_tag.as_str())
         );
-        let tag = instance_tag(false, None, Some(OsStr::new("vetro-desktop-new build!_2")));
-        assert_eq!(tag.as_deref(), Some("vetro-desktop-new-build-_2"));
+        let tag = instance_tag(false, None, Some(OsStr::new("verre-desktop-new build!_2")));
+        assert_eq!(tag.as_deref(), Some("verre-desktop-new-build-_2"));
         assert_eq!(
-            instance_title("Vetro", tag.as_deref()),
-            "Vetro (new-build-_2)"
+            instance_title("Verre", tag.as_deref()),
+            "Verre (new-build-_2)"
         );
         assert_eq!(
-            instance_title("Open Vetro", Some("vetro-dev")),
-            "Open Vetro (dev)"
+            instance_title("Open Verre", Some("verre-dev")),
+            "Open Verre (dev)"
         );
-        assert_eq!(instance_title("Vetro", Some("preview")), "Vetro (preview)");
-        assert_eq!(instance_title("Vetro", None), "Vetro");
-        assert_eq!(instance_title("Open Vetro", None), "Open Vetro");
+        assert_eq!(instance_title("Verre", Some("preview")), "Verre (preview)");
+        assert_eq!(instance_title("Verre", None), "Verre");
+        assert_eq!(instance_title("Open Verre", None), "Open Verre");
     }
 
     #[test]
@@ -678,12 +678,12 @@ mod tests {
         assert_eq!(resolve_desktop_lang(Some("zh")), "zh");
         assert_eq!(resolve_desktop_lang(Some("en")), "en");
         assert_eq!(
-            tray_labels("zh", Some("vetro-dev")),
-            ("打开 Vetro (dev)".into(), "退出".into())
+            tray_labels("zh", Some("verre-dev")),
+            ("打开 Verre (dev)".into(), "退出".into())
         );
         assert_eq!(
             tray_labels("en", None),
-            ("Open Vetro".into(), "Quit".into())
+            ("Open Verre".into(), "Quit".into())
         );
         assert!(render_badge_icon(0).is_none());
         let single = render_badge_icon(3).unwrap();

@@ -1,23 +1,23 @@
 # Security policy
 
-## What Vetro can access
+## What Verre can access
 
-Vetro is a local process. It starts the coding-agent CLIs installed on your
+Verre is a local process. It starts the coding-agent CLIs installed on your
 machine (Claude Code, Codex, Kiro, Antigravity, Devin, and custom ACP agents) as
 child processes with your own permissions, and it serves the UI on `127.0.0.1`
-only. Everything Vetro stores goes under `~/.vetro` (`VETRO_HOME` overrides it);
-the agents' own session stores are opened read-only. Vetro never silently writes
+only. Everything Verre stores goes under `~/.verre` (`VERRE_HOME` overrides it);
+the agents' own session stores are opened read-only. Verre never silently writes
 hidden config into project workspaces — only explicit, user-triggered actions
 touch a workspace.
 
-Vetro never sees agent credentials: sign-in happens inside each agent's own
+Verre never sees agent credentials: sign-in happens inside each agent's own
 flow. Remote access is exclusively the user's own Tailscale network (via
-`tailscale serve` or a reverse proxy the user runs) — Vetro never binds a
+`tailscale serve` or a reverse proxy the user runs) — Verre never binds a
 public interface, and every request requires the local token or a paired-device
 bearer session token (`Authorization: Bearer` on HTTP and `app.hello` on
-WebSocket; Vetro sets no cookies).
+WebSocket; Verre sets no cookies).
 
-## Local data & raw wire logs (`~/.vetro`)
+## Local data & raw wire logs (`~/.verre`)
 
 - **`config.json`**: application settings (`Settings`), including agent paths,
   custom ACP commands, voice config, and notification preferences.
@@ -29,7 +29,7 @@ WebSocket; Vetro sets no cookies).
   evidence, and searchable message text. Disposable; deleting it rebuilds from
   the agents' native stores.
 - **`raw/<sha256(thread_id)>.jsonl`**: wire log (`spawn`, `sent`, `received`,
-  `stderr`) for sessions attached in Vetro:
+  `stderr`) for sessions attached in Verre:
   - Kept in a 4 MiB per-session ring buffer in memory; oldest entries are
     dropped first while preserving the initial launch/handshake prefix.
     `threads.raw` defaults to 500 lines (max 5,000).
@@ -38,7 +38,7 @@ WebSocket; Vetro sets no cookies).
     `{"id": ..., "redacted": true}`. Regular prompts, agent replies, and tool
     payloads are recorded verbatim so you can verify zero injection.
 - **`logs/core.log`**: diagnostic core log rotated to a 256 KiB rolling window.
-- On Unix, `~/.vetro` directories use mode `0700` and files use mode `0600`.
+- On Unix, `~/.verre` directories use mode `0700` and files use mode `0600`.
 
 ## Paired-device (remote) boundaries
 
@@ -62,7 +62,7 @@ Please report vulnerabilities privately through GitHub Security Advisories on
 this repository (the **Security** tab → **Report a vulnerability**). Do not
 open a public issue for a vulnerability.
 
-Include the Vetro version, your OS, the agent(s) involved and steps to
+Include the Verre version, your OS, the agent(s) involved and steps to
 reproduce. Remove tokens and personal paths from any logs you attach. The
 project is volunteer-maintained; there is no bug bounty.
 

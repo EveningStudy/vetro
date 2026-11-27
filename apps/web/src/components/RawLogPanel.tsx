@@ -45,7 +45,7 @@ const RawLine = memo(function RawLine({ entry }: { entry: RawEntry }) {
   );
 });
 
-/** The wire log: the evidence that Vetro forwards exactly what the user typed and nothing else. */
+/** The wire log: the evidence that Verre forwards exactly what the user typed and nothing else. */
 export function RawLogPanel({ threadId }: { threadId: string }) {
   const t = useT();
   const drag = useWindowDragProps();

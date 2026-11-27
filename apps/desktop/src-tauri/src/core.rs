@@ -2,8 +2,8 @@ use std::sync::{Arc, Weak};
 
 use anyhow::{anyhow, Context};
 use tokio::sync::{broadcast, oneshot, watch};
-use vetro_core::{home::Home, registry::Registry, server::Server, Core, WindowTheme};
-use vetro_proto::rpc::NotifyParams;
+use verre_core::{home::Home, registry::Registry, server::Server, Core, WindowTheme};
+use verre_proto::rpc::NotifyParams;
 
 pub struct ShutdownHandle {
     trigger: oneshot::Sender<()>,
@@ -17,7 +17,7 @@ impl ShutdownHandle {
     }
 }
 
-/// Handle for the running Vetro core. The shell only needs the URL to point
+/// Handle for the running Verre core. The shell only needs the URL to point
 /// the window at; everything else is internal to the core.
 pub struct CoreHandle {
     pub url: String,
@@ -30,13 +30,13 @@ pub struct CoreHandle {
 }
 
 /// Starts the core inside this process and returns its loopback URL.
-/// `VETRO_DESKTOP_URL` points the window at an already running core instead (development).
+/// `VERRE_DESKTOP_URL` points the window at an already running core instead (development).
 pub async fn start() -> anyhow::Result<CoreHandle> {
-    if let Ok(url) = std::env::var("VETRO_DESKTOP_URL") {
+    if let Ok(url) = std::env::var("VERRE_DESKTOP_URL") {
         let parsed = tauri::Url::parse(&url)
-            .with_context(|| format!("VETRO_DESKTOP_URL is not a valid URL: {url:?}"))?;
+            .with_context(|| format!("VERRE_DESKTOP_URL is not a valid URL: {url:?}"))?;
         if !matches!(parsed.scheme(), "http" | "https") {
-            anyhow::bail!("VETRO_DESKTOP_URL must be an http(s) URL, got {url:?}");
+            anyhow::bail!("VERRE_DESKTOP_URL must be an http(s) URL, got {url:?}");
         }
         return Ok(CoreHandle {
             url,
@@ -70,7 +70,7 @@ pub async fn start() -> anyhow::Result<CoreHandle> {
             })
             .await
         {
-            eprintln!("vetro core stopped: {error}");
+            eprintln!("verre core stopped: {error}");
         }
         let _ = done_tx.send(());
     });

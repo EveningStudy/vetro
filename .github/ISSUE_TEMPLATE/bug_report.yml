@@ -1,5 +1,5 @@
 name: Bug report
-description: Something in Vetro is broken
+description: Something in Verre is broken
 labels: [bug]
 body:
   - type: input
@@ -10,10 +10,10 @@ body:
     validations:
       required: true
   - type: input
-    id: vetro-version
+    id: verre-version
     attributes:
-      label: Vetro version
-      description: Output of `vetro --version`, or the version shown in the desktop app
+      label: Verre version
+      description: Output of `verre --version`, or the version shown in the desktop app
     validations:
       required: true
   - type: dropdown
@@ -47,7 +47,7 @@ body:
     id: logs
     attributes:
       label: Raw log excerpt
-      description: Relevant lines from `~/.vetro/logs` or the thread's raw view. Remove tokens, keys and personal paths before pasting.
+      description: Relevant lines from `~/.verre/logs` or the thread's raw view. Remove tokens, keys and personal paths before pasting.
       render: text
     validations:
       required: false

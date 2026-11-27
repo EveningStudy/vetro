@@ -82,5 +82,5 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         env:
-          VETRO_SMOKE_TLS_PROXY: "1"
+          VERRE_SMOKE_TLS_PROXY: "1"
         run: node apps/web/scripts/smoke.mjs

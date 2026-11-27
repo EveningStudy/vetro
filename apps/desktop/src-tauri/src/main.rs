@@ -4,8 +4,8 @@
 )]
 
 fn main() {
-    if let Err(err) = vetro_desktop_lib::run() {
-        eprintln!("vetro-desktop: {err:#}");
+    if let Err(err) = verre_desktop_lib::run() {
+        eprintln!("verre-desktop: {err:#}");
         std::process::exit(1);
     }
 }

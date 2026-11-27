@@ -16,7 +16,7 @@ claude -p --input-format stream-json --output-format stream-json --verbose
 
 The handshake carries only `subtype: initialize`. Its reply supplies models, command metadata, the CLI version, permission mode, and account information. `Agent::info` exposes the subscription type or provider label. The `system/init` frame supplies the effective model and the native session ID, command names and tools. Raw frames are available in the session wire log. Both startup and `--resume` emitted the installed SessionStart hook's `ai-memory` output. Model and mode changes were acknowledged through `set_model` and `set_permission_mode`. Authentication is performed in the user’s Claude Code terminal.
 
-On 2.1.330, a prompt-free `--no-session-persistence` probe reported `applied.effort: medium` through `get_settings`. `set_effort` returned an unsupported subtype error, and `set_model` with an `effort` field left the applied effort at `medium`. `apply_flag_settings` with `settings: { "effortLevel": "high" }` changed the session's applied effort to `high`. Vetro uses this session-scoped control request while idle. If the CLI reports that the request is unsupported, Vetro resumes the idle session with `--effort` and any saved model and permission mode choices. Vetro keeps these choices in its thread overlay and passes them when resuming a detached session.
+On 2.1.330, a prompt-free `--no-session-persistence` probe reported `applied.effort: medium` through `get_settings`. `set_effort` returned an unsupported subtype error, and `set_model` with an `effort` field left the applied effort at `medium`. `apply_flag_settings` with `settings: { "effortLevel": "high" }` changed the session's applied effort to `high`. Verre uses this session-scoped control request while idle. If the CLI reports that the request is unsupported, Verre resumes the idle session with `--effort` and any saved model and permission mode choices. Verre keeps these choices in its thread overlay and passes them when resuming a detached session.
 
 ## Trimmed native wire
 
@@ -49,9 +49,9 @@ Permission answers reference the original request ID. Allow-once returns the ori
 
 ## History and contract gaps
 
-Claude Code 2.1.330 supports `--resume <source-id> --fork-session --resume-session-at <assistant-uuid> --session-id <new-id>` and includes the selected transcript entry in the fork. Vetro uses the last main-thread assistant entry's UUID at each turn boundary in live sessions and history.
+Claude Code 2.1.330 supports `--resume <source-id> --fork-session --resume-session-at <assistant-uuid> --session-id <new-id>` and includes the selected transcript entry in the fork. Verre uses the last main-thread assistant entry's UUID at each turn boundary in live sessions and history.
 
-Vetro presents Claude's injected `<task-notification>` records as informational notices and updates matching in-progress tool calls for terminal task statuses. It suppresses signature-only thinking blocks in both the live and historical timelines.
+Verre presents Claude's injected `<task-notification>` records as informational notices and updates matching in-progress tool calls for terminal task statuses. It suppresses signature-only thinking blocks in both the live and historical timelines.
 
 The history listing scans top-level project JSONL files and skips large payload rows when it only needs metadata. It uses the CLI's title or summary records, then the first user prompt. The transcript reader reuses the live item mapping and associates subagent sidecars through their `toolUseId` or the parent tool result's `agentId`. Torn JSONL tails are skipped. The read-only native check listed 121 sessions in 4.14 seconds in the debug profile (119 `claude-desktop`, two `sdk-cli`). The largest file was 36,568,864 bytes and yielded 970 items in 0.46 seconds. The native `OK` assistant message had the same item ID in the live stream and after reading its transcript.
 

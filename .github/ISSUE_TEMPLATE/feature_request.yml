@@ -1,12 +1,12 @@
 name: Feature request
-description: Suggest an idea for Vetro
+description: Suggest an idea for Verre
 labels: [enhancement]
 body:
   - type: markdown
     attributes:
       value: |
-        Vetro is a thin client: requests that need injected prompts or tools,
-        bundled agent binaries, or writes outside `~/.vetro` are out of scope
+        Verre is a thin client: requests that need injected prompts or tools,
+        bundled agent binaries, or writes outside `~/.verre` are out of scope
         (see `AGENTS.md`).
   - type: textarea
     id: problem

@@ -612,7 +612,7 @@ function VoiceSection() {
                 rows={4}
                 value={glossary}
                 disabled={endpointDisabled}
-                placeholder={"claude code = Claude Code\n微特罗 = Vetro"}
+                placeholder={"claude code = Claude Code\n维尔 = Verre"}
                 onChange={(event) => setDraftGlossary(event.target.value)}
                 className="font-mono text-xs sm:text-xs"
               />
@@ -761,7 +761,7 @@ function RemoteSection() {
                 type="url"
                 aria-label={t("settings.remoteProxyUrl")}
                 aria-describedby="remote-proxy-target"
-                placeholder="https://vetro.example.com"
+                placeholder="https://verre.example.com"
                 autoCapitalize="none"
                 spellCheck={false}
                 disabled={busy}
@@ -1016,7 +1016,7 @@ function ThreadsSection() {
             onChange={setSidebarScope}
             options={[
               { value: "all", label: t("sidebar.scopeAll") },
-              { value: "vetro", label: t("sidebar.scopeVetro") },
+              { value: "verre", label: t("sidebar.scopeVerre") },
             ]}
           />
         </Row>

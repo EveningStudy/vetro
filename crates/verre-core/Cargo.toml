@@ -1,0 +1,58 @@
+[package]
+name = "verre-core"
+description = "Local Verre service and session manager"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+claude = ["dep:verre-agent-claude"]
+codex = ["dep:verre-agent-codex", "dep:verre-store-antigravity", "dep:zstd"]
+acp = ["dep:verre-agent-acp", "dep:winreg"]
+antigravity-store = ["acp", "dep:verre-store-antigravity"]
+
+[dependencies]
+axum = { version = "0.8", features = ["ws"] }
+getrandom = "0.3"
+humantime = "2"
+ignore = "0.4"
+mime_guess = "2"
+notify = "8.2"
+rusqlite = { version = "0.43", default-features = false, features = ["bundled", "cache"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+subtle = "2"
+tempfile = "3"
+tokio = { version = "1", features = ["fs", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
+verre-agent-api = { path = "../verre-agent-api" }
+verre-agent-acp = { path = "../verre-agent-acp", optional = true }
+verre-agent-claude = { path = "../verre-agent-claude", optional = true }
+verre-agent-codex = { path = "../verre-agent-codex", optional = true }
+verre-proto = { path = "../verre-proto" }
+verre-store-antigravity = { path = "../verre-store-antigravity", optional = true }
+zstd = { version = "0.13", default-features = false, optional = true }
+open = "5"
+base64 = "0.22"
+futures-util = "0.3"
+tar = "0.4"
+bzip2-rs = "0.1"
+reqwest = { version = "0.13", default-features = false, features = ["stream", "multipart", "json", "native-tls"] }
+memchr = "2.8.3"
+
+[dev-dependencies]
+tokio-tungstenite = "0.29"
+
+[[test]]
+name = "websocket"
+harness = false
+
+[target."cfg(windows)".dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_LibraryLoader"] }
+winreg = { version = "0.55", optional = true }
+
+[target."cfg(unix)".dependencies]
+libc = "0.2"

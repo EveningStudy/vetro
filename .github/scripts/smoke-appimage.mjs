@@ -8,10 +8,10 @@ import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 assert.equal(process.platform, "linux");
-assert.equal(process.argv.length, 3, "Provide one Vetro AppImage");
+assert.equal(process.argv.length, 3, "Provide one Verre AppImage");
 const image = resolve(process.argv[2]);
 const frontend = new URL("../../apps/web/dist/", import.meta.url);
-const scratch = await mkdtemp(join(tmpdir(), "vetro-appimage-"));
+const scratch = await mkdtemp(join(tmpdir(), "verre-appimage-"));
 const appHome = join(scratch, "core");
 const bin = join(scratch, "bin");
 const cwd = join(scratch, "workspace");
@@ -52,20 +52,20 @@ try {
     GDK_BACKEND: "x11",
     LIBGL_ALWAYS_SOFTWARE: "1",
     WEBKIT_DISABLE_DMABUF_RENDERER: "1",
-    VETRO_HOME: appHome,
+    VERRE_HOME: appHome,
     PATH: `${bin}:${process.env.PATH}`,
   };
   if (environment.APPIMAGE_EXTRACT_AND_RUN === "1") environment.TMPDIR = scratch;
-  delete environment.VETRO_DESKTOP_URL;
+  delete environment.VERRE_DESKTOP_URL;
 
   const fixture = join(scratch, "native agent.py");
   const document = join(cwd, "file with spaces.txt");
   const opened = join(scratch, "opened.txt");
-  await writeFile(document, "Vetro package check", "utf8");
+  await writeFile(document, "Verre package check", "utf8");
   await writeFile(fixture, `import json, os, sys
 assert "APPDIR" not in os.environ
 assert "APPIMAGE" not in os.environ
-assert os.environ["VETRO_PACKAGE_TEST"] == "preserved"
+assert os.environ["VERRE_PACKAGE_TEST"] == "preserved"
 for line in sys.stdin:
     request = json.loads(line)
     if "id" not in request:
@@ -86,7 +86,7 @@ for line in sys.stdin:
     ),
     customAcpAgents: [{
       id: "package-test", name: "Package test", command: "/usr/bin/python3", args: [fixture],
-      env: { VETRO_PACKAGE_TEST: "preserved" },
+      env: { VERRE_PACKAGE_TEST: "preserved" },
     }],
   }));
 
@@ -96,11 +96,11 @@ assert "APPDIR" not in os.environ
 assert "APPIMAGE" not in os.environ
 pathlib.Path(${JSON.stringify(opened)}).write_text(pathlib.Path(sys.argv[1]).read_text())
 `);
-  await writeFile(join(associations, "vetro-smoke.desktop"), [
-    "[Desktop Entry]", "Type=Application", "Name=Vetro test handler",
+  await writeFile(join(associations, "verre-smoke.desktop"), [
+    "[Desktop Entry]", "Type=Application", "Name=Verre test handler",
     `Exec=/usr/bin/python3 "${opener}" %f`, "MimeType=text/plain;", "NoDisplay=true",
   ].join("\n") + "\n");
-  execFileSync("/usr/bin/gio", ["mime", "text/plain", "vetro-smoke.desktop"], { env: environment });
+  execFileSync("/usr/bin/gio", ["mime", "text/plain", "verre-smoke.desktop"], { env: environment });
   await Promise.all(["xdg-open", "powershell.exe"].map((name) =>
     writeFile(join(bin, name), "#!/bin/sh\nexit 3\n", { mode: 0o755 }),
   ));
@@ -110,7 +110,7 @@ pathlib.Path(${JSON.stringify(opened)}).write_text(pathlib.Path(sys.argv[1]).rea
   exited.catch(() => {});
   child.stderr.on("data", (chunk) => { stderr = (stderr + chunk).slice(-4096); });
   const window = await until(() => execFileSync("xwininfo", ["-root", "-tree"], { encoding: "utf8" })
-    .match(/^\s*(0x[\da-f]+)\s+"Vetro"/m)?.[1], "native Vetro window", 30_000);
+    .match(/^\s*(0x[\da-f]+)\s+"Verre"/m)?.[1], "native Verre window", 30_000);
 
   const html = await until(async () => {
     const response = await fetch(`${origin}/`, { signal: AbortSignal.timeout(1000) }).catch(() => null);
@@ -158,7 +158,7 @@ pathlib.Path(${JSON.stringify(opened)}).write_text(pathlib.Path(sys.argv[1]).rea
   const content = await until(() => readFile(opened, "utf8").catch((error) => {
     if (error.code !== "ENOENT") throw error;
   }), "system MIME handler");
-  assert.equal(content, "Vetro package check");
+  assert.equal(content, "Verre package check");
 
   const closeWindow = join(scratch, "close-window");
   execFileSync("cc", ["-x", "c", "-", "-o", closeWindow, "-lX11"], { input: `

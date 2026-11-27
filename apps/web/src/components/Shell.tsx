@@ -142,11 +142,11 @@ export function Shell() {
 
     const fitViewport = () => {
       if (viewport.scale === 1 && viewport.height > 0 && viewport.height < window.innerHeight - 1) {
-        shell.style.setProperty("--vetro-viewport-height", `${viewport.height}px`);
-        shell.style.setProperty("--vetro-viewport-top", `${viewport.offsetTop}px`);
+        shell.style.setProperty("--verre-viewport-height", `${viewport.height}px`);
+        shell.style.setProperty("--verre-viewport-top", `${viewport.offsetTop}px`);
       } else {
-        shell.style.removeProperty("--vetro-viewport-height");
-        shell.style.removeProperty("--vetro-viewport-top");
+        shell.style.removeProperty("--verre-viewport-height");
+        shell.style.removeProperty("--verre-viewport-top");
       }
     };
     fitViewport();
@@ -214,7 +214,7 @@ export function Shell() {
   return (
     <div
       ref={shellRef}
-      className="relative top-[var(--vetro-viewport-top,0px)] flex h-[calc(var(--vetro-viewport-height,100dvh)-env(safe-area-inset-top))] min-h-0 w-full"
+      className="relative top-[var(--verre-viewport-top,0px)] flex h-[calc(var(--verre-viewport-height,100dvh)-env(safe-area-inset-top))] min-h-0 w-full"
     >
       <aside
         data-app-sidebar

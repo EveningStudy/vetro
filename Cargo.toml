@@ -3,10 +3,10 @@ resolver = "2"
 members = ["crates/*", "apps/desktop/src-tauri"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/EveningStudy/vetro"
+repository = "https://github.com/EveningStudy/verre"
 rust-version = "1.88"
 
 [workspace.dependencies]

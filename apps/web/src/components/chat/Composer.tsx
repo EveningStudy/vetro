@@ -524,7 +524,7 @@ export function Composer(props: ComposerProps) {
               void submit();
             }
           }}
-          className="block max-h-[calc(var(--vetro-viewport-height,100dvh)*0.4)] min-h-[3.25rem] w-full resize-none bg-transparent px-4 pt-3.5 pb-1 text-base leading-relaxed text-foreground outline-none placeholder:text-placeholder disabled:cursor-not-allowed sm:text-sm"
+          className="block max-h-[calc(var(--verre-viewport-height,100dvh)*0.4)] min-h-[3.25rem] w-full resize-none bg-transparent px-4 pt-3.5 pb-1 text-base leading-relaxed text-foreground outline-none placeholder:text-placeholder disabled:cursor-not-allowed sm:text-sm"
         />
         <div className="flex items-end gap-1.5 px-2 pt-1 pb-2">
           <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-0.5 gap-y-1">

@@ -115,7 +115,7 @@ function withSelection(options: { options: Result<"agents.options">["options"]; 
 
 const LIVE_USAGE = { input: 14_200, cachedInput: 9_800, output: 420, reasoning: 120, contextUsed: 14_620, contextWindow: 272_000 };
 
-/** The whole Vetro protocol, in the browser, over fixtures. */
+/** The whole Verre protocol, in the browser, over fixtures. */
 export class MockTransport implements Transport {
   private eventListeners = new Set<(event: ServerEvent) => void>();
   private statusListeners = new Set<StatusListener>();
@@ -144,7 +144,7 @@ export class MockTransport implements Transport {
     for (const listener of this.statusListeners) listener("connecting", { info: null, reconnected: false });
     setTimeout(() => {
       this.current = "open";
-      const info = this.handlers["app.hello"]({ clientName: "vetro-web", protocolVersion: 1 }) as Result<"app.hello">;
+      const info = this.handlers["app.hello"]({ clientName: "verre-web", protocolVersion: 1 }) as Result<"app.hello">;
       for (const listener of this.statusListeners) listener("open", { info, reconnected: false });
     }, 20);
   }
@@ -380,7 +380,7 @@ export class MockTransport implements Transport {
     if (agent.auth.state === "required") throw new RpcFailure("auth_required", `${agent.name} needs you to sign in first`);
     const nativeId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
     const id = `${params.agentId}:${nativeId}`;
-    const cwd = trimmed || `${HOME}\\.vetro\\scratch\\${new Date().toISOString().slice(0, 10)}-${nativeId.slice(-6)}`;
+    const cwd = trimmed || `${HOME}\\.verre\\scratch\\${new Date().toISOString().slice(0, 10)}-${nativeId.slice(-6)}`;
     const base = agentOptions[params.agentId] ?? { options: [], commands: [] };
     const options = structuredClone(base.options).map((option) => {
       const value = params.options[option.id];
@@ -400,8 +400,8 @@ export class MockTransport implements Transport {
         cwd,
         createdAt: Date.now(),
         updatedAt: Date.now(),
-        source: "vetro",
-        origin: "vetro",
+        source: "verre",
+        origin: "verre",
         status: "running",
         live: true,
         resumable: true,
@@ -519,7 +519,7 @@ export class MockTransport implements Transport {
       platform: "windows",
       hostname: "CHRIS-DESK",
       homeDir: HOME,
-      dataDir: `${HOME}\\.vetro`,
+      dataDir: `${HOME}\\.verre`,
       remoteClient,
     }),
     "agents.list": () => ({ agents: this.agents }),
@@ -693,7 +693,7 @@ export class MockTransport implements Transport {
     "fs.list": (params) => this.list(params),
     "fs.find": (params) => this.find(params),
     "workspace.gitStatus": (params) => {
-      if (!/[\\/]vetro$/i.test(params.cwd)) return { isRepo: false, root: null, branch: null, dirty: false, files: [] };
+      if (!/[\\/]verre$/i.test(params.cwd)) return { isRepo: false, root: null, branch: null, dirty: false, files: [] };
       return { isRepo: true, root: params.cwd, branch: "main", dirty: true, files: MOCK_GIT_FILES };
     },
     "workspace.gitDiff": (params) => {
@@ -715,13 +715,13 @@ export class MockTransport implements Transport {
       }
       const markdown = /\.(?:md|markdown)$/i.test(path);
       const text = markdown
-        ? "# Vetro\n\nA thin client for the coding agents already on your machine.\n\n- Zero injection\n- Zero footprint\n\n```ts\nconst answer = 42;\n```\n"
+        ? "# Verre\n\nA thin client for the coding agents already on your machine.\n\n- Zero injection\n- Zero footprint\n\n```ts\nconst answer = 42;\n```\n"
         : MOCK_NEW_FILE + MOCK_DIFF.replace(/^[+-]/gm, "");
       const language = markdown ? "markdown" : (path.split(".").at(-1) ?? null);
       return { path, resolvedPath, sizeBytes: new TextEncoder().encode(text).length, content: { kind: "text", text, language, truncated: false } };
     },
     "workspace.worktrees": (params) => {
-      if (!/[\\/]vetro(?:-preview-drawer)?$/i.test(params.cwd)) return { isRepo: false, mainRoot: null, worktrees: [] };
+      if (!/[\\/]verre(?:-preview-drawer)?$/i.test(params.cwd)) return { isRepo: false, mainRoot: null, worktrees: [] };
       const main = params.cwd.replace(/-preview-drawer$/i, "");
       const linked = `${main}-preview-drawer`;
       return {

@@ -3,6 +3,6 @@
 <plist version="1.0">
 <dict>
     <key>NSMicrophoneUsageDescription</key>
-    <string>Vetro uses your microphone when you start voice input to transcribe speech into your draft.</string>
+    <string>Verre uses your microphone when you start voice input to transcribe speech into your draft.</string>
 </dict>
 </plist>

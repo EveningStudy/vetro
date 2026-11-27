@@ -940,7 +940,7 @@ export function isSafeColor(value: unknown): value is string {
 
 export function exportThemeJson(theme: CustomTheme | BuiltInTheme): string {
   const custom = "nameKey" in theme ? customFromBuiltIn(theme, theme.id) : theme;
-  const out: Record<string, unknown> = { version: 1, format: "vetro-theme", name: custom.name, appearance: custom.appearance };
+  const out: Record<string, unknown> = { version: 1, format: "verre-theme", name: custom.name, appearance: custom.appearance };
   if (custom.appearance !== "dark" && custom.light) out.light = custom.light;
   if (custom.appearance !== "light" && custom.dark) out.dark = custom.dark;
   const overrides: Partial<Record<ThemeMode, Partial<ThemePaletteTokens>>> = {};
@@ -995,7 +995,7 @@ const T3_KEYS: Record<string, ThemeColorRole> = {
   info: "info",
 };
 
-const VETRO_ROLES = new Set<string>(COLOR_ROLES);
+const VERRE_ROLES = new Set<string>(COLOR_ROLES);
 
 type ParseResult = { ok: true; theme: CustomTheme } | { ok: false; error: string };
 
@@ -1005,7 +1005,7 @@ function readColors(source: unknown, keys: Record<string, ThemeColorRole> | null
   const out: Partial<ThemePaletteTokens> = {};
   if (!isRecord(source)) return out;
   for (const [key, value] of Object.entries(source)) {
-    const role = keys ? (keys[key] ?? (VETRO_ROLES.has(key) ? (key as ThemeColorRole) : undefined)) : VETRO_ROLES.has(key) ? (key as ThemeColorRole) : undefined;
+    const role = keys ? (keys[key] ?? (VERRE_ROLES.has(key) ? (key as ThemeColorRole) : undefined)) : VERRE_ROLES.has(key) ? (key as ThemeColorRole) : undefined;
     if (!role) continue;
     if (isSafeColor(value)) out[role] = value.trim();
     else invalid.push(key);
@@ -1096,7 +1096,7 @@ function parseT3(data: Record<string, unknown>, invalid: string[]): ParseResult 
   };
 }
 
-function parseVetro(data: Record<string, unknown>, invalid: string[]): ParseResult {
+function parseVerre(data: Record<string, unknown>, invalid: string[]): ParseResult {
   const shared = readSeed(data.seed, invalid, data.appearance === "dark" ? "dark" : "light");
   let light = readSeed(data.light, invalid, "light");
   let dark = readSeed(data.dark, invalid, "dark");
@@ -1126,7 +1126,7 @@ function parseVetro(data: Record<string, unknown>, invalid: string[]): ParseResu
   };
 }
 
-/** Parses Vetro theme JSON or a T3 Code ThemeFile v1. Error strings are codes for the UI to
+/** Parses Verre theme JSON or a T3 Code ThemeFile v1. Error strings are codes for the UI to
  * translate: `json`, `shape`, `version`, `missing`, `invalid:<keys>`. Raw `css` is ignored. */
 export function parseThemeJson(raw: string): ParseResult {
   let data: unknown;
@@ -1138,7 +1138,7 @@ export function parseThemeJson(raw: string): ParseResult {
   if (!isRecord(data)) return { ok: false, error: "shape" };
   if (data.version !== undefined && data.version !== 1) return { ok: false, error: "version" };
   const invalid: string[] = [];
-  const result = "colors" in data || "variants" in data ? parseT3(data, invalid) : parseVetro(data, invalid);
+  const result = "colors" in data || "variants" in data ? parseT3(data, invalid) : parseVerre(data, invalid);
   if (!result.ok && invalid.length > 0) return { ok: false, error: `invalid:${[...new Set(invalid)].slice(0, 6).join(", ")}` };
   return result;
 }

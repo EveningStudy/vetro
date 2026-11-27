@@ -1,19 +1,19 @@
-# Vetro design & anti-bloat guide
+# Verre design & anti-bloat guide
 
-Vetro is a thin, calm, glass-like window over native coding agents. Features are easy to add one by one; coherence is lost one shortcut at a time. Read this before adding a feature, control, or setting.
+Verre is a thin, calm, glass-like window over native coding agents. Features are easy to add one by one; coherence is lost one shortcut at a time. Read this before adding a feature, control, or setting.
 
 ## Decision hierarchy
 
 When two goals pull in opposite directions, resolve them in this strict order:
 
-1. **Vetro's product philosophy (`AGENTS.md`):** zero injection, zero footprint (strict read-only on other tools' stores; no silent workspace files), native runtimes only, no orphans, light in both runtime and scope, capability-driven equality across agents, and progressive disclosure. Nothing overrides this.
+1. **Verre's product philosophy (`AGENTS.md`):** zero injection, zero footprint (strict read-only on other tools' stores; no silent workspace files), native runtimes only, no orphans, light in both runtime and scope, capability-driven equality across agents, and progressive disclosure. Nothing overrides this.
 2. **T3 Code as the concrete UI/UX baseline:** for how controls look, where buttons live, how layouts respond to width, and how settings are grouped, follow T3 Code rather than inventing ad-hoc patterns.
 3. **The specific feature request:** fit it cleanly into (1) and (2). If it cannot fit cleanly, stop and propose a simpler shape before writing code.
 
 ## Scope guardrails & priority
 
 - **Core experience always wins over side features.** Polishing conversation flow, composer ergonomics, approval interactions, history reliability, and agent stability always takes priority over adding peripheral features.
-- **Explicit non-goals:** Vetro does not become a code editor, built-in terminal emulator, embedded browser, or multi-agent workflow/schedule orchestrator. Keep editing and shell work delegated to the user's external tools.
+- **Explicit non-goals:** Verre does not become a code editor, built-in terminal emulator, embedded browser, or multi-agent workflow/schedule orchestrator. Keep editing and shell work delegated to the user's external tools.
 - **T3 Code is a UI reference, not a feature checklist.** T3 Code ships 25+ settings pages and harness features (scheduled tasks, workflows, secrets, cloud, labs, MCP). Adopt its visual restraint and layout grammar; reject its harness scope creep.
 
 ## Using the T3 Code reference
@@ -29,7 +29,7 @@ A read-only checkout lives at `.orchestra/ref/t3code` during development (not sh
 
 - **Adopt:** visual restraint, spacing, typography, component ergonomics, muted treatment of secondary/danger indicators, responsive collapse behavior, clear domain grouping in Settings.
 - **Reject:** anything tied to T3 Code's agent harness role — prompt or MCP injection, bundled orchestration workflows, scheduled tasks/cloud harness tabs, Electron/Node weight, agent-specific UI favoritism, or copying T3 Code's name, trademarks, and icons.
-- **Vetro-only features** (cross-agent history, parent/child session links, raw wire log, offline voice, private remote pairing) must reuse T3 Code's visual grammar and progressive-disclosure layering instead of inventing a new style.
+- **Verre-only features** (cross-agent history, parent/child session links, raw wire log, offline voice, private remote pairing) must reuse T3 Code's visual grammar and progressive-disclosure layering instead of inventing a new style.
 
 ## Anti-bloat rules by surface
 
@@ -50,8 +50,8 @@ A read-only checkout lives at `.orchestra/ref/t3code` during development (not sh
 
 Before adding a feature, control, or setting, verify all four:
 
-1. Does it respect Vetro's product rules without expanding scope into an IDE, terminal, or agent harness?
-2. How does T3 Code place and style the closest equivalent? If Vetro differs, is the reason justified by Vetro's philosophy?
+1. Does it respect Verre's product rules without expanding scope into an IDE, terminal, or agent harness?
+2. How does T3 Code place and style the closest equivalent? If Verre differs, is the reason justified by Verre's philosophy?
 3. Does the whole surrounding screen still feel calm and balanced after the change, or should adjacent items be regrouped/simplified at the same time?
 4. Could this be done with less UI, fewer states, or a cleaner default?
 

@@ -1,4 +1,4 @@
-# Vetro architecture
+# Verre architecture
 
 ## Shape
 
@@ -6,36 +6,36 @@
  desktop window (Tauri, system WebView)      browser / phone (private HTTPS)
               \                                   /
                \        HTTP + one WebSocket     /
-                +----------- vetro-core --------+        one Rust process
+                +----------- verre-core --------+        one Rust process
                 |  server      (axum, embedded UI, auth, pairing)
                 |  sessions    (live threads, event log, subscriptions, idle release)
                 |  adapters    claude | codex | acp (antigravity, devin, custom)
                 |  history     read-only readers of each agent's own store
                 |  links       parent/child sessions across agents
-                |  index       ~/.vetro/index.db (SQLite + FTS5)
+                |  index       ~/.verre/index.db (SQLite + FTS5)
                 +-------------------------------+
                      | stdio (JSON lines), one child process tree, job object / process group
         claude -p (stream-json)   codex app-server   agy acp   devin acp
 ```
 
-The desktop app and `vetro serve` are the same core. The Tauri shell only creates a window that loads the core's local URL, a tray icon and single-instance handling. The UI is identical in the window and in a remote browser.
+The desktop app and `verre serve` are the same core. The Tauri shell only creates a window that loads the core's local URL, a tray icon and single-instance handling. The UI is identical in the window and in a remote browser.
 
 ## Data directory
 
-Everything Vetro writes is under `~/.vetro` (`VETRO_HOME` overrides):
+Everything Verre writes is under `~/.verre` (`VERRE_HOME` overrides):
 
-- `core.lock`: an operating system lock held for the lifetime of the core. Each data directory has one owner. To run a desktop or CLI build alongside another core, give each a different `VETRO_HOME`.
-- `config.json`: `Settings` from `vetro-proto`.
+- `core.lock`: an operating system lock held for the lifetime of the core. Each data directory has one owner. To run a desktop or CLI build alongside another core, give each a different `VERRE_HOME`.
+- `config.json`: `Settings` from `verre-proto`.
 - `state.json`: local bootstrap token, session token hashes, paired devices, per-device preferences, thread and project overlays, cached agent options and official rate-limit snapshots.
 - `index.db`: thread index and full-text search. Disposable; rebuilt from the agents' stores.
-- `raw/<sha256(thread-id)>.jsonl`: wire log of each session attached in Vetro (4 MiB per-session ring cap preserving the launch/handshake prefix; `spawn` env values and Codex `config/read` replies redacted).
-- `logs/core.log`: Vetro's own diagnostic log (256 KiB rolling window).
+- `raw/<sha256(thread-id)>.jsonl`: wire log of each session attached in Verre (4 MiB per-session ring cap preserving the launch/handshake prefix; `spawn` env values and Codex `config/read` replies redacted).
+- `logs/core.log`: Verre's own diagnostic log (256 KiB rolling window).
 
 See [SECURITY.md](../SECURITY.md) for the full local data boundary, redaction rules, and paired-device restrictions.
 
 ## Agent adapters
 
-Adapters implement `vetro_agent_api::Agent` and emit `SessionEvent`s. The core assigns item ordinals and produces the UI's `vetro_proto::ThreadEvent`s. A multiplexed session's raw log contains the process launch, handshake, and wire traffic for that session.
+Adapters implement `verre_agent_api::Agent` and emit `SessionEvent`s. The core assigns item ordinals and produces the UI's `verre_proto::ThreadEvent`s. A multiplexed session's raw log contains the process launch, handshake, and wire traffic for that session.
 
 Detection: a binary is looked up in `Settings.agents[id].binaryPath`, then `PATH`, then well-known install locations (npm global shims are resolved to the real executable; the Claude desktop app's bundled `claude` and Devin Desktop's bundled `devin` are fallbacks). Detection never installs or downloads anything.
 
@@ -45,13 +45,13 @@ The Linux AppImage uses bundled paths for its WebView. Agent processes and the w
 
 The native protocol of the Codex desktop app and IDE extension. One long-lived process serves every Codex thread.
 
-- `initialize` with `clientInfo { name: "vetro", title: "Vetro", version }`, then `initialized`.
+- `initialize` with `clientInfo { name: "verre", title: "Verre", version }`, then `initialized`.
 - New thread: `thread/start` with `cwd` only. Model, reasoning effort, approval policy and sandbox are sent only when the user changed them. Never send `baseInstructions`, `developerInstructions`, dynamic tools or config overrides.
 - Turn: `turn/start`; while running, a new message uses `turn/steer`; stop is `turn/interrupt`.
 - Server requests (`item/commandExecution/requestApproval`, `item/fileChange/requestApproval`, `item/permissions/requestApproval`, `item/tool/requestUserInput`, `mcpServer/elicitation/request`) become `InteractionRequest` items.
 - History: local inventory and native `thread/turns/list` and `thread/items/list`. Continue with `thread/resume`.
 - Options: `model/list` (models and their reasoning efforts), the collaboration/approval presets the server reports. Account: `account/read`, `account/login/*`, `account/rateLimits/read`.
-- Everything in `~/.codex/config.toml` keeps working because Codex itself reads it: ChatGPT login, API keys, custom providers and gateways, hooks, MCP servers, skills. Vetro has no provider logic.
+- Everything in `~/.codex/config.toml` keeps working because Codex itself reads it: ChatGPT login, API keys, custom providers and gateways, hooks, MCP servers, skills. Verre has no provider logic.
 - Generate the protocol types for the installed version with `codex app-server generate-json-schema` / `generate-ts` when in doubt; tolerate unknown fields and methods.
 
 ### Claude Code: `claude -p` with stream-json in both directions
@@ -67,19 +67,19 @@ This is the protocol the official Claude Agent SDK uses under the hood. One proc
 
 One generic ACP v1 client (`agent-client-protocol` crate or a small hand-written JSON-RPC layer; pick whichever is lighter and more tolerant). One process per agent serves all of that agent's sessions.
 
-- `initialize` with `clientCapabilities { fs: { readTextFile: false, writeTextFile: false }, terminal: false }` so the agent uses its own tools and Vetro adds nothing.
+- `initialize` with `clientCapabilities { fs: { readTextFile: false, writeTextFile: false }, terminal: false }` so the agent uses its own tools and Verre adds nothing.
 - `session/new` with `cwd` and `mcpServers: []`. Prompts are forwarded as typed: text, images, resource links for mentioned files.
 - `session/update` notifications map to items; `session/request_permission` and elicitation become `InteractionRequest`s; `session/cancel` stops a turn.
 - Kiro uses `_session/steer` for plain text during an active turn, including while a permission is pending. The user message appears when Kiro reports injection. Structured inputs wait for the next turn. Kiro V3 persistent consent uses the requested resource and workspace scope. An explicitly selected permission preset is applied on session creation or live attachment. History reads and option preparation use native defaults.
 - Models, modes and thinking levels come from the agent's `configOptions` / `modes` and are changed with `session/set_config_option` / `session/set_mode`.
 - History: `session/list` where advertised, `session/load` to read and continue.
-- Auth: when the agent answers `auth_required`, the UI offers the agent's own `authMethods`; `authenticate` runs the agent's flow. Vetro never sees a credential.
+- Auth: when the agent answers `auth_required`, the UI offers the agent's own `authMethods`; `authenticate` runs the agent's flow. Verre never sees a credential.
 - Antigravity is launched exactly as Google documents for ACP clients: the unmodified `agy` binary with the single argument `acp`, signed in with its own cached login (or any other method the agent offers, such as a Gemini API key from the environment). See `docs/agents/antigravity.md` for the policy background.
 - Devin is launched as `devin acp --process-model in-process`.
 
 ## Sessions
 
-- A thread id is `<agentId>:<nativeSessionId>`. Threads exist whether or not Vetro started them; attaching a live native session to one makes it `live`.
+- A thread id is `<agentId>:<nativeSessionId>`. Threads exist whether or not Verre started them; attaching a live native session to one makes it `live`.
 - Each open thread keeps its items in memory and an event log with a per-thread `seq`. Clients open a thread, get the newest page of items plus the current `seq`, then receive `thread.event`s. After a reconnect the client opens the thread again and replaces its copy.
 - Sending to a thread that is not live resumes the native session first (`thread/resume`, `--resume`, `session/load` or `session/resume`). If the agent cannot resume it, the thread is read-only (`resumable: false`).
 - The `idleReleaseMinutes` setting controls live sessions with no running turn, open request, queued message, or post-prompt descendant still running. On multiplexed runtimes, descendant protection applies to all attached sessions. Runtime helpers that appear late can also hold the process open. Later calls restart released runtimes on demand. Dormant protocol history polls slow down to about once a minute. File changes and open history threads still trigger timely refreshes.
@@ -102,7 +102,7 @@ Foreign SQLite readers take no write or exclusive locks and create no files. A W
 
 The core opens `index.db` before serving requests. One worker per agent lists metadata and reads changed transcripts one at a time. The native mark and successfully indexed mark are separate, so interrupted work resumes on the next scan. File notifications trigger debounced scans, with polling for protocol sources and missed file events. Devin's local snapshot supports browsing and indexing while another process holds the native session or before ACP sign-in. Resuming still requires ACP sign-in and the native session lock.
 
-`ThreadSource` comes from the agent's own records, with one exception: a session Vetro created or forked is remembered in `~/.vetro/state.json` and keeps `ThreadSource::Vetro` after the agent's store reports how it was launched (for example Claude's `sdk-cli` entrypoint). A Vetro session is never internal. Internal means the native record says the session was non-interactive or a sub-agent; Vetro does not infer it from prompt text, because wrapper conventions belong to the user, not to the product.
+`ThreadSource` comes from the agent's own records, with one exception: a session Verre created or forked is remembered in `~/.verre/state.json` and keeps `ThreadSource::Verre` after the agent's store reports how it was launched (for example Claude's `sdk-cli` entrypoint). A Verre session is never internal. Internal means the native record says the session was non-interactive or a sub-agent; Verre does not infer it from prompt text, because wrapper conventions belong to the user, not to the product.
 
 `updatedAt` is the newest event timestamp recorded in the native session, not the file's modification time. Agents append untimestamped metadata (titles, tool lists, lineage) long after the conversation, so mtime is only a fallback when a record carries no timestamps.
 
@@ -110,7 +110,7 @@ Historical `TurnEnd` items carry completion metadata supported by the source. A 
 
 ## Background work
 
-An agent's tools can leave processes running after its turn ends (background shells, delegated agents). Each runtime records its existing child processes before the first user prompt. Live descendants that appear after that snapshot count as possible background work across turns and sessions on that runtime. Idle release waits for them because releasing the agent process ends its tree. `threads.detach` refuses with `background_work` until the client confirms with `force`. Every release is logged with its reason. Vetro never prompts the agent when background work finishes; whether the agent resumes on its own is native behaviour.
+An agent's tools can leave processes running after its turn ends (background shells, delegated agents). Each runtime records its existing child processes before the first user prompt. Live descendants that appear after that snapshot count as possible background work across turns and sessions on that runtime. Idle release waits for them because releasing the agent process ends its tree. `threads.detach` refuses with `background_work` until the client confirms with `force`. Every release is logged with its reason. Verre never prompts the agent when background work finishes; whether the agent resumes on its own is native behaviour.
 
 ## Links between agents
 
@@ -118,35 +118,35 @@ When an agent starts a delegated session, the child runtime stores it separately
 
 1. **Exact**. The agent's store names the parent, or the launch returned the child's session ID. A later read of the same background shell handle can supply this output for the launch.
 2. **Prompt**: the child's first user message is contained in the parent's command line or in a file that command read from stdin.
-3. **Heuristic**. A CLI invocation in the same working directory whose time window contains the child's start. A command Vetro cannot interpret (a script, a wrapper) qualifies as a launch when it ran in the background or for at least 10 seconds; a non-interactive child in the same directory that started within 60 seconds of it, and while it was running, links when exactly one launch matches. No wrapper syntax is parsed.
+3. **Heuristic**. A CLI invocation in the same working directory whose time window contains the child's start. A command Verre cannot interpret (a script, a wrapper) qualifies as a launch when it ran in the background or for at least 10 seconds; a non-interactive child in the same directory that started within 60 seconds of it, and while it was running, links when exactly one launch matches. No wrapper syntax is parsed.
 
 A link sets `ThreadSummary.parent` on the child and adds the child to `ToolCall.childThreadIds` on the parent's tool call. Links are recomputed incrementally as either side changes, so a running child shows up under the running tool call and streams as its file grows.
 
 Matching prefers exact evidence, then prompts, then matching directories and execution windows. Known timestamps rule out a child that started before the parent call. Ambiguous matches at the strongest tier stay unlinked unless the native store identifies a parent. Native sub-agent sessions appear under their parents when that relationship is available. Inline sidechains remain timeline items.
 
-`vetro threads` lists indexed roots, including archived roots. `vetro threads --children-of <id>` lists children. `vetro threads --search <phrase>` searches titles and messages. `vetro links` lists the tier and both thread IDs and titles.
+`verre threads` lists indexed roots, including archived roots. `verre threads --children-of <id>` lists children. `verre threads --search <phrase>` searches titles and messages. `verre links` lists the tier and both thread IDs and titles.
 
 ## Server and remote access
 
-- The server binds only to `127.0.0.1`. The desktop client can explicitly enable remote access and start Tailscale Serve on HTTPS port `8443` for the machine's Tailscale DNS name. Vetro runs a process-scoped Serve entry in the background. Disabling remote access or exiting removes that entry. If the Serve process exits, Core clears its address and pending pairing code, disconnects its clients, and publishes the new status. Vetro refuses to take an occupied port `8443`.
-- The host can instead explicitly allow one HTTPS origin served by an independently managed reverse proxy. The proxy forwards HTTP and WebSocket to the same loopback Core instance. A headless host can declare the origin with `vetro serve --port … --remote-url …`. See [remote access](remote.md).
-- All HTTP routes and WebSocket upgrades check `Host` and any supplied `Origin`. The active remote authority must match the configured proxy or Vetro's active Serve entry. Only the loopback origin supports local token exchange. Stopping remote access or switching its origin clears the pairing code and disconnects sockets on the old origin.
+- The server binds only to `127.0.0.1`. The desktop client can explicitly enable remote access and start Tailscale Serve on HTTPS port `8443` for the machine's Tailscale DNS name. Verre runs a process-scoped Serve entry in the background. Disabling remote access or exiting removes that entry. If the Serve process exits, Core clears its address and pending pairing code, disconnects its clients, and publishes the new status. Verre refuses to take an occupied port `8443`.
+- The host can instead explicitly allow one HTTPS origin served by an independently managed reverse proxy. The proxy forwards HTTP and WebSocket to the same loopback Core instance. A headless host can declare the origin with `verre serve --port … --remote-url …`. See [remote access](remote.md).
+- All HTTP routes and WebSocket upgrades check `Host` and any supplied `Origin`. The active remote authority must match the configured proxy or Verre's active Serve entry. Only the loopback origin supports local token exchange. Stopping remote access or switching its origin clears the pairing code and disconnects sockets on the old origin.
 - The desktop exchanges its bootstrap token for a local session token. Remote devices exchange a single-use, 10-minute code for a paired session token. Global and per-peer budgets apply to each pairing code. The core stores session hashes and validates the supplied token in `app.hello` or the HTTP bearer header. WebSockets must authenticate within four seconds. Disabling remote access or revoking a device closes its remote sockets. The local client can revoke its issued session tokens through `remote.revokeDevice` with device ID `local`.
 - HTTP endpoints: `GET /api/health`, `POST /api/auth/local`, `POST /api/auth/pair`, `GET /api/ws`, and the static UI with SPA fallback. Everything else goes over the WebSocket (see `docs/API.md`).
-- The UI is embedded in the binary from `apps/web/dist`. In development `VETRO_WEB_DIR` serves it from disk, and the Vite dev server proxies `/api` to the core.
+- The UI is embedded in the binary from `apps/web/dist`. In development `VERRE_WEB_DIR` serves it from disk, and the Vite dev server proxies `/api` to the core.
 
 ## Verifiable cleanliness
 
 1. **Raw view.** `threads.raw` returns the wire log, including the command line and the names of environment overrides used to start the agent. Environment override values are masked.
-2. **Footprint test.** An integration test runs full sessions against fake agents with `HOME`/`USERPROFILE` pointed at a temp directory, snapshots the tree before and after, and fails on any change outside `.vetro` that the fake agent did not make itself.
+2. **Footprint test.** An integration test runs full sessions against fake agents with `HOME`/`USERPROFILE` pointed at a temp directory, snapshots the tree before and after, and fails on any change outside `.verre` that the fake agent did not make itself.
 3. **No-injection test.** For every adapter, a test sends a prompt through a fake agent and asserts that the user text arrives byte-for-byte and that no system prompt, instruction, tool or MCP field is present in any outgoing message.
 4. **Orphan test.** Start agents, kill the core hard, assert no child survives.
 
 ## Milestones
 
-- **M0** core skeleton, three adapters, `vetro probe <agent>` (new session, one prompt, streaming, one permission round-trip, resume by id) with wire logs.
+- **M0** core skeleton, three adapters, `verre probe <agent>` (new session, one prompt, streaming, one permission round-trip, resume by id) with wire logs.
 - **M1** server + UI + desktop shell on Windows: new and continued threads for all four agents.
 - **M2** history for all four agents, filters, full-text search.
 - **M3** links between agents, live child sessions.
 - **M4** remote access: pairing, `tailscale serve`, phone layout, reconnect.
-- **M5** macOS and Linux builds, installers, `vetro serve`, docs.
+- **M5** macOS and Linux builds, installers, `verre serve`, docs.

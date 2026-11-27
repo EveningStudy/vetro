@@ -3,6 +3,6 @@
 /**
  * Body of a successful `POST /api/auth/local` or `POST /api/auth/pair`. The client keeps `session` in
  * origin-scoped storage and presents it in `app.hello` and as `Authorization: Bearer` on HTTP calls.
- * Vetro sets no cookies.
+ * Verre sets no cookies.
  */
 export type AuthSession = { session: string, remoteClient: boolean, };

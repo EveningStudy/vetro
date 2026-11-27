@@ -22,7 +22,7 @@ const browserPath = process.env.CHROME_PATH || (process.platform === "win32"
 assert(existsSync(browserPath), "Set CHROME_PATH to a Chromium or Edge executable");
 
 const cargo = spawnSync("cargo", [
-  "test", "--locked", "-p", "vetro-core", "--all-features", "--test", "websocket",
+  "test", "--locked", "-p", "verre-core", "--all-features", "--test", "websocket",
   "--no-run", "--message-format=json",
 ], { cwd: root, encoding: "utf8", maxBuffer: 32 * 1024 * 1024, stdio: ["ignore", "pipe", "inherit"] });
 if (cargo.error) throw cargo.error;
@@ -37,7 +37,7 @@ assert(fixturePath, "Cargo did not produce the WebSocket fixture");
 
 const fixture = spawn(fixturePath, ["--browser-fixture"], { cwd: root, stdio: ["pipe", "pipe", "inherit"] });
 const fixtureExited = once(fixture, "exit");
-const profile = mkdtempSync(join(tmpdir(), "vetro-browser-"));
+const profile = mkdtempSync(join(tmpdir(), "verre-browser-"));
 let browser;
 let browserExited;
 let socket;
@@ -48,7 +48,7 @@ let voiceServer;
 let remoteProxy;
 
 async function startRemoteProxy(endpoint) {
-  const host = "vetro-proxy.test";
+  const host = "verre-proxy.test";
   const key = join(profile, "proxy.key");
   const cert = join(profile, "proxy.crt");
   const config = join(profile, "proxy.cnf");
@@ -135,7 +135,7 @@ try {
   const lines = createInterface({ input: fixture.stdout });
   const [url] = await once(lines, "line", { signal: AbortSignal.timeout(10_000) });
   const endpoint = new URL(url);
-  if (process.env.VETRO_SMOKE_TLS_PROXY === "1") remoteProxy = await startRemoteProxy(endpoint);
+  if (process.env.VERRE_SMOKE_TLS_PROXY === "1") remoteProxy = await startRemoteProxy(endpoint);
   browser = spawn(browserPath, [
     "--headless", "--disable-gpu", "--no-first-run", "--remote-debugging-port=0",
     "--disable-back-forward-cache",
@@ -283,7 +283,7 @@ try {
     await send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
     await send("Page.navigate", { url: remoteNewThread.href });
     await click("button", "Connect");
-    await textOnScreen("Sign-in runs on the computer running Vetro.");
+    await textOnScreen("Sign-in runs on the computer running Verre.");
     assert.equal(await evaluate(`[...document.querySelectorAll("button")].some((button) => button.innerText.trim() === "Fake device code")`), false);
     await evaluate(`(() => {
       const transmit = WebSocket.prototype.send;
@@ -308,7 +308,7 @@ try {
   const { targetId: providerTab } = await send("Target.createTarget", { url: "about:blank" }, null);
   const provider = await send("Target.attachToTarget", { targetId: providerTab, flatten: true }, null);
   await send("Page.bringToFront", {}, provider.sessionId);
-  await waitFor(() => evaluate("!document.hasFocus()"), "left Vetro to complete sign-in");
+  await waitFor(() => evaluate("!document.hasFocus()"), "left Verre to complete sign-in");
   const completed = once(lines, "line", { signal: AbortSignal.timeout(5000) });
   fixture.stdin.write("complete-sign-in\n");
   assert.deepEqual(await completed, ["sign-in completed"]);
@@ -321,7 +321,7 @@ try {
     await visiblePoint("button", "Options…");
     await send("Page.navigate", { url: `${remoteProxy.origin}/settings/remote?lang=en` });
     await tap("button", "Revoke");
-    await textOnScreen("Connect to Vetro");
+    await textOnScreen("Connect to Verre");
     await send("Target.closeTarget", { targetId: remoteSignIn.targetId }, null);
     sessionId = localSession;
     await send("Page.bringToFront");
@@ -416,7 +416,7 @@ try {
     const callbacks = new Map();
     const subscriptions = new Map();
     let nextId = 0;
-    window.__VETRO_DESKTOP__ = { platform: "windows", chrome: "custom" };
+    window.__VERRE_DESKTOP__ = { platform: "windows", chrome: "custom" };
     window.__TAURI_INTERNALS__ = {
       transformCallback(callback) {
         callbacks.set(++nextId, callback);
@@ -477,7 +477,7 @@ try {
     for await (const chunk of request) chunks.push(chunk);
     recordings.push({ method: request.method, path: request.url, body: Buffer.concat(chunks) });
     response.writeHead(200, { "Content-Type": "application/json" });
-    response.end(JSON.stringify({ text: "vetro voice input" }));
+    response.end(JSON.stringify({ text: "verre voice input" }));
   }).listen(0, "127.0.0.1");
   await once(voiceServer, "listening");
   await send("Page.addScriptToEvaluateOnNewDocument", { source: `(() => {
@@ -498,15 +498,15 @@ try {
   await send("Input.insertText", { text: transcriptionUrl });
   assert.equal(await evaluate("document.activeElement.value"), transcriptionUrl, "Entered transcription URL");
   await click('textarea[placeholder*="Claude Code"]');
-  await send("Input.insertText", { text: "vetro = Vetro" });
-  assert.equal(await evaluate("document.activeElement.value"), "vetro = Vetro", "Entered glossary");
+  await send("Input.insertText", { text: "verre = Verre" });
+  assert.equal(await evaluate("document.activeElement.value"), "verre = Verre", "Entered glossary");
   await click("button", "Save");
   await textOnScreen("Local endpoint");
   await send("Page.reload");
   await waitFor(() => evaluate(`(() => {
     const endpoint = document.querySelector('input[placeholder*="/v1/audio/transcriptions"]');
     const glossary = document.querySelector('textarea[placeholder*="Claude Code"]');
-    return endpoint?.value === ${JSON.stringify(transcriptionUrl)} && glossary?.value === "vetro = Vetro";
+    return endpoint?.value === ${JSON.stringify(transcriptionUrl)} && glossary?.value === "verre = Verre";
   })()`), "saved voice settings after reload");
   await textOnScreen("Local endpoint");
   await click("button", "New thread");
@@ -528,7 +528,7 @@ try {
   await visiblePoint(finish);
   await delay(800);
   await click(finish);
-  await waitFor(() => evaluate(`document.querySelector("textarea")?.value === "Vetro voice input"`), "transcribed draft and glossary replacement");
+  await waitFor(() => evaluate(`document.querySelector("textarea")?.value === "Verre voice input"`), "transcribed draft and glossary replacement");
   assert.equal(recordings.length, 1);
   assert.equal(recordings[0].method, "POST");
   assert.equal(recordings[0].path, "/v1/audio/transcriptions");
@@ -615,7 +615,7 @@ try {
     await send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
     pairingUrl.searchParams.set("lang", "en");
     await send("Page.navigate", { url: pairingUrl.href });
-    await textOnScreen("Connect to Vetro");
+    await textOnScreen("Connect to Verre");
     assert(await evaluate("isSecureContext"));
     assert.equal(await evaluate("document.querySelector('#pair-code').value"), code);
     assert.equal(await evaluate("location.hash"), "");
@@ -776,7 +776,7 @@ try {
     await waitFor(() => evaluate(`document.querySelector("textarea")?.value === ${JSON.stringify(undelivered)}`),
       "unconfirmed new-thread draft restored after reload");
     await click('button[aria-label="Send"]');
-    await textOnScreen("Vetro could not confirm delivery.");
+    await textOnScreen("Verre could not confirm delivery.");
     await visiblePoint("button", "Send anyway");
     assert.equal(await evaluate("location.pathname"), "/new");
     assert.equal(await evaluate('document.querySelector("textarea")?.value'), undelivered);
@@ -797,7 +797,7 @@ try {
     await waitFor(() => evaluate(`document.querySelector("textarea")?.value === ${JSON.stringify(verbatimResend)}`),
       "unconfirmed follow-up draft restored after reload");
     await click('button[aria-label="Send"]');
-    await textOnScreen("Vetro could not confirm delivery.");
+    await textOnScreen("Verre could not confirm delivery.");
     await click("button", "Send anyway");
     await waitFor(() => evaluate(`document.querySelector("textarea")?.value === ""`), "verbatim resend submitted");
     await textOnScreen(verbatimResend);
@@ -816,7 +816,7 @@ try {
     };
     const reopened = await openRemoteTab();
     await textOnScreen("Browser regression prompt");
-    assert.equal(await evaluate('sessionStorage.getItem("vetro:session")'), null, "the reopened tab starts with fresh tab storage");
+    assert.equal(await evaluate('sessionStorage.getItem("verre:session")'), null, "the reopened tab starts with fresh tab storage");
     await click("textarea");
     await send("Input.insertText", { text: "Draft while remote access is stopped" });
 
@@ -827,7 +827,7 @@ try {
     sessionId = reopened.sessionId;
     await send("Page.bringToFront");
     await textOnScreen("Connection lost. Reconnecting…");
-    assert(await evaluate('Boolean(localStorage.getItem("vetro:remote-session"))'), "stopping access preserves the pairing");
+    assert(await evaluate('Boolean(localStorage.getItem("verre:remote-session"))'), "stopping access preserves the pairing");
 
     sessionId = hostSession;
     await send("Page.bringToFront");
@@ -843,14 +843,14 @@ try {
     sessionId = hostSession;
     await send("Page.bringToFront");
     await waitFor(() => evaluate(`!document.body.innerText.includes(${JSON.stringify(code)})`), "consumed pairing removed");
-    assert.equal(await evaluate('localStorage.getItem("vetro:remote-session")'), null, "the host credential remains tab-scoped");
+    assert.equal(await evaluate('localStorage.getItem("verre:remote-session")'), null, "the host credential remains tab-scoped");
     await click("button", "Revoke");
     await textOnScreen("No devices paired yet.");
     sessionId = reopened.sessionId;
     await send("Page.bringToFront");
-    await textOnScreen("Connect to Vetro");
-    assert.equal(await evaluate('localStorage.getItem("vetro:remote-session")'), null, "revocation clears the remembered session");
-    assert.equal(await evaluate('Object.keys(sessionStorage).some((key) => key.startsWith("vetro:remote-drafts:"))'),
+    await textOnScreen("Connect to Verre");
+    assert.equal(await evaluate('localStorage.getItem("verre:remote-session")'), null, "revocation clears the remembered session");
+    assert.equal(await evaluate('Object.keys(sessionStorage).some((key) => key.startsWith("verre:remote-drafts:"))'),
       false, "revocation clears the pairing's saved drafts");
     await send("Target.closeTarget", { targetId: reopened.targetId }, null);
 
@@ -864,13 +864,13 @@ try {
     await waitFor(() => evaluate(`document.querySelector('input[type="checkbox"]')?.checked === false`), "temporary pairing selected");
     await click("button", "Connect");
     await waitFor(() => evaluate('!document.querySelector("#pair-code")'), "temporary pairing completed");
-    assert.notEqual(await evaluate('sessionStorage.getItem("vetro:session")'), null, "temporary session stays in the tab");
-    assert.equal(await evaluate('localStorage.getItem("vetro:remote-session")'), null);
+    assert.notEqual(await evaluate('sessionStorage.getItem("verre:session")'), null, "temporary session stays in the tab");
+    assert.equal(await evaluate('localStorage.getItem("verre:remote-session")'), null);
     await send("Page.navigate", { url: `${origin}/t/fake%3Alive?lang=en` });
     await textOnScreen("Browser regression prompt");
     await send("Target.closeTarget", { targetId: temporary.targetId }, null);
     await openRemoteTab();
-    await textOnScreen("Connect to Vetro");
+    await textOnScreen("Connect to Verre");
 
     sessionId = hostSession;
     await send("Page.bringToFront");

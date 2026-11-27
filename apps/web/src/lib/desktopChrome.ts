@@ -1,7 +1,7 @@
 import { useEffect, useSyncExternalStore } from "react";
 
 export type DesktopPlatform = "windows" | "macos" | "linux" | "web";
-/** `custom`: frameless window, Vetro draws the caption buttons. `overlay`: native traffic lights
+/** `custom`: frameless window, Verre draws the caption buttons. `overlay`: native traffic lights
  * over the web content. `native`: the OS title bar. `web`: a browser or a paired device. */
 export type DesktopChromeMode = "custom" | "overlay" | "native" | "web";
 
@@ -14,7 +14,7 @@ export interface DesktopChromeState {
 
 declare global {
   interface Window {
-    __VETRO_DESKTOP__?: { platform?: string; chrome?: string; maximized?: boolean; embeddedCore?: boolean };
+    __VERRE_DESKTOP__?: { platform?: string; chrome?: string; maximized?: boolean; embeddedCore?: boolean };
     __TAURI_INTERNALS__?: {
       invoke?: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
       transformCallback?: (callback: (event: { payload: unknown }) => void, once?: boolean) => number;
@@ -25,7 +25,7 @@ declare global {
 const WEB: DesktopChromeState = { platform: "web", chrome: "web", maximized: false, embeddedCore: false };
 
 function detect(): DesktopChromeState {
-  const injected = window.__VETRO_DESKTOP__;
+  const injected = window.__VERRE_DESKTOP__;
   if (injected) {
     const platform = injected.platform === "windows" || injected.platform === "macos" ? injected.platform : "linux";
     const chrome = injected.chrome === "custom" || injected.chrome === "overlay" ? injected.chrome : "native";
@@ -49,7 +49,7 @@ function setMaximized(maximized: boolean) {
   for (const listener of listeners) listener();
 }
 
-window.addEventListener("vetro:window-state", (event) => {
+window.addEventListener("verre:window-state", (event) => {
   const detail = (event as CustomEvent<{ maximized?: unknown }>).detail;
   if (typeof detail?.maximized === "boolean") setMaximized(detail.maximized);
 });

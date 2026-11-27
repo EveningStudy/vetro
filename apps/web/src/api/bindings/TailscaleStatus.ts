@@ -6,6 +6,6 @@ export type TailscaleStatus = { installed: boolean, running: boolean,
  */
 dnsName: string | null, 
 /**
- * The `https://` address when `tailscale serve` is forwarding to Vetro.
+ * The `https://` address when `tailscale serve` is forwarding to Verre.
  */
 serveUrl: string | null, };

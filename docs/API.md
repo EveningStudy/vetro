@@ -1,11 +1,11 @@
 # UI protocol
 
-Types are defined in `crates/vetro-proto` and generated for TypeScript into `apps/web/src/api/bindings` (`cargo test -p vetro-proto`). This file is the method catalogue.
+Types are defined in `crates/verre-proto` and generated for TypeScript into `apps/web/src/api/bindings` (`cargo test -p verre-proto`). This file is the method catalogue.
 
 ## Transport
 
 - `GET /api/health` -> `{ "ok": true, "version": "..." }` (no auth).
-- `POST /api/auth/local` `{ "token": "..." }` -> `AuthSession`. Loopback only; used by the desktop window and by `vetro serve`'s printed link, which carry the local token in the URL fragment (`/#token=...`); the page removes it from the address bar.
+- `POST /api/auth/local` `{ "token": "..." }` -> `AuthSession`. Loopback only; used by the desktop window and by `verre serve`'s printed link, which carry the local token in the URL fragment (`/#token=...`); the page removes it from the address bar.
 - `POST /api/auth/pair` `{ "code": "...", "deviceName": "...", "proposedSession": "..." }` -> `AuthSession` for a new or recovered device. `proposedSession` is optional. Clients that supply it must use cryptographically random 16-byte and 32-byte values for the ID and secret, respectively, written as lowercase hexadecimal and separated by a dot. Keep it private like any session credential. Clients that omit it receive a server-generated session.
 - `GET /api/auth/session` with `Authorization: Bearer <session>` -> `200 { "authenticated": true, "remoteClient": bool }` or `401`.
 - `GET /api/ws` -> WebSocket, JSON text frames:
@@ -32,11 +32,11 @@ Unknown fields must be ignored by both sides. Timestamps are milliseconds since 
 | `agents.list` | `Empty` | `AgentsResult` | Cached detection. |
 | `agents.refresh` | `Empty` | `AgentsResult` | Re-detect binaries, versions and auth state, and refresh official rate limits where available. |
 | `agents.authenticate` | `AuthenticateParams` | `AuthenticateResult` | Runs the agent's own sign-in method. A result with a URL or code requires a follow-up step. The local client checks the agent's sign-in status when the window regains focus. |
-| `agents.options` | `AgentOptionsParams` | `AgentOptionsResult` | Options and slash commands for a new thread, from Vetro's versioned cache of what the agent reported earlier. It never creates a native session by itself: when nothing is cached and the agent only reports options from a session, the result has `needsSession: true`, and a session is created only when the call carries `prepare: true` from an explicit user action; that session is then used for the thread the user starts next in that folder. |
+| `agents.options` | `AgentOptionsParams` | `AgentOptionsResult` | Options and slash commands for a new thread, from Verre's versioned cache of what the agent reported earlier. It never creates a native session by itself: when nothing is cached and the agent only reports options from a session, the result has `needsSession: true`, and a session is created only when the call carries `prepare: true` from an explicit user action; that session is then used for the thread the user starts next in that folder. |
 | `projects.list` | `Empty` | `ProjectsResult` | Includes hidden projects. Missing directories sort last. |
-| `projects.add` | `ProjectAddParams` | `Project` | Desktop client only. Adds a folder to Vetro's list. |
+| `projects.add` | `ProjectAddParams` | `Project` | Desktop client only. Adds a folder to Verre's list. |
 | `projects.remove` | `ProjectAddParams` | `Empty` | Desktop client only. Removes a manually added folder. Projects discovered from sessions can only be hidden. |
-| `projects.update` | `ProjectUpdateParams` | `Project` | Vetro-local name, pin, hide. |
+| `projects.update` | `ProjectUpdateParams` | `Project` | Verre-local name, pin, hide. |
 | `threads.list` | `ThreadsListParams` | `ThreadsListResult` | Newest first, paged. Linked children appear when `includeChildren` is true or `parentId` is supplied. Automated/internal sessions (`internal: true`) are omitted unless `includeInternal` is true. |
 | `threads.active` | `{}` | `ThreadsListResult` | Running root threads and roots awaiting input, independent of history filters and pagination. |
 | `threads.open` | `ThreadOpenParams` | `ThreadOpenResult` | Loads items and subscribes to `thread.event`. A detached thread also gets its cached options, commands and saved choices. |
@@ -48,7 +48,7 @@ Unknown fields must be ignored by both sides. Timestamps are milliseconds since 
 | `threads.interrupt` | `ThreadIdParams` | `Empty` | |
 | `threads.setOption` | `ThreadSetOptionParams` | `OptionsResult` | Model, mode, thinking level, ... |
 | `threads.respond` | `ThreadRespondParams` | `Empty` | Answers a permission request or question. |
-| `threads.update` | `ThreadUpdateParams` | `ThreadResult` | Vetro-local title, archive and pin flags. Never modifies the agent's own store. |
+| `threads.update` | `ThreadUpdateParams` | `ThreadResult` | Verre-local title, archive and pin flags. Never modifies the agent's own store. |
 | `threads.detach` | `ThreadDetachParams` | `Empty` | Detaches this native session and releases its runtime once no other live session or agent operation needs it. Fails with `background_work` while the runtime has live descendants that appeared after it began processing prompts, unless `force` is `true`. |
 | `threads.rollback` | `ThreadRollbackParams` | `ThreadOpenResult` | Requires a resumable, idle thread with `historyEdit.rollbackConversation` support. Excludes the specified native turn and all later turns from the conversation. Returns a fresh snapshot and subscribes the caller. Other views refresh on `app.resync`. |
 | `threads.rewindFiles` | `ThreadRewindFilesParams` | `RewindFilesResult` | Requires a resumable, idle thread and a native user-message checkpoint UUID. `dryRun: true` previews the changes. Applying restores tracked files through the agent and can report skipped links. Check `historyEdit.rewindFiles` and `historyEdit.previewRewindFiles` for support. |
@@ -74,7 +74,7 @@ Unknown fields must be ignored by both sides. Timestamps are milliseconds since 
 
 ## Events
 
-`ServerEvent` in `vetro-proto`:
+`ServerEvent` in `verre-proto`:
 
 - `thread.event`: for opened threads only; `seq` increases by one per thread. `ThreadEvent` is `item_added`, `item_updated`, `text_delta`, `summary`, `options`, `commands` or `usage`.
 - `threads.upserted` / `threads.removed`: the thread list changed (new session, title, status, link, history refresh). Sent to every connection.

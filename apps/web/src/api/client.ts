@@ -17,7 +17,7 @@ export async function initClient() {
   } else {
     transport = new WsTransport(wsUrl(), () => {
       const session = getSession();
-      return { clientName: "vetro-web", protocolVersion: PROTOCOL_VERSION, ...(session ? { session } : {}) };
+      return { clientName: "verre-web", protocolVersion: PROTOCOL_VERSION, ...(session ? { session } : {}) };
     });
   }
 }
