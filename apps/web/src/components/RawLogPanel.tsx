@@ -2,7 +2,7 @@ import { CopyIcon, RefreshCwIcon, XIcon } from "lucide-react";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { client } from "~/api/client";
 import type { RawEntry } from "~/api/types";
-import { useT } from "~/i18n";
+import { htmlLangTag, useLang, useT } from "~/i18n";
 import { clockTime } from "~/lib/format";
 import { cn, copyText } from "~/lib/utils";
 import { actions, useStore } from "~/state/store";
@@ -24,10 +24,11 @@ const directionClass: Record<Direction, string> = {
 
 const RawLine = memo(function RawLine({ entry }: { entry: RawEntry }) {
   const t = useT();
+  const lang = useLang();
   return (
     <div className="group/raw flex gap-2 border-b border-border/60 px-3 py-1.5 hover:bg-accent/50">
       <div className="flex w-[5.75rem] shrink-0 flex-col items-start gap-1">
-        <span className="tabular-nums text-muted-foreground">{clockTime(entry.ts, true)}</span>
+        <span className="tabular-nums text-muted-foreground">{clockTime(entry.ts, true, htmlLangTag(lang))}</span>
         <span className={cn("rounded px-1 py-px text-[10px] font-medium uppercase tracking-wide", directionClass[entry.direction])}>
           {t(`raw.dir.${entry.direction}`)}
         </span>

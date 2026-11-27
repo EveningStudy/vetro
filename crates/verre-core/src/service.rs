@@ -1350,11 +1350,12 @@ pub(crate) fn check_project_path(path: &Path, projects: &[Project]) -> Result<()
 }
 
 fn window_language(prefs: &Value) -> Option<String> {
-    prefs
-        .get("language")
-        .and_then(Value::as_str)
-        .filter(|lang| matches!(*lang, "en" | "zh" | "system"))
-        .map(str::to_owned)
+    let lang = prefs.get("language").and_then(Value::as_str)?;
+    matches!(
+        lang,
+        "en" | "zh" | "zh-Hant" | "ja" | "ko" | "es" | "de" | "fr" | "system"
+    )
+    .then(|| lang.to_owned())
 }
 
 fn window_theme(prefs: &Value) -> WindowTheme {
@@ -1496,6 +1497,20 @@ mod tests {
         core.prefs_set("local", json!({"language": "zh"})).unwrap();
         assert!(language.has_changed().unwrap());
         assert_eq!(language.borrow_and_update().as_deref(), Some("zh"));
+        for expected in ["zh-Hant", "ja", "ko", "es", "de", "fr", "en", "system"] {
+            core.prefs_set("local", json!({"language": expected}))
+                .unwrap();
+            assert!(language.has_changed().unwrap());
+            assert_eq!(language.borrow_and_update().as_deref(), Some(expected));
+        }
+        for (invalid, changed) in [
+            (json!({"language": 42}), true),
+            (json!({"language": "pt"}), false),
+        ] {
+            core.prefs_set("local", invalid).unwrap();
+            assert_eq!(language.has_changed().unwrap(), changed);
+            assert_eq!(*language.borrow_and_update(), None);
+        }
         let params = NotifyParams {
             title: "Finished".into(),
             body: "Done".into(),

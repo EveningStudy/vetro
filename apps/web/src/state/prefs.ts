@@ -14,7 +14,53 @@ import {
 } from "~/styles/themes";
 
 export type ThemePref = "light" | "dark" | "system";
-export type LanguagePref = "en" | "zh" | "system";
+export const LOCALES = ["en", "zh", "zh-Hant", "ja", "ko", "es", "de", "fr"] as const;
+export type Locale = (typeof LOCALES)[number];
+export type LanguagePref = "system" | Locale;
+export const LOCALE_LABELS: Record<Locale, string> = {
+  en: "English",
+  zh: "简体中文",
+  "zh-Hant": "繁體中文",
+  ja: "日本語",
+  ko: "한국어",
+  es: "Español",
+  de: "Deutsch",
+  fr: "Français",
+};
+
+const ZH_HANT_SUBTAGS = new Set(["hant", "tw", "hk", "mo"]);
+const ZH_HANS_SUBTAGS = new Set(["hans", "cn", "sg"]);
+
+export function normalizeLocale(value: unknown): Locale | null {
+  if (typeof value !== "string") return null;
+  const cleaned = value.trim().split(/[.@]/, 1)[0]?.toLowerCase().replace(/_/g, "-");
+  if (!cleaned) return null;
+  const parts = cleaned.split("-").filter(Boolean);
+  const base = parts[0];
+  if (!base) return null;
+  if (base === "zh") {
+    for (const sub of parts.slice(1)) {
+      if (sub.length === 1) break;
+      if (ZH_HANT_SUBTAGS.has(sub)) return "zh-Hant";
+      if (ZH_HANS_SUBTAGS.has(sub)) return "zh";
+    }
+    return "zh";
+  }
+  if (base === "en" || base === "ja" || base === "ko" || base === "es" || base === "de" || base === "fr") {
+    return base;
+  }
+  return null;
+}
+
+export function normalizeLanguagePref(value: unknown): LanguagePref | null {
+  if (typeof value !== "string") return null;
+  if (value.trim().toLowerCase() === "system") return "system";
+  return normalizeLocale(value);
+}
+
+export function htmlLangTag(lang: Locale): string {
+  return lang === "zh" ? "zh-CN" : lang;
+}
 export type SidebarScope = "all" | "verre";
 export type SidebarOrder = "projects" | "quickChats";
 export type FontStyle = "sans" | "serif" | "mono";
@@ -169,6 +215,7 @@ export function connectPrefs(remote: PrefsData | null, push: (prefs: PrefsData) 
   writeCache();
   usePrefs.setState(derived(data));
   applyTheme();
+  applyLanguage();
   flushPrefs();
   return data;
 }
@@ -177,7 +224,6 @@ window.addEventListener("beforeunload", flushPrefs);
 window.addEventListener("pagehide", flushPrefs);
 
 const THEMES = ["light", "dark", "system"] as const;
-const LANGUAGES = ["en", "zh", "system"] as const;
 const FONT_STYLES = ["sans", "serif", "mono"] as const;
 const FONT_SCALES = ["compact", "default", "large"] as const;
 const CHAT_WIDTHS = ["standard", "wide", "full"] as const;
@@ -238,7 +284,7 @@ function paletteOverride(prefs: PrefsData): string | null {
 function derived(prefs: PrefsData): UiPrefs {
   return {
     theme: pick(prefs.theme, THEMES, "system", query.get("theme")),
-    language: pick(prefs.language, LANGUAGES, "system", query.get("lang")),
+    language: normalizeLanguagePref(query.get("lang")) ?? normalizeLanguagePref(prefs.language) ?? "system",
     sidebarActivityDays: activityDays(prefs.sidebarActivityDays),
     hideDisabledAgentHistory: prefs.hideDisabledAgentHistory ?? true,
     sidebarCollapsed: prefs.sidebarCollapsed ?? false,
@@ -390,14 +436,29 @@ export function setPaperGrain(paperGrain: boolean) {
   applyTheme();
 }
 
-export function setLanguage(language: LanguagePref) {
-  savePrefs({ language });
-  usePrefs.setState({ language });
+export function applyLanguage() {
+  if (typeof document === "undefined") return;
+  document.documentElement.lang = htmlLangTag(resolvedLanguage(usePrefs.getState().language));
 }
 
-export function resolvedLanguage(pref: LanguagePref): "en" | "zh" {
-  if (pref !== "system") return pref;
-  return navigator.languages.some((lang) => lang.toLowerCase().startsWith("zh")) ? "zh" : "en";
+export function setLanguage(language: LanguagePref) {
+  const normalized = normalizeLanguagePref(language) ?? "system";
+  savePrefs({ language: normalized });
+  usePrefs.setState({ language: normalized });
+  applyLanguage();
+}
+
+export function resolvedLanguage(pref: LanguagePref): Locale {
+  if (typeof pref === "string" && pref !== "system") return normalizeLocale(pref) ?? "en";
+  const candidates =
+    typeof navigator !== "undefined"
+      ? (navigator.languages && navigator.languages.length > 0 ? navigator.languages : [navigator.language])
+      : [];
+  for (const tag of candidates) {
+    const matched = normalizeLocale(tag);
+    if (matched) return matched;
+  }
+  return "en";
 }
 
 export function setSidebarActivityDays(days: number) {

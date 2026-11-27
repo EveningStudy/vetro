@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { authApi } from "~/api/client";
-import { useLang, useT } from "~/i18n";
+import { htmlLangTag, useDisplayLang, useT } from "~/i18n";
 import { PairingPage } from "./components/PairingPage";
 import { Shell } from "./components/Shell";
 import { TooltipProvider } from "./components/ui/overlay";
@@ -11,15 +11,15 @@ type AuthState = "checking" | "ok" | "pair" | "error";
 
 export function App({ pairingCode, localToken }: { pairingCode: string; localToken: string | null }) {
   const t = useT();
-  const lang = useLang();
+  const displayLang = useDisplayLang();
   const [auth, setAuth] = useState<AuthState>("checking");
   const authLost = useStore((s) => s.authLost);
   const checking = useRef(false);
   const bootstrap = useRef(localToken);
 
   useEffect(() => {
-    document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
-  }, [lang]);
+    document.documentElement.lang = htmlLangTag(displayLang);
+  }, [displayLang]);
 
   const check = async () => {
     if (checking.current) return;

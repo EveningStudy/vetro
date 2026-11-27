@@ -17,7 +17,7 @@ import {
   SunIcon,
   Trash2Icon,
 } from "lucide-react";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { client } from "~/api/client";
 import type {
   AgentInfo,
@@ -30,7 +30,7 @@ import type {
   Settings,
 } from "~/api/types";
 import type { RemoteSetParams } from "~/api/bindings/RemoteSetParams";
-import { useT } from "~/i18n";
+import { htmlLangTag, LOCALE_LABELS, LOCALES, useT } from "~/i18n";
 import { useDesktopChrome } from "~/lib/desktopChrome";
 import { relativeTime, shortVersion } from "~/lib/format";
 import {
@@ -165,12 +165,12 @@ function Group({ children, className }: { children: ReactNode; className?: strin
   return <div className={cn("divide-y divide-border/50 overflow-hidden rounded-xl border border-border/60 bg-card/40 shadow-xs/5", className)}>{children}</div>;
 }
 
-function Row({ label, hint, children }: { label: ReactNode; hint?: ReactNode; children?: ReactNode }) {
+function Row({ label, hint, labelId, children }: { label: ReactNode; hint?: ReactNode; labelId?: string; children?: ReactNode }) {
   return (
     <div className="@container">
       <div className="flex flex-col gap-3 px-4 py-3 @min-[32rem]:grid @min-[32rem]:grid-cols-[minmax(0,1fr)_auto] @min-[32rem]:items-center @min-[32rem]:gap-8">
         <div className="min-w-0">
-          <div className="text-sm font-medium text-foreground">{label}</div>
+          <div id={labelId} className="text-sm font-medium text-foreground">{label}</div>
           {hint ? <div className="mt-0.5 max-w-2xl text-pretty text-xs text-muted-foreground">{hint}</div> : null}
         </div>
         {children ? <div className="flex shrink-0 items-center gap-2 @max-[32rem]:self-end">{children}</div> : null}
@@ -933,8 +933,35 @@ function EditorSelect({ value, disabled, onChange }: { value: string | null; dis
   );
 }
 
+function LanguageSelect({ value, labelledBy, onChange }: { value: LanguagePref; labelledBy: string; onChange: (value: LanguagePref) => void }) {
+  const t = useT();
+  const valueId = useId();
+  const currentLabel = value === "system" ? t("settings.languageSystem") : LOCALE_LABELS[value];
+  return (
+    <Menu>
+      <MenuTrigger aria-labelledby={`${labelledBy} ${valueId}`} render={<Button size="sm" variant="outline" className="min-w-36 justify-between" />}>
+        <span id={valueId} lang={value === "system" ? undefined : htmlLangTag(value)} className="truncate">
+          {currentLabel}
+        </span>
+        <ChevronDownIcon className="size-3.5 opacity-70" />
+      </MenuTrigger>
+      <MenuPopup align="end" className="w-44">
+        <MenuRadioGroup value={value} onValueChange={(next: string) => onChange(next as LanguagePref)}>
+          <MenuRadioItem value="system">{t("settings.languageSystem")}</MenuRadioItem>
+          {LOCALES.map((code) => (
+            <MenuRadioItem key={code} value={code} lang={htmlLangTag(code)}>
+              {LOCALE_LABELS[code]}
+            </MenuRadioItem>
+          ))}
+        </MenuRadioGroup>
+      </MenuPopup>
+    </Menu>
+  );
+}
+
 function GeneralSection() {
   const t = useT();
+  const languageLabelId = useId();
   const language = usePrefs((s) => s.language);
   const { settings, update } = useSettings();
   const remoteClient = useStore((s) => s.app?.remoteClient ?? false);
@@ -946,16 +973,8 @@ function GeneralSection() {
     <section>
       <SectionTitle title={t("settings.general")} />
       <Group>
-        <Row label={t("settings.language")}>
-          <Segmented<LanguagePref>
-            value={language}
-            onChange={setLanguage}
-            options={[
-              { value: "system", label: t("settings.languageSystem") },
-              { value: "en", label: "English" },
-              { value: "zh", label: "简体中文" },
-            ]}
-          />
+        <Row label={t("settings.language")} labelId={languageLabelId}>
+          <LanguageSelect value={language} labelledBy={languageLabelId} onChange={setLanguage} />
         </Row>
       </Group>
       {remoteClient ? <p className="mt-4 mb-2 text-xs text-muted-foreground">{t("settings.desktopOnly")}</p> : null}

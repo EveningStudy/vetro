@@ -1,6 +1,14 @@
 import type { Translate } from "~/i18n";
 
-export function relativeTime(ts: number | null | undefined, t: Translate, now = Date.now()) {
+function activeLocale(locale?: string): string | undefined {
+  if (locale) return locale;
+  if (typeof document !== "undefined" && document.documentElement.lang) {
+    return document.documentElement.lang;
+  }
+  return undefined;
+}
+
+export function relativeTime(ts: number | null | undefined, t: Translate, now = Date.now(), locale?: string) {
   if (!ts) return "";
   const seconds = Math.max(0, Math.round((now - ts) / 1000));
   if (seconds < 45) return t("time.now");
@@ -12,14 +20,18 @@ export function relativeTime(ts: number | null | undefined, t: Translate, now = 
   if (days < 7) return t("time.days", { n: days });
   const weeks = Math.round(days / 7);
   if (days < 30) return t("time.weeks", { n: weeks });
-  return new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  return new Date(ts).toLocaleDateString(activeLocale(locale), { month: "short", day: "numeric" });
 }
 
-export function clockTime(ts: number | null | undefined, withMs = false) {
+export function clockTime(ts: number | null | undefined, withMs = false, locale?: string) {
   if (!ts) return "";
-  const date = new Date(ts);
-  const base = date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
-  return withMs ? `${base}.${String(date.getMilliseconds()).padStart(3, "0")}` : base;
+  return new Date(ts).toLocaleTimeString(activeLocale(locale), {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+    ...(withMs ? { fractionalSecondDigits: 3 } : {}),
+  });
 }
 
 export function formatDuration(ms: number | null | undefined) {

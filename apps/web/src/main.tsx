@@ -5,12 +5,20 @@ import { initClient } from "./api/client";
 import { takeLocalToken } from "./api/session";
 import { App } from "./App";
 import { takePairingCode } from "./components/PairingPage";
-import { applyTheme } from "./state/prefs";
+import { ensureLocale } from "./i18n";
+import { applyLanguage, applyTheme, resolvedLanguage, usePrefs } from "./state/prefs";
 
 applyTheme();
+applyLanguage();
 const pairingCode = takePairingCode();
 const localToken = takeLocalToken();
-await initClient();
+await Promise.all([
+  initClient(),
+  Promise.race([
+    ensureLocale(resolvedLanguage(usePrefs.getState().language)),
+    new Promise<void>((resolve) => setTimeout(resolve, 500)),
+  ]),
+]);
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

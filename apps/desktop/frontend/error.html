@@ -37,18 +37,52 @@
       <p id="error"></p>
     </main>
     <script>
-      const lang =
-        window.__VERRE_LANG__ ||
-        (Array.isArray(navigator.languages) &&
-        navigator.languages.some((value) => String(value).toLowerCase().startsWith("zh"))
-          ? "zh"
-          : "en");
-      document.documentElement.lang = lang;
-      if (lang === "zh") {
-        document.getElementById("heading").textContent = "Verre 无法启动";
+      const STRINGS = {
+        en: { heading: "Verre could not start", unknown: "Unknown error" },
+        zh: { heading: "Verre 无法启动", unknown: "未知错误" },
+        "zh-Hant": { heading: "Verre 無法啟動", unknown: "未知錯誤" },
+        ja: { heading: "Verre を起動できませんでした", unknown: "不明なエラー" },
+        ko: { heading: "Verre를 시작할 수 없습니다", unknown: "알 수 없는 오류" },
+        es: { heading: "Verre no pudo iniciarse", unknown: "Error desconocido" },
+        de: { heading: "Verre konnte nicht gestartet werden", unknown: "Unbekannter Fehler" },
+        fr: { heading: "Verre n’a pas pu démarrer", unknown: "Erreur inconnue" },
+      };
+      const ZH_HANT = new Set(["hant", "tw", "hk", "mo"]);
+      const ZH_HANS = new Set(["hans", "cn", "sg"]);
+      function normalizeLang(tag) {
+        if (typeof tag !== "string") return null;
+        const cleaned = tag.trim().split(/[.@]/, 1)[0]?.toLowerCase().replace(/_/g, "-");
+        if (!cleaned) return null;
+        const parts = cleaned.split("-").filter(Boolean);
+        const base = parts[0];
+        if (!base) return null;
+        if (base === "zh") {
+          for (const sub of parts.slice(1)) {
+            if (sub.length === 1) break;
+            if (ZH_HANT.has(sub)) return "zh-Hant";
+            if (ZH_HANS.has(sub)) return "zh";
+          }
+          return "zh";
+        }
+        return base in STRINGS ? base : null;
       }
-      document.getElementById("error").textContent =
-        window.__VERRE_ERROR__ || (lang === "zh" ? "未知错误" : "Unknown error");
+      function detectLang() {
+        const explicit = normalizeLang(window.__VERRE_LANG__);
+        if (explicit) return explicit;
+        const candidates = Array.isArray(navigator.languages) && navigator.languages.length
+          ? navigator.languages
+          : [navigator.language];
+        for (const tag of candidates) {
+          const matched = normalizeLang(tag);
+          if (matched) return matched;
+        }
+        return normalizeLang(window.__VERRE_FALLBACK_LANG__) || "en";
+      }
+      const lang = detectLang();
+      const copy = STRINGS[lang] || STRINGS.en;
+      document.documentElement.lang = lang === "zh" ? "zh-CN" : lang;
+      document.getElementById("heading").textContent = copy.heading;
+      document.getElementById("error").textContent = window.__VERRE_ERROR__ || copy.unknown;
     </script>
   </body>
 </html>

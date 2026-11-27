@@ -3,7 +3,7 @@ import { CornerDownLeftIcon, MoonIcon, PaletteIcon, PanelLeftIcon, SearchIcon, S
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { client } from "~/api/client";
 import type { SearchHit, ThreadSummary } from "~/api/types";
-import { translate, useT } from "~/i18n";
+import { ensureLocale, loadedTranslations, useT } from "~/i18n";
 import { relativeTime } from "~/lib/format";
 import { cn, isMac } from "~/lib/utils";
 import { setTheme, setThemeId, usePrefs } from "~/state/prefs";
@@ -13,21 +13,46 @@ import { AgentIcon } from "./AgentIcon";
 import { ThemeSwatchDot, themeDisplayName, usePreviewMode } from "./settings/ThemeStudio";
 import { Kbd, Spinner } from "./ui/primitives";
 
-const THEME_WORDS = ["theme", "themes", "palette", "color", "colour", "appearance", "主题", "配色", "颜色", "外观", "皮肤"];
-const PAPER_WORDS = ["paper", "warm", "parchment", "sepia", "yellow", "纸", "暖", "黄", "护眼", "书"];
+const THEME_WORDS = [
+  "theme",
+  "themes",
+  "palette",
+  "color",
+  "colour",
+  "appearance",
+  "主题",
+  "配色",
+  "颜色",
+  "外观",
+  "皮肤",
+  "主題",
+  "顏色",
+  "外觀",
+  "テーマ",
+  "外観",
+  "테마",
+  "외관",
+  "tema",
+  "apariencia",
+  "thema",
+  "design",
+  "thème",
+  "apparence",
+];
+const PAPER_WORDS = ["paper", "warm", "parchment", "sepia", "yellow", "纸", "暖", "黄", "护眼", "书", "紙", "和紙", "종이", "papel", "papier"];
 
 function normalizeQuery(text: string) {
   return text.trim().toLowerCase();
 }
 
-/** Themes whose name (in either language), id or category matches the query. */
+/** Themes whose name (in English or any loaded locale), id or category matches the query. */
 function matchThemes(query: string, themes: (BuiltInTheme | CustomTheme)[]) {
   const q = normalizeQuery(query);
   if (!q || (q.length < 2 && /^[\x20-\x7e]+$/.test(q))) return [];
   if (THEME_WORDS.some((word) => word.startsWith(q) || q.startsWith(word))) return themes;
   const paperQuery = PAPER_WORDS.some((word) => q.includes(word));
   return themes.filter((theme) => {
-    const names = "nameKey" in theme ? [translate("en", theme.nameKey), translate("zh", theme.nameKey)] : [theme.name];
+    const names = "nameKey" in theme ? loadedTranslations(theme.nameKey) : [theme.name];
     if (names.some((name) => name.toLowerCase().includes(q)) || theme.id.includes(q)) return true;
     return paperQuery && "category" in theme && theme.category === "paper";
   });
@@ -78,6 +103,10 @@ export function CommandPalette() {
 
   useEffect(() => {
     const q = query.trim();
+    if (/[\u4e00-\u9fff]/.test(q)) {
+      void ensureLocale("zh");
+      void ensureLocale("zh-Hant");
+    }
     if (!q) {
       setHits(null);
       return;

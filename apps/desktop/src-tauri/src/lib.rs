@@ -76,8 +76,10 @@ pub fn run() -> Result<()> {
                     (language_rx, lang)
                 }
                 Err(err) => {
-                    let lang = resolve_desktop_lang(None);
-                    error_window(&handle_app, &format!("{err:#}"), tag, lang)?;
+                    let saved_lang = saved_desktop_lang(&handle_app);
+                    let explicit = explicit_desktop_lang(saved_lang.as_deref());
+                    let lang = resolve_desktop_lang(saved_lang.as_deref());
+                    error_window(&handle_app, &format!("{err:#}"), tag, explicit, lang)?;
                     (None, lang)
                 }
             };
@@ -339,12 +341,14 @@ fn error_window(
     app: &AppHandle,
     message: &str,
     tag: Option<&str>,
-    lang: &str,
+    explicit_lang: Option<&str>,
+    fallback_lang: &str,
 ) -> Result<WebviewWindow> {
     let script = format!(
-        "window.__VERRE_ERROR__ = {}; window.__VERRE_LANG__ = {};",
+        "window.__VERRE_ERROR__ = {}; window.__VERRE_LANG__ = {}; window.__VERRE_FALLBACK_LANG__ = {};",
         serde_json::to_string(message)?,
-        serde_json::to_string(lang)?,
+        serde_json::to_string(&explicit_lang)?,
+        serde_json::to_string(fallback_lang)?,
     );
     let window = window_builder(app, WebviewUrl::App("error.html".into()), tag)
         .initialization_script(script)
@@ -456,26 +460,119 @@ window.dispatchEvent(new CustomEvent("verre:window-state", {{ detail: {{ maximiz
     });
 }
 
-fn resolve_desktop_lang(pref: Option<&str>) -> &'static str {
-    match pref {
-        Some("zh") => "zh",
-        Some("en") => "en",
-        _ => system_lang(),
+fn normalize_desktop_lang(tag: &str) -> Option<&'static str> {
+    let cleaned = tag
+        .trim()
+        .split(['.', '@'])
+        .next()?
+        .to_ascii_lowercase()
+        .replace('_', "-");
+    if cleaned.is_empty() {
+        return None;
     }
+    let mut parts = cleaned.split('-').filter(|part| !part.is_empty());
+    let base = parts.next()?;
+    match base {
+        "zh" => {
+            for sub in parts {
+                if sub.len() == 1 {
+                    break;
+                }
+                if matches!(sub, "hant" | "tw" | "hk" | "mo") {
+                    return Some("zh-Hant");
+                }
+                if matches!(sub, "hans" | "cn" | "sg") {
+                    return Some("zh");
+                }
+            }
+            Some("zh")
+        }
+        "en" => Some("en"),
+        "ja" => Some("ja"),
+        "ko" => Some("ko"),
+        "es" => Some("es"),
+        "de" => Some("de"),
+        "fr" => Some("fr"),
+        _ => None,
+    }
+}
+
+fn explicit_desktop_lang(pref: Option<&str>) -> Option<&'static str> {
+    pref.filter(|value| !value.trim().eq_ignore_ascii_case("system"))
+        .and_then(normalize_desktop_lang)
+}
+
+fn saved_desktop_lang(app: &AppHandle) -> Option<String> {
+    let root = std::env::var_os("VERRE_HOME")
+        .filter(|dir| !dir.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| app.path().home_dir().ok().map(|home| home.join(".verre")))?;
+    let bytes = std::fs::read(root.join("state.json")).ok()?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    value
+        .get("prefs")
+        .and_then(|prefs| prefs.get("local"))
+        .and_then(|local| local.get("language"))
+        .and_then(|lang| lang.as_str())
+        .map(str::to_owned)
+}
+
+fn resolve_desktop_lang(pref: Option<&str>) -> &'static str {
+    explicit_desktop_lang(pref).unwrap_or_else(system_lang)
 }
 
 fn system_lang() -> &'static str {
     #[cfg(target_os = "windows")]
     {
+        const MUI_LANGUAGE_NAME: u32 = 0x08;
         unsafe extern "system" {
+            fn GetUserPreferredUILanguages(
+                dw_flags: u32,
+                pul_num_languages: *mut u32,
+                pwsz_languages_buffer: *mut u16,
+                pcch_languages_buffer: *mut u32,
+            ) -> i32;
             fn GetUserDefaultLocaleName(lp_locale_name: *mut u16, cch_locale_name: i32) -> i32;
+        }
+        let mut num_languages = 0u32;
+        let mut cch_buffer = 0u32;
+        if unsafe {
+            GetUserPreferredUILanguages(
+                MUI_LANGUAGE_NAME,
+                &mut num_languages,
+                std::ptr::null_mut(),
+                &mut cch_buffer,
+            )
+        } != 0
+            && cch_buffer > 0
+        {
+            let mut buf = vec![0u16; cch_buffer as usize];
+            if unsafe {
+                GetUserPreferredUILanguages(
+                    MUI_LANGUAGE_NAME,
+                    &mut num_languages,
+                    buf.as_mut_ptr(),
+                    &mut cch_buffer,
+                )
+            } != 0
+            {
+                for entry in buf.split(|&ch| ch == 0) {
+                    if entry.is_empty() {
+                        continue;
+                    }
+                    let locale = String::from_utf16_lossy(entry);
+                    if let Some(matched) = normalize_desktop_lang(&locale) {
+                        return matched;
+                    }
+                }
+            }
         }
         let mut buf = [0u16; 85];
         let len = unsafe { GetUserDefaultLocaleName(buf.as_mut_ptr(), buf.len() as i32) };
         if len > 1 {
             let locale = String::from_utf16_lossy(&buf[..(len as usize - 1)]);
-            if locale.to_ascii_lowercase().starts_with("zh") {
-                return "zh";
+            if let Some(matched) = normalize_desktop_lang(&locale) {
+                return matched;
             }
         }
         "en"
@@ -485,11 +582,7 @@ fn system_lang() -> &'static str {
         for key in ["LC_ALL", "LC_MESSAGES", "LANG"] {
             if let Ok(value) = std::env::var(key) {
                 if !value.is_empty() {
-                    return if value.to_ascii_lowercase().starts_with("zh") {
-                        "zh"
-                    } else {
-                        "en"
-                    };
+                    return normalize_desktop_lang(&value).unwrap_or("en");
                 }
             }
         }
@@ -498,10 +591,15 @@ fn system_lang() -> &'static str {
 }
 
 fn tray_labels(lang: &str, tag: Option<&str>) -> (String, String) {
-    if lang == "zh" {
-        (instance_title("打开 Verre", tag), "退出".into())
-    } else {
-        (instance_title("Open Verre", tag), "Quit".into())
+    match lang {
+        "zh" => (instance_title("打开 Verre", tag), "退出".into()),
+        "zh-Hant" => (instance_title("開啟 Verre", tag), "結束".into()),
+        "ja" => (instance_title("Verre を開く", tag), "終了".into()),
+        "ko" => (instance_title("Verre 열기", tag), "종료".into()),
+        "es" => (instance_title("Abrir Verre", tag), "Salir".into()),
+        "de" => (instance_title("Verre öffnen", tag), "Beenden".into()),
+        "fr" => (instance_title("Ouvrir Verre", tag), "Quitter".into()),
+        _ => (instance_title("Open Verre", tag), "Quit".into()),
     }
 }
 
@@ -693,11 +791,57 @@ mod tests {
 
     #[test]
     fn tray_labels_and_badge_icon_match_language_and_counts() {
+        assert_eq!(normalize_desktop_lang("zh-TW"), Some("zh-Hant"));
+        assert_eq!(normalize_desktop_lang("zh_HK.UTF-8"), Some("zh-Hant"));
+        assert_eq!(normalize_desktop_lang("zh-Hant-TW"), Some("zh-Hant"));
+        assert_eq!(normalize_desktop_lang("zh-CN"), Some("zh"));
+        assert_eq!(normalize_desktop_lang("zh-x-hk"), Some("zh"));
+        assert_eq!(normalize_desktop_lang("zh-Hans-u-ca-chinese"), Some("zh"));
+        assert_eq!(normalize_desktop_lang("ja_JP.UTF-8"), Some("ja"));
+        assert_eq!(normalize_desktop_lang("ko-KR"), Some("ko"));
+        assert_eq!(normalize_desktop_lang("es-MX"), Some("es"));
+        assert_eq!(normalize_desktop_lang("de-AT"), Some("de"));
+        assert_eq!(normalize_desktop_lang("fr-CA"), Some("fr"));
+        assert_eq!(normalize_desktop_lang("pt-BR"), None);
+
         assert_eq!(resolve_desktop_lang(Some("zh")), "zh");
+        assert_eq!(resolve_desktop_lang(Some("zh-Hant")), "zh-Hant");
+        assert_eq!(resolve_desktop_lang(Some("zh-TW")), "zh-Hant");
+        assert_eq!(resolve_desktop_lang(Some("ja")), "ja");
+        assert_eq!(resolve_desktop_lang(Some("ko")), "ko");
+        assert_eq!(resolve_desktop_lang(Some("es")), "es");
+        assert_eq!(resolve_desktop_lang(Some("de")), "de");
+        assert_eq!(resolve_desktop_lang(Some("fr")), "fr");
         assert_eq!(resolve_desktop_lang(Some("en")), "en");
+        assert_eq!(resolve_desktop_lang(Some("system")), system_lang());
+
         assert_eq!(
             tray_labels("zh", Some("verre-dev")),
             ("打开 Verre (dev)".into(), "退出".into())
+        );
+        assert_eq!(
+            tray_labels("zh-Hant", None),
+            ("開啟 Verre".into(), "結束".into())
+        );
+        assert_eq!(
+            tray_labels("ja", None),
+            ("Verre を開く".into(), "終了".into())
+        );
+        assert_eq!(
+            tray_labels("ko", None),
+            ("Verre 열기".into(), "종료".into())
+        );
+        assert_eq!(
+            tray_labels("es", None),
+            ("Abrir Verre".into(), "Salir".into())
+        );
+        assert_eq!(
+            tray_labels("de", None),
+            ("Verre öffnen".into(), "Beenden".into())
+        );
+        assert_eq!(
+            tray_labels("fr", None),
+            ("Ouvrir Verre".into(), "Quitter".into())
         );
         assert_eq!(
             tray_labels("en", None),

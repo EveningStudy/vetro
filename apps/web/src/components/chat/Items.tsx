@@ -28,7 +28,7 @@ import {
 } from "lucide-react";
 import { memo, useLayoutEffect, useRef, useState } from "react";
 import type { ItemOf, Question, ToolKind } from "~/api/types";
-import { type Translate, useT } from "~/i18n";
+import { htmlLangTag, type Translate, useLang, useT } from "~/i18n";
 import { clockTime, formatDuration, formatTokens } from "~/lib/format";
 import { cn, copyText } from "~/lib/utils";
 import { actions, useStore } from "~/state/store";
@@ -55,10 +55,11 @@ const toolIcons: Record<ToolKind, typeof WrenchIcon> = {
 };
 
 function Timestamp({ ts }: { ts: number | null }) {
+  const lang = useLang();
   if (!ts) return null;
   return (
     <span className="hidden shrink-0 text-2xs tabular-nums text-muted-foreground/70 opacity-0 transition-opacity group-hover/timeline-row:opacity-100 sm:inline">
-      {clockTime(ts)}
+      {clockTime(ts, false, htmlLangTag(lang))}
     </span>
   );
 }
