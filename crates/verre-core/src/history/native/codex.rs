@@ -344,7 +344,8 @@ fn source_kind(source: &Value, origin: Option<&str>) -> ThreadSource {
         source.as_str(),
         origin.unwrap_or_default().to_ascii_lowercase().as_str(),
     ) {
-        (_, "verre") => ThreadSource::Verre,
+        // Threads started before the rename keep the old client name in Codex's store.
+        (_, "verre" | "vetro") => ThreadSource::Verre,
         (Some("exec"), _) | (_, "codex_exec") => ThreadSource::Exec,
         (
             _,
@@ -782,6 +783,16 @@ fn projected_item(raw: &Value, ts: Option<i64>, turn_id: Option<String>) -> Opti
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn threads_started_under_the_former_name_still_count_as_verre() {
+        for origin in ["verre", "Vetro"] {
+            assert_eq!(
+                source_kind(&json!("vscode"), Some(origin)),
+                ThreadSource::Verre
+            );
+        }
+    }
 
     #[test]
     fn imports_only_present_local_coding_catalog_rows() {

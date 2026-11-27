@@ -131,7 +131,8 @@ pub(crate) fn record(thread: &Value) -> Option<SessionRecord> {
         .unwrap_or_default()
         .to_ascii_lowercase();
     let source_kind = match (origin_key.as_str(), source.as_str()) {
-        ("verre", _) => ThreadSource::Verre,
+        // Threads started before the rename keep the old client name in Codex's store.
+        ("verre" | "vetro", _) => ThreadSource::Verre,
         ("codex desktop" | "codex_desktop" | "codex_app" | "codex app", _) => ThreadSource::Desktop,
         (_, Some("exec")) | ("codex_exec", _) => ThreadSource::Exec,
         (_, Some("cli")) | ("codex_cli_rs", _) => ThreadSource::Cli,

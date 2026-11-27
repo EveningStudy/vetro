@@ -519,6 +519,17 @@ fn native_subagent_source_survives_an_interactive_originator() {
     assert_eq!(record.origin.as_deref(), Some("codex_cli_rs"));
     assert!(record.internal);
 }
+
+#[test]
+fn threads_started_under_the_former_name_still_count_as_verre() {
+    for originator in ["verre", "Vetro"] {
+        let record = mapping::record(&json!({
+            "id": "thread", "originator": originator, "source": "vscode"
+        }))
+        .unwrap();
+        assert_eq!(record.source, verre_proto::ThreadSource::Verre);
+    }
+}
 impl App {
     async fn start(mut spawn: SpawnSpec) -> Result<Arc<Self>> {
         spawn.args.insert(0, "app-server".into());
