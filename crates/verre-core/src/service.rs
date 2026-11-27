@@ -673,7 +673,7 @@ impl Core {
             .read_state(|state| state.options.get(&key).cloned())
         {
             merge_independent(&mut cached);
-            verre_agent_api::normalize_option_danger(&mut cached.options);
+            normalize_agent_options(agent.id(), &mut cached.options);
             return Ok(cached);
         }
         // Two-tier lookup: fall back to any cached (agent, version, *, selected) snapshot from
@@ -707,7 +707,7 @@ impl Core {
             });
             if let Some(mut cached) = fallback {
                 merge_independent(&mut cached);
-                verre_agent_api::normalize_option_danger(&mut cached.options);
+                normalize_agent_options(agent.id(), &mut cached.options);
                 return Ok(cached);
             }
         }
@@ -732,7 +732,7 @@ impl Core {
             commands: options.commands,
             needs_session: false,
         };
-        verre_agent_api::normalize_option_danger(&mut result.options);
+        normalize_agent_options(agent.id(), &mut result.options);
         self.home
             .change_state(|state| state.options.insert(key, result.clone()))?;
         Ok(result)
@@ -784,7 +784,7 @@ impl Core {
                     }
                 }
             }
-            verre_agent_api::normalize_option_danger(&mut result.options);
+            normalize_agent_options(&summary.agent_id, &mut result.options);
             result
         })
     }
@@ -803,7 +803,7 @@ impl Core {
             cache_cwd.as_deref(),
             &BTreeMap::new(),
         )?;
-        verre_agent_api::normalize_option_danger(&mut options.options);
+        normalize_agent_options(agent_id, &mut options.options);
         self.home.change_state(|state| {
             state.options.insert(
                 key,
@@ -1317,6 +1317,16 @@ fn window_theme(prefs: &Value) -> WindowTheme {
     }
 }
 
+fn normalize_agent_options(agent_id: &str, options: &mut [verre_proto::ConfigOption]) {
+    #[cfg(feature = "acp")]
+    if agent_id == "antigravity" {
+        verre_agent_acp::ensure_antigravity_turbo_option(options);
+    }
+    #[cfg(not(feature = "acp"))]
+    let _ = agent_id;
+    verre_agent_api::normalize_option_danger(options);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1643,5 +1653,46 @@ mod tests {
         let event = events.recv().await.unwrap();
         assert!(matches!(&*event, ServerEvent::AgentsUpdated { agents }
             if agents.iter().all(|agent| agent.id != "custom")));
+    }
+
+    #[test]
+    fn normalize_agent_options_adds_antigravity_turbo_once() {
+        let make_mode = || verre_proto::ConfigOption {
+            id: "mode".into(),
+            name: "Mode".into(),
+            description: None,
+            category: verre_proto::ConfigCategory::Mode,
+            current_value: "auto".into(),
+            choices: ["default", "accept-edits", "auto", "plan"]
+                .into_iter()
+                .map(|value| verre_proto::ConfigChoice {
+                    value: value.into(),
+                    name: value.into(),
+                    description: None,
+                    group: None,
+                    danger: false,
+                })
+                .collect(),
+        };
+
+        let mut antigravity = vec![make_mode()];
+        normalize_agent_options("antigravity", &mut antigravity);
+        normalize_agent_options("antigravity", &mut antigravity);
+        let turbo_choices: Vec<_> = antigravity[0]
+            .choices
+            .iter()
+            .filter(|choice| choice.value == "turbo")
+            .collect();
+        assert_eq!(turbo_choices.len(), 1);
+        assert!(turbo_choices[0].danger);
+
+        for other in ["devin", "kiro"] {
+            let mut options = vec![make_mode()];
+            normalize_agent_options(other, &mut options);
+            assert!(options[0]
+                .choices
+                .iter()
+                .all(|choice| choice.value != "turbo"));
+        }
     }
 }

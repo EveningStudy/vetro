@@ -72,6 +72,7 @@ pub fn normalize_option_danger(options: &mut [ConfigOption]) {
                             "trust_all",
                             "allow-all",
                             "allow_all",
+                            "turbo",
                         ]
                         .into_iter()
                         .any(|term| text.contains(term))
@@ -107,7 +108,9 @@ fn normalizes_builtin_and_custom_agent_choices() {
         ("autopilot", "other", "choice-id", "Enabled", true),
         ("mode", "mode", "auto", "Auto", false),
         ("toolSafety", "other", "YOLO", "Advanced", true),
+        ("mode", "mode", "turbo", "Turbo", true),
         ("model", "model", "yolo", "YOLO", false),
+        ("model", "model", "gpt-4-turbo", "GPT-4 Turbo", false),
     ] {
         let mut option: ConfigOption = serde_json::from_value(json!({
             "id": id, "name": id, "category": category, "currentValue": value,

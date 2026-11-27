@@ -18,6 +18,7 @@ use verre_proto::{
     ConfigChoice, ConfigOption,
 };
 
+pub use mapping::ensure_antigravity_turbo_option;
 pub use verre_agent_api::process::SpawnSpec;
 
 mod devin_history;

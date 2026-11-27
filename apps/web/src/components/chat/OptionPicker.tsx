@@ -47,6 +47,7 @@ const DANGER_TERMS = [
   "skip_permissions",
   "trust-all",
   "allow-all",
+  "turbo",
 ];
 
 /** Mirrors the core's danger rules so a mode that relaxes safeguards is flagged even when an

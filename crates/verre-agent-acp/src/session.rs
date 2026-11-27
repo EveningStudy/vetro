@@ -17,8 +17,9 @@ use verre_agent_api::{
     WireLog,
 };
 use verre_proto::{
-    rpc::ErrorCode, ConfigCategory, ConfigOption, ContentBlock, ItemKind, NoticeLevel, PlanEntry,
-    PlanStatus, RequestResolution, SlashCommand, StopReason, ThreadStatus, ThreadUsage, TokenUsage,
+    rpc::ErrorCode, ConfigCategory, ConfigOption, ContentBlock, InteractionRequest, ItemKind,
+    NoticeLevel, PermissionOptionKind, PlanEntry, PlanStatus, RequestBody, RequestResolution,
+    SlashCommand, StopReason, ThreadStatus, ThreadUsage, TokenUsage,
 };
 
 use crate::{
@@ -54,6 +55,8 @@ struct State {
     counter: u64,
     replay_turn: u64,
     config: mapping::Config,
+    antigravity: bool,
+    turbo: bool,
     permission_preset: Option<ConfigOption>,
     commands: Vec<SlashCommand>,
     title: Option<String>,
@@ -120,6 +123,7 @@ impl AcpSession {
         } else {
             connection.log().session(&id)
         };
+        let antigravity = connection.agent_id == "antigravity";
         Arc::new(Self {
             connection,
             id,
@@ -135,6 +139,7 @@ impl AcpSession {
             state: Mutex::new(State {
                 sink,
                 replay: capture_replay.then(Replay::default),
+                antigravity,
                 instance: if capture_replay {
                     0
                 } else {
@@ -148,6 +153,7 @@ impl AcpSession {
     pub fn initialize(&self, value: &Value) {
         let mut state = self.state.lock().unwrap();
         if state.config.update(value) {
+            state.sync_turbo();
             state.emit_options();
         }
         if value["availableCommands"].is_array() {
@@ -341,12 +347,14 @@ impl AcpSession {
             Some("current_mode_update") => {
                 if let Some(mode) = value["currentModeId"].as_str() {
                     if state.config.set_mode(mode) {
+                        state.sync_turbo();
                         state.emit_options();
                     }
                 }
             }
             Some("config_option_update") => {
                 if state.config.update(value) {
+                    state.sync_turbo();
                     state.emit_options();
                 }
             }
@@ -401,6 +409,15 @@ impl AcpSession {
         if matches!(&request.body, verre_proto::RequestBody::Permission { options } if options.is_empty())
         {
             return Ok(Some(cancelled(method)));
+        }
+        if state.turbo && method == "session/request_permission" {
+            if let Some(option_id) = auto_approve_permission_option(&request) {
+                if let Ok(reply) =
+                    protocol.reply(&request.body, &RequestResolution::Selected { option_id })
+                {
+                    return Ok(Some(reply));
+                }
+            }
         }
         state.flush_user();
         state.end_message();
@@ -572,6 +589,28 @@ impl AcpSession {
         }
         Ok(())
     }
+
+    async fn approve_pending_permissions(&self) {
+        let pending: Vec<(String, String)> = {
+            let state = self.state.lock().unwrap();
+            state
+                .interactions
+                .iter()
+                .filter_map(|(id, pending)| {
+                    let ItemKind::Request(request) = &pending.draft.kind else {
+                        return None;
+                    };
+                    let option_id = auto_approve_permission_option(request)?;
+                    Some((id.clone(), option_id))
+                })
+                .collect()
+        };
+        for (id, option_id) in pending {
+            let _ = self
+                .respond_pending(&id, RequestResolution::Selected { option_id })
+                .await;
+        }
+    }
 }
 
 #[async_trait]
@@ -699,33 +738,118 @@ impl Session for AcpSession {
 
     async fn set_option(&self, id: &str, value: &str) -> Result<Vec<ConfigOption>> {
         let _outbound = self.outbound.lock().await;
-        let (method, mut params) = {
+        enum Action {
+            SwitchTurboOnAlreadyDefault,
+            SwitchTurboOffAlreadyNative,
+            Send {
+                method: &'static str,
+                params: Value,
+                wire_value: String,
+                next_turbo: Option<bool>,
+            },
+        }
+        let action = {
             let state = self.state.lock().unwrap();
             state.ensure_open()?;
-            state.config.request(id, value)?
-        };
-        params["sessionId"] = json!(self.id);
-        let session = Arc::downgrade(
-            &self
-                .connection
-                .session(&self.id)
-                .ok_or_else(|| agent_error(Error::Closed))?,
-        );
-        let id = id.to_owned();
-        let value = value.to_owned();
-        let reply = self
-            .connection
-            .call_ordered(method, params, move |reply| {
-                if let (Ok(result), Some(session)) = (reply, session.upgrade()) {
-                    let mut state = session.state.lock().unwrap();
-                    if state.config.update(result) || state.config.set_current(&id, &value) {
-                        state.emit_options();
+            let synthetic_turbo_mode = state.antigravity
+                && state.config.mode_option_id() == Some(id)
+                && !state
+                    .config
+                    .has_native_mode_value(mapping::ANTIGRAVITY_TURBO);
+            if synthetic_turbo_mode && value == mapping::ANTIGRAVITY_TURBO {
+                if !state
+                    .config
+                    .has_native_mode_value(mapping::ANTIGRAVITY_DEFAULT_MODE)
+                {
+                    return Err(AgentError::new(
+                        ErrorCode::BadRequest,
+                        "Unknown ACP session option",
+                    ));
+                }
+                if state.config.native_mode_value() == Some(mapping::ANTIGRAVITY_DEFAULT_MODE) {
+                    Action::SwitchTurboOnAlreadyDefault
+                } else {
+                    let (method, mut params) = state
+                        .config
+                        .request(id, mapping::ANTIGRAVITY_DEFAULT_MODE)?;
+                    params["sessionId"] = json!(self.id);
+                    Action::Send {
+                        method,
+                        params,
+                        wire_value: mapping::ANTIGRAVITY_DEFAULT_MODE.to_owned(),
+                        next_turbo: Some(true),
                     }
                 }
-            })
-            .await;
-        self.connection.observe_auth(method, &reply);
-        reply.map_err(agent_error)?;
+            } else if synthetic_turbo_mode
+                && value != mapping::ANTIGRAVITY_TURBO
+                && state.turbo
+                && state.config.native_mode_value() == Some(value)
+            {
+                Action::SwitchTurboOffAlreadyNative
+            } else {
+                let (method, mut params) = state.config.request(id, value)?;
+                params["sessionId"] = json!(self.id);
+                Action::Send {
+                    method,
+                    params,
+                    wire_value: value.to_owned(),
+                    next_turbo: synthetic_turbo_mode.then_some(false),
+                }
+            }
+        };
+        match action {
+            Action::SwitchTurboOnAlreadyDefault => {
+                {
+                    let mut state = self.state.lock().unwrap();
+                    state.ensure_open()?;
+                    state.turbo = true;
+                    state.emit_options();
+                }
+                self.approve_pending_permissions().await;
+            }
+            Action::SwitchTurboOffAlreadyNative => {
+                let mut state = self.state.lock().unwrap();
+                state.ensure_open()?;
+                state.turbo = false;
+                state.emit_options();
+            }
+            Action::Send {
+                method,
+                params,
+                wire_value,
+                next_turbo,
+            } => {
+                let session = Arc::downgrade(
+                    &self
+                        .connection
+                        .session(&self.id)
+                        .ok_or_else(|| agent_error(Error::Closed))?,
+                );
+                let id = id.to_owned();
+                let reply = self
+                    .connection
+                    .call_ordered(method, params, move |reply| {
+                        if let (Ok(result), Some(session)) = (reply, session.upgrade()) {
+                            let mut state = session.state.lock().unwrap();
+                            let updated = state.config.update(result)
+                                || state.config.set_current(&id, &wire_value);
+                            if let Some(turbo) = next_turbo {
+                                state.turbo = turbo;
+                            }
+                            state.sync_turbo();
+                            if updated || next_turbo.is_some() {
+                                state.emit_options();
+                            }
+                        }
+                    })
+                    .await;
+                self.connection.observe_auth(method, &reply);
+                reply.map_err(agent_error)?;
+                if next_turbo == Some(true) {
+                    self.approve_pending_permissions().await;
+                }
+            }
+        }
         Ok(self.options().options)
     }
 
@@ -781,9 +905,57 @@ fn steering_id(reply: &Value) -> Option<&str> {
         .flatten()
 }
 
+fn auto_approve_permission_option(request: &InteractionRequest) -> Option<String> {
+    if request
+        .call_id
+        .as_deref()
+        .is_some_and(|id| id.starts_with("interaction_"))
+    {
+        return None;
+    }
+    let RequestBody::Permission { options } = &request.body else {
+        return None;
+    };
+    options
+        .iter()
+        .find(|option| option.kind == PermissionOptionKind::AllowOnce)
+        .or_else(|| {
+            options
+                .iter()
+                .find(|option| option.kind == PermissionOptionKind::AllowAlways)
+        })
+        .map(|option| option.id.clone())
+}
+
 impl State {
+    fn sync_turbo(&mut self) {
+        if self.turbo
+            && (self
+                .config
+                .has_native_mode_value(mapping::ANTIGRAVITY_TURBO)
+                || self.config.native_mode_value() != Some(mapping::ANTIGRAVITY_DEFAULT_MODE))
+        {
+            self.turbo = false;
+        }
+    }
+
     fn options(&self) -> Vec<ConfigOption> {
         let mut options = self.config.options();
+        if self.antigravity {
+            mapping::ensure_antigravity_turbo_option(&mut options);
+            if self.turbo
+                && !self
+                    .config
+                    .has_native_mode_value(mapping::ANTIGRAVITY_TURBO)
+            {
+                if let Some(mode) = options
+                    .iter_mut()
+                    .find(|option| option.category == ConfigCategory::Mode)
+                {
+                    mode.current_value = mapping::ANTIGRAVITY_TURBO.into();
+                }
+            }
+        }
         options.extend(self.permission_preset.clone());
         options
     }

@@ -260,6 +260,9 @@ fn file_path(uri: &str) -> String {
     path.into_owned()
 }
 
+pub const ANTIGRAVITY_TURBO: &str = "turbo";
+pub const ANTIGRAVITY_DEFAULT_MODE: &str = "default";
+
 #[derive(Default)]
 pub struct Config {
     modern: Vec<ConfigOption>,
@@ -378,6 +381,59 @@ impl Config {
             .map_or_else(|| "mode".into(), |option| option.id.clone());
         self.set_current(&id, value)
     }
+
+    pub fn mode_option(&self) -> Option<&ConfigOption> {
+        self.modern
+            .iter()
+            .find(|option| option.category == ConfigCategory::Mode)
+            .or_else(|| {
+                self.legacy
+                    .values()
+                    .find(|option| option.category == ConfigCategory::Mode)
+            })
+    }
+
+    pub fn mode_option_id(&self) -> Option<&str> {
+        self.mode_option().map(|option| option.id.as_str())
+    }
+
+    pub fn native_mode_value(&self) -> Option<&str> {
+        self.mode_option()
+            .map(|option| option.current_value.as_str())
+    }
+
+    pub fn has_native_mode_value(&self, value: &str) -> bool {
+        self.mode_option()
+            .is_some_and(|option| option.choices.iter().any(|choice| choice.value == value))
+    }
+}
+
+pub fn ensure_antigravity_turbo_option(options: &mut [ConfigOption]) {
+    let Some(mode) = options
+        .iter_mut()
+        .find(|option| option.category == ConfigCategory::Mode)
+    else {
+        return;
+    };
+    let has_default = mode
+        .choices
+        .iter()
+        .any(|choice| choice.value == ANTIGRAVITY_DEFAULT_MODE);
+    let has_turbo = mode
+        .choices
+        .iter()
+        .any(|choice| choice.value == ANTIGRAVITY_TURBO);
+    if has_default && !has_turbo {
+        mode.choices.push(ConfigChoice {
+            value: ANTIGRAVITY_TURBO.into(),
+            name: "Turbo".into(),
+            description: Some(
+                "Auto-approve permission requests in default mode; questions still prompt.".into(),
+            ),
+            group: None,
+            danger: true,
+        });
+    }
 }
 
 fn is_danger_choice(option_id: &str, category: ConfigCategory, value: &str) -> bool {
@@ -396,6 +452,7 @@ fn is_danger_choice(option_id: &str, category: ConfigCategory, value: &str) -> b
         || val.contains("full-access")
         || val.contains("full_access")
         || val.contains("danger")
+        || val.contains("turbo")
         || (id_lower.contains("approval") && val == "never")
 }
 

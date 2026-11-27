@@ -123,6 +123,33 @@ fn fake(scenario: &str) {
     let mut expected_session = Value::Null;
     let mut permission = false;
     let mut dynamic = ("auto".to_owned(), "medium".to_owned());
+    let mut agy_model = "cheap".to_owned();
+    let mut agy_mode = "auto".to_owned();
+    let agy_config = |model: &str, mode: &str| {
+        json!([
+            {
+                "id": "model",
+                "name": "Model",
+                "category": "model",
+                "type": "select",
+                "currentValue": model,
+                "options": [{"value": "cheap", "name": "Cheap"}, {"value": "other", "name": "Other"}]
+            },
+            {
+                "id": "mode",
+                "name": "Mode",
+                "category": "mode",
+                "type": "select",
+                "currentValue": mode,
+                "options": [
+                    {"value": "default", "name": "Default"},
+                    {"value": "accept-edits", "name": "Accept edits"},
+                    {"value": "auto", "name": "Auto"},
+                    {"value": "plan", "name": "Plan"}
+                ]
+            }
+        ])
+    };
     let dynamic_config = |model: &str, effort: &str| {
         let mut opts = vec![json!({
             "id": "model",
@@ -227,6 +254,10 @@ fn fake(scenario: &str) {
                 if scenario == "dynamic-options" {
                     dynamic = ("auto".to_owned(), "medium".to_owned());
                     json!({"sessionId":session,"configOptions":dynamic_config(&dynamic.0, &dynamic.1)})
+                } else if scenario == "antigravity-turbo" {
+                    agy_model = "cheap".to_owned();
+                    agy_mode = "auto".to_owned();
+                    json!({"sessionId":session,"configOptions":agy_config(&agy_model, &agy_mode)})
                 } else {
                     json!({"sessionId":session,"configOptions":config})
                 }
@@ -326,6 +357,18 @@ fn fake(scenario: &str) {
                 }
                 json!({"configOptions":config})
             }
+            Some("session/set_config_option") if scenario == "antigravity-turbo" => {
+                match params["configId"].as_str() {
+                    Some("model") => agy_model = params["value"].as_str().unwrap().to_owned(),
+                    Some("mode") => {
+                        let value = params["value"].as_str().unwrap();
+                        assert_ne!(value, "turbo");
+                        agy_mode = value.to_owned();
+                    }
+                    other => panic!("unexpected configId: {other:?}"),
+                }
+                json!({"configOptions": agy_config(&agy_model, &agy_mode)})
+            }
             Some("session/set_config_option") if scenario == "dynamic-options" => {
                 match params["configId"].as_str() {
                     Some("model") => {
@@ -414,6 +457,81 @@ fn fake(scenario: &str) {
                     "hi" if scenario == "dynamic-options" => {
                         chunk(session, "agent_message_chunk", "ok");
                     }
+                    "turbo-auto" if scenario == "antigravity-turbo" => {
+                        assert_eq!(agy_mode, "default");
+                        prompt_id = id.clone();
+                        output(json!({
+                            "id": "agy-perm-1",
+                            "method": "session/request_permission",
+                            "params": {
+                                "sessionId": session,
+                                "toolCall": {"toolCallId": "call_1", "title": "Run command"},
+                                "options": [
+                                    {"optionId": "allow", "kind": "allow_once", "name": "Allow"},
+                                    {"optionId": "deny", "kind": "reject_once", "name": "Deny"}
+                                ]
+                            }
+                        }));
+                        continue;
+                    }
+                    "turbo-question" if scenario == "antigravity-turbo" => {
+                        prompt_id = id.clone();
+                        output(json!({
+                            "id": "agy-question-1",
+                            "method": "session/request_permission",
+                            "params": {
+                                "sessionId": session,
+                                "toolCall": {"toolCallId": "interaction_1", "title": "Pick one"},
+                                "options": [
+                                    {"optionId": "a", "kind": "allow_once", "name": "Option A"},
+                                    {"optionId": "b", "kind": "allow_once", "name": "Option B"}
+                                ]
+                            }
+                        }));
+                        continue;
+                    }
+                    "turbo-elicitation" if scenario == "antigravity-turbo" => {
+                        prompt_id = id.clone();
+                        output(json!({
+                            "id": "agy-elicit-1",
+                            "method": "elicitation/create",
+                            "params": {
+                                "sessionId": session,
+                                "toolCallId": "call_elicit",
+                                "mode": "form",
+                                "message": "Confirm",
+                                "requestedSchema": {
+                                    "type": "object",
+                                    "required": ["confirm"],
+                                    "properties": {"confirm": {"type": "boolean"}}
+                                }
+                            }
+                        }));
+                        continue;
+                    }
+                    "switch-to-plan" if scenario == "antigravity-turbo" => {
+                        agy_mode = "plan".to_owned();
+                        update(
+                            session,
+                            json!({"sessionUpdate": "current_mode_update", "currentModeId": "plan"}),
+                        );
+                    }
+                    "pending-perm" if scenario == "antigravity-turbo" => {
+                        prompt_id = id.clone();
+                        output(json!({
+                            "id": "agy-perm-2",
+                            "method": "session/request_permission",
+                            "params": {
+                                "sessionId": session,
+                                "toolCall": {"toolCallId": "call_2", "title": "Run second command"},
+                                "options": [
+                                    {"optionId": "allow", "kind": "allow_once", "name": "Allow"},
+                                    {"optionId": "deny", "kind": "reject_once", "name": "Deny"}
+                                ]
+                            }
+                        }));
+                        continue;
+                    }
                     "interleaved" if scenario == "devin" => interleaved_devin_chunks(session),
                     other => panic!("unexpected or modified user input {other:?}"),
                 }
@@ -478,6 +596,30 @@ fn fake(scenario: &str) {
                 update(
                     &expected_session,
                     json!({"sessionUpdate":"tool_call_update","toolCallId":"tool-1","status":"completed","rawOutput":{"ok":true}}),
+                );
+                output(json!({"id":prompt_id,"result":{"stopReason":"end_turn"}}));
+                continue;
+            }
+            None if id == "agy-perm-1" || id == "agy-perm-2" => {
+                assert_eq!(
+                    message["result"],
+                    json!({"outcome":{"outcome":"selected","optionId":"allow"}})
+                );
+                output(json!({"id":prompt_id,"result":{"stopReason":"end_turn"}}));
+                continue;
+            }
+            None if id == "agy-question-1" => {
+                assert_eq!(
+                    message["result"],
+                    json!({"outcome":{"outcome":"selected","optionId":"b"}})
+                );
+                output(json!({"id":prompt_id,"result":{"stopReason":"end_turn"}}));
+                continue;
+            }
+            None if id == "agy-elicit-1" => {
+                assert_eq!(
+                    message["result"],
+                    json!({"action":"accept","content":{"confirm":true}})
                 );
                 output(json!({"id":prompt_id,"result":{"stopReason":"end_turn"}}));
                 continue;
@@ -934,11 +1076,186 @@ async fn kiro_native_options_and_steering() {
     agent.shutdown().await;
 }
 
+async fn antigravity_turbo_mode() {
+    let mut spec = SpawnSpec::new(env::current_exe().unwrap());
+    spec.args = vec!["--agent".into(), "antigravity-turbo".into()];
+    let agent = AcpAgent::new("antigravity", "Antigravity", spec);
+    let prepared = agent.prepare_options(None, &BTreeMap::new()).await.unwrap();
+    let mode = prepared
+        .options
+        .iter()
+        .find(|option| option.id == "mode")
+        .unwrap();
+    assert_eq!(mode.current_value, "auto");
+    let turbo = mode
+        .choices
+        .iter()
+        .find(|choice| choice.value == "turbo")
+        .unwrap();
+    assert!(turbo.danger);
+
+    let (sink, mut events) = mpsc::unbounded_channel();
+    let session = agent
+        .start(
+            StartRequest {
+                cwd: env::current_dir().unwrap(),
+                content: vec![text("turbo-auto")],
+                options: BTreeMap::from([("mode".into(), "turbo".into())]),
+            },
+            sink,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .current_options()
+            .unwrap()
+            .iter()
+            .find(|option| option.id == "mode")
+            .unwrap()
+            .current_value,
+        "turbo"
+    );
+    let (reason, seen) = until_end(&mut events).await;
+    assert_eq!(reason, StopReason::EndTurn);
+    assert!(!seen
+        .iter()
+        .any(|event| matches!(event, SessionEvent::Item(item) if matches!(item.kind, ItemKind::Request(_)))));
+
+    session.send(vec![text("turbo-question")]).await.unwrap();
+    let mut answered = false;
+    loop {
+        if let SessionEvent::Item(item) = events.recv().await.unwrap() {
+            match item.kind {
+                ItemKind::Request(request) if request.resolution.is_none() => {
+                    assert!(matches!(request.body, RequestBody::Permission { .. }));
+                    session
+                        .respond(
+                            &request.request_id,
+                            RequestResolution::Selected {
+                                option_id: "b".into(),
+                            },
+                        )
+                        .await
+                        .unwrap();
+                    answered = true;
+                }
+                ItemKind::TurnEnd { .. } => break,
+                _ => {}
+            }
+        }
+    }
+    assert!(answered);
+
+    session.send(vec![text("turbo-elicitation")]).await.unwrap();
+    let mut elicited = false;
+    loop {
+        if let SessionEvent::Item(item) = events.recv().await.unwrap() {
+            match item.kind {
+                ItemKind::Request(request) if request.resolution.is_none() => {
+                    assert!(matches!(request.body, RequestBody::Questions { .. }));
+                    session
+                        .respond(
+                            &request.request_id,
+                            RequestResolution::Answered {
+                                answers: BTreeMap::from([("confirm".into(), vec!["true".into()])]),
+                            },
+                        )
+                        .await
+                        .unwrap();
+                    elicited = true;
+                }
+                ItemKind::TurnEnd { .. } => break,
+                _ => {}
+            }
+        }
+    }
+    assert!(elicited);
+
+    let after_model = session.set_option("model", "other").await.unwrap();
+    assert_eq!(
+        after_model
+            .iter()
+            .find(|option| option.id == "model")
+            .unwrap()
+            .current_value,
+        "other"
+    );
+    assert_eq!(
+        after_model
+            .iter()
+            .find(|option| option.id == "mode")
+            .unwrap()
+            .current_value,
+        "turbo"
+    );
+
+    session.send(vec![text("switch-to-plan")]).await.unwrap();
+    let (reason, _) = until_end(&mut events).await;
+    assert_eq!(reason, StopReason::EndTurn);
+    assert_eq!(
+        session
+            .current_options()
+            .unwrap()
+            .iter()
+            .find(|option| option.id == "mode")
+            .unwrap()
+            .current_value,
+        "plan"
+    );
+
+    let after_turbo = session.set_option("mode", "turbo").await.unwrap();
+    assert_eq!(
+        after_turbo
+            .iter()
+            .find(|option| option.id == "mode")
+            .unwrap()
+            .current_value,
+        "turbo"
+    );
+    let after_default = session.set_option("mode", "default").await.unwrap();
+    assert_eq!(
+        after_default
+            .iter()
+            .find(|option| option.id == "mode")
+            .unwrap()
+            .current_value,
+        "default"
+    );
+
+    session.send(vec![text("pending-perm")]).await.unwrap();
+    let mut pending = false;
+    while let Some(event) = events.recv().await {
+        if let SessionEvent::Item(item) = event {
+            if matches!(item.kind, ItemKind::Request(ref request) if request.resolution.is_none()) {
+                pending = true;
+                break;
+            }
+        }
+    }
+    assert!(pending);
+    let after_re_turbo = session.set_option("mode", "turbo").await.unwrap();
+    assert_eq!(
+        after_re_turbo
+            .iter()
+            .find(|option| option.id == "mode")
+            .unwrap()
+            .current_value,
+        "turbo"
+    );
+    let (reason, _) = until_end(&mut events).await;
+    assert_eq!(reason, StopReason::EndTurn);
+
+    session.detach().await;
+    agent.shutdown().await;
+}
+
 async fn suites() {
     devin_history_replay().await;
     acp_replay_boundaries().await;
     kiro_native_history_metadata().await;
     kiro_native_options_and_steering().await;
+    antigravity_turbo_mode().await;
     let silent = agent("cancel-timeout");
     let (sink, mut events) = mpsc::unbounded_channel();
     let session = silent
