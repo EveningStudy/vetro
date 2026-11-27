@@ -156,11 +156,19 @@ impl Connection {
         let Some(id) = params["sessionId"].as_str() else {
             return;
         };
-        let mut dispatch = self.dispatch.lock().unwrap();
-        if let Some(session) = dispatch.sessions.get(id).and_then(Weak::upgrade) {
+        let session = {
+            let mut dispatch = self.dispatch.lock().unwrap();
+            if let Some(session) = dispatch.sessions.get(id).and_then(Weak::upgrade) {
+                Some(session)
+            } else {
+                if let Some(updates) = &mut dispatch.early_updates {
+                    updates.push_back((id.to_owned(), params["update"].clone()));
+                }
+                None
+            }
+        };
+        if let Some(session) = session {
             session.update(&params["update"]);
-        } else if let Some(updates) = &mut dispatch.early_updates {
-            updates.push_back((id.to_owned(), params["update"].clone()));
         }
     }
 

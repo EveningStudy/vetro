@@ -533,6 +533,47 @@ fn fake(scenario: &str) {
                         continue;
                     }
                     "interleaved" if scenario == "devin" => interleaved_devin_chunks(session),
+                    "wake-after-end" if scenario == "reactive-wakeup" => {
+                        chunk(session, "agent_message_chunk", "Started background job.");
+                        update(
+                            session,
+                            json!({"sessionUpdate":"usage_update","used":4,"size":128}),
+                        );
+                        let delayed_session = session.clone();
+                        std::thread::spawn(move || {
+                            std::thread::sleep(Duration::from_millis(80));
+                            update(
+                                &delayed_session,
+                                json!({
+                                    "sessionUpdate": "tool_call",
+                                    "toolCallId": "bg-1",
+                                    "title": "Background check",
+                                    "status": "in_progress"
+                                }),
+                            );
+                            std::thread::sleep(Duration::from_millis(40));
+                            update(
+                                &delayed_session,
+                                json!({
+                                    "sessionUpdate": "tool_call_update",
+                                    "toolCallId": "bg-1",
+                                    "status": "completed"
+                                }),
+                            );
+                            chunk(
+                                &delayed_session,
+                                "agent_message_chunk",
+                                "1. First item\n2. Second item",
+                            );
+                            update(
+                                &delayed_session,
+                                json!({"sessionUpdate":"usage_update","used":12,"size":128}),
+                            );
+                        });
+                    }
+                    "follow-up" if scenario == "reactive-wakeup" => {
+                        chunk(session, "agent_message_chunk", "Follow-up ok.");
+                    }
                     other => panic!("unexpected or modified user input {other:?}"),
                 }
                 json!({"stopReason":"end_turn"})
@@ -1635,5 +1676,34 @@ async fn suites() {
     assert!(saw_high);
     ordered.detach().await;
     dynamic.shutdown().await;
+
+    let mut spec = SpawnSpec::new(env::current_exe().unwrap());
+    spec.args = vec!["--agent".into(), "reactive-wakeup".into()];
+    let reactive = AcpAgent::new("antigravity", "Antigravity", spec);
+    let (sink, mut events) = mpsc::unbounded_channel();
+    let wake_session = reactive
+        .start(request(vec![text("wake-after-end")]), sink)
+        .await
+        .unwrap();
+    let (reason, _) = until_end(&mut events).await;
+    assert_eq!(reason, StopReason::EndTurn);
+
+    let (second_reason, seen) = until_end(&mut events).await;
+    assert_eq!(second_reason, StopReason::EndTurn);
+    assert!(seen.iter().any(|event| matches!(
+        event,
+        SessionEvent::Item(item)
+            if matches!(&item.kind, ItemKind::AgentMessage { text, streaming: false } if text == "1. First item\n2. Second item")
+    )));
+    let follow = wake_session.send(vec![text("follow-up")]).await;
+    assert!(
+        follow.is_ok(),
+        "unexpected error after reactive wakeup: {follow:?}"
+    );
+    let (third_reason, _) = until_end(&mut events).await;
+    assert_eq!(third_reason, StopReason::EndTurn);
+    wake_session.detach().await;
+    reactive.shutdown().await;
+
     println!("ACP fake-agent suites passed");
 }

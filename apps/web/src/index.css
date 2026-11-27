@@ -401,7 +401,9 @@ html.dark[data-paper-grain="true"]::after {
     opacity: 0;
   }
 }
-.chat-markdown.streaming > :last-child::after {
+.chat-markdown.streaming > :last-child:not(ol):not(ul)::after,
+.chat-markdown.streaming > :is(ol, ul):last-child li:last-child:not(:has(> :is(p, ol, ul):last-child))::after,
+.chat-markdown.streaming > :is(ol, ul):last-child li:last-child > p:last-child::after {
   content: "";
   display: inline-block;
   width: 0.45em;

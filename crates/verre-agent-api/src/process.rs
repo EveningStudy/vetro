@@ -332,3 +332,35 @@ async fn read_stderr(reader: impl AsyncRead + Unpin, log: Arc<WireLog>, tail: Ar
     };
     tokio::join!(read, collect);
 }
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn spawns_windows_cmd_wrapper_inside_job_object() {
+        let base = std::env::temp_dir().join(format!("verre-cmd-test-{}", std::process::id()));
+        let nested = base.join("dir with spaces");
+        std::fs::create_dir_all(&nested).unwrap();
+        let script = nested.join("agent-shim.cmd");
+        std::fs::write(&script, "@echo off\r\necho raw:%*\r\n").unwrap();
+
+        let mut spec = SpawnSpec::new(&script);
+        spec.args = vec!["--acp".into(), "a&b".into(), "c|d".into()];
+        let (process, mut stdout) = Process::spawn(spec, Arc::new(WireLog::default())).unwrap();
+        let line = stdout.recv().await.unwrap().unwrap();
+        let status = process.wait().await.unwrap();
+        assert_eq!(line.trim(), r#"raw:"--acp" "a&b" "c|d""#);
+        assert!(status.success());
+
+        for unsafe_arg in [r#"bad"quote"#, "%COMSPEC%", "!PATH!", "bad\nline"] {
+            let mut rejected = SpawnSpec::new(&script);
+            rejected.args = vec![unsafe_arg.into()];
+            assert!(
+                Process::spawn(rejected, Arc::new(WireLog::default())).is_err(),
+                "expected {unsafe_arg:?} to be rejected for batch scripts"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+}

@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::PathBuf,
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -19,7 +19,7 @@ use verre_agent_api::{
 use verre_proto::{
     rpc::ErrorCode, ConfigCategory, ConfigOption, ContentBlock, InteractionRequest, ItemKind,
     NoticeLevel, PermissionOptionKind, PlanEntry, PlanStatus, RequestBody, RequestResolution,
-    SlashCommand, StopReason, ThreadStatus, ThreadUsage, TokenUsage,
+    SlashCommand, StopReason, ThreadStatus, ThreadUsage, TokenUsage, ToolStatus,
 };
 
 use crate::{
@@ -29,6 +29,26 @@ use crate::{
 };
 
 static NEXT_LIVE_INSTANCE: AtomicU64 = AtomicU64::new(1);
+const AUTONOMOUS_REPLY_CLOSED_DELAY: Duration = Duration::from_millis(2500);
+const AUTONOMOUS_MESSAGE_QUIET_DELAY: Duration = Duration::from_secs(15);
+const AUTONOMOUS_TOOL_QUIET_DELAY: Duration = Duration::from_secs(60);
+
+#[derive(Clone, Copy)]
+struct SettleTimings {
+    reply_closed: Duration,
+    message_quiet: Duration,
+    tool_quiet: Duration,
+}
+
+impl Default for SettleTimings {
+    fn default() -> Self {
+        Self {
+            reply_closed: AUTONOMOUS_REPLY_CLOSED_DELAY,
+            message_quiet: AUTONOMOUS_MESSAGE_QUIET_DELAY,
+            tool_quiet: AUTONOMOUS_TOOL_QUIET_DELAY,
+        }
+    }
+}
 
 pub(crate) struct AcpSession {
     pub connection: Arc<Connection>,
@@ -65,6 +85,7 @@ struct State {
     tools: HashMap<String, ItemDraft>,
     interactions: HashMap<String, PendingInteraction>,
     turn: Option<Turn>,
+    timings: SettleTimings,
     usage: ThreadUsage,
 }
 
@@ -72,6 +93,10 @@ struct Turn {
     id: String,
     since: Instant,
     pending: usize,
+    autonomous: bool,
+    reply_closed: bool,
+    settle_gen: u64,
+    active_tools: HashSet<String>,
     user: Option<Vec<ContentBlock>>,
     user_item_id: Option<String>,
     usage: Option<TokenUsage>,
@@ -296,101 +321,126 @@ impl AcpSession {
         }
     }
 
-    pub fn update(&self, value: &Value) {
-        let mut state = self.state.lock().unwrap();
-        if state.closed {
-            return;
-        }
-        let update = value["sessionUpdate"].as_str();
-        match update {
-            Some("user_message_chunk") => {
-                state.message(Role::User, value, &self.connection.agent_id)
+    pub fn update(self: &Arc<Self>, value: &Value) {
+        let schedule = {
+            let mut state = self.state.lock().unwrap();
+            if state.closed {
+                return;
             }
-            Some("agent_message_chunk") => {
-                state.message(Role::Agent, value, &self.connection.agent_id)
+            let update = value["sessionUpdate"].as_str();
+            if state.turn.is_none()
+                && state.replay.is_none()
+                && matches!(
+                    update,
+                    Some(
+                        "agent_message_chunk"
+                            | "agent_thought_chunk"
+                            | "tool_call"
+                            | "tool_call_update"
+                            | "plan"
+                    )
+                )
+                && !(update == Some("tool_call_update")
+                    && state.is_late_terminal_tool_update(value))
+            {
+                state.start_autonomous_turn();
             }
-            Some("agent_thought_chunk") => {
-                state.message(Role::Thought, value, &self.connection.agent_id)
-            }
-            Some("tool_call" | "tool_call_update") => {
-                state.flush_user();
-                state.tool(
-                    value,
-                    update == Some("tool_call"),
-                    &self.connection.agent_id,
-                );
-            }
-            Some("plan") => {
-                state.flush_user();
-                state.end_message();
-                let entries = array(&value["entries"])
-                    .filter_map(|entry| {
-                        Some(PlanEntry {
-                            content: string(entry, "content")?,
-                            status: match entry["status"].as_str()? {
-                                "pending" => PlanStatus::Pending,
-                                "in_progress" => PlanStatus::InProgress,
-                                "completed" => PlanStatus::Completed,
-                                _ => return None,
-                            },
+            match update {
+                Some("user_message_chunk") => {
+                    state.message(Role::User, value, &self.connection.agent_id)
+                }
+                Some("agent_message_chunk") => {
+                    state.message(Role::Agent, value, &self.connection.agent_id)
+                }
+                Some("agent_thought_chunk") => {
+                    state.message(Role::Thought, value, &self.connection.agent_id)
+                }
+                Some("tool_call" | "tool_call_update") => {
+                    state.flush_user();
+                    state.tool(
+                        value,
+                        update == Some("tool_call"),
+                        &self.connection.agent_id,
+                    );
+                }
+                Some("plan") => {
+                    state.flush_user();
+                    state.end_message();
+                    let entries = array(&value["entries"])
+                        .filter_map(|entry| {
+                            Some(PlanEntry {
+                                content: string(entry, "content")?,
+                                status: match entry["status"].as_str()? {
+                                    "pending" => PlanStatus::Pending,
+                                    "in_progress" => PlanStatus::InProgress,
+                                    "completed" => PlanStatus::Completed,
+                                    _ => return None,
+                                },
+                            })
                         })
-                    })
-                    .collect();
-                let id = match &state.turn {
-                    Some(turn) => format!("plan:{}", turn.id),
-                    None => format!("plan:{}:{}", state.instance, state.replay_turn),
-                };
-                let draft = state.draft(id, ItemKind::Plan { entries });
-                state.upsert(draft);
-            }
-            Some("available_commands_update") => state.set_commands(&value["availableCommands"]),
-            Some("current_mode_update") => {
-                if let Some(mode) = value["currentModeId"].as_str() {
-                    if state.config.set_mode(mode) {
+                        .collect();
+                    let id = match &state.turn {
+                        Some(turn) => format!("plan:{}", turn.id),
+                        None => format!("plan:{}:{}", state.instance, state.replay_turn),
+                    };
+                    let draft = state.draft(id, ItemKind::Plan { entries });
+                    state.upsert(draft);
+                }
+                Some("available_commands_update") => {
+                    state.set_commands(&value["availableCommands"])
+                }
+                Some("current_mode_update") => {
+                    if let Some(mode) = value["currentModeId"].as_str() {
+                        if state.config.set_mode(mode) {
+                            state.sync_turbo();
+                            state.emit_options();
+                        }
+                    }
+                }
+                Some("config_option_update") => {
+                    if state.config.update(value) {
                         state.sync_turbo();
                         state.emit_options();
                     }
                 }
-            }
-            Some("config_option_update") => {
-                if state.config.update(value) {
-                    state.sync_turbo();
-                    state.emit_options();
-                }
-            }
-            Some("session_info_update") => {
-                if self.kiro_steering {
-                    let update = &value["_meta"]["kiro"];
-                    match update["kind"].as_str() {
-                        Some("steering_injected") => {
-                            if let Some(id) = update["messageId"].as_str() {
-                                state.steering_receipt(id, true);
+                Some("session_info_update") => {
+                    if self.kiro_steering {
+                        let update = &value["_meta"]["kiro"];
+                        match update["kind"].as_str() {
+                            Some("steering_injected") => {
+                                if let Some(id) = update["messageId"].as_str() {
+                                    state.steering_receipt(id, true);
+                                }
                             }
-                        }
-                        Some("steering_cleared") => {
-                            for id in array(&update["messageIds"]).filter_map(Value::as_str) {
-                                state.steering_receipt(id, false);
+                            Some("steering_cleared") => {
+                                for id in array(&update["messageIds"]).filter_map(Value::as_str) {
+                                    state.steering_receipt(id, false);
+                                }
                             }
+                            _ => {}
                         }
-                        _ => {}
+                    }
+                    if let Some(title) = string(value, "title") {
+                        state.emit(SessionEvent::Title(title.clone()));
+                        state.title = Some(title);
                     }
                 }
-                if let Some(title) = string(value, "title") {
-                    state.emit(SessionEvent::Title(title.clone()));
-                    state.title = Some(title);
-                }
+                Some("usage_update") => state.update_usage(value),
+                _ => verre_agent_api::drift::report(
+                    &self.connection.agent_id,
+                    "ACP sessionUpdate",
+                    update,
+                ),
             }
-            Some("usage_update") => state.update_usage(value),
-            _ => verre_agent_api::drift::report(
-                &self.connection.agent_id,
-                "ACP sessionUpdate",
-                update,
-            ),
+            state.schedule_autonomous_settle(update)
+        };
+        if let Some((turn_id, gen, delay)) = schedule {
+            Self::spawn_autonomous_settle(self, turn_id, gen, delay);
         }
     }
 
     pub fn interaction(
-        &self,
+        self: &Arc<Self>,
         wire_id: Id,
         method: &str,
         params: &Value,
@@ -419,6 +469,13 @@ impl AcpSession {
                 }
             }
         }
+        if state.turn.is_none() && state.replay.is_none() {
+            state.start_autonomous_turn();
+        }
+        if let Some(turn) = state.turn.as_mut().filter(|turn| turn.autonomous) {
+            turn.reply_closed = false;
+            turn.settle_gen += 1;
+        }
         state.flush_user();
         state.end_message();
         let draft = state.draft(id.clone(), ItemKind::Request(request));
@@ -433,6 +490,34 @@ impl AcpSession {
         );
         state.emit(SessionEvent::Status(ThreadStatus::AwaitingInput));
         Ok(None)
+    }
+
+    fn spawn_autonomous_settle(
+        session: &Arc<Self>,
+        turn_id: String,
+        expected_gen: u64,
+        delay: Duration,
+    ) {
+        let weak = Arc::downgrade(session);
+        tokio::spawn(async move {
+            tokio::time::sleep(delay).await;
+            let Some(session) = weak.upgrade() else {
+                return;
+            };
+            let mut state = session.state.lock().unwrap();
+            if !state.closed
+                && state.interactions.is_empty()
+                && state.turn.as_ref().is_some_and(|turn| {
+                    turn.id == turn_id
+                        && turn.autonomous
+                        && turn.pending == 0
+                        && turn.settle_gen == expected_gen
+                        && turn.active_tools.is_empty()
+                })
+            {
+                Self::finish_prompt(&mut state, StopReason::EndTurn);
+            }
+        });
     }
 
     fn has_turn(&self, turn_id: &str) -> bool {
@@ -561,7 +646,11 @@ impl AcpSession {
         }
     }
 
-    async fn respond_pending(&self, id: &str, resolution: RequestResolution) -> Result<()> {
+    async fn respond_pending(
+        self: &Arc<Self>,
+        id: &str,
+        resolution: RequestResolution,
+    ) -> Result<()> {
         let _response = self.responses.lock().await;
         let (wire_id, reply) = {
             let state = self.state.lock().unwrap();
@@ -579,20 +668,33 @@ impl AcpSession {
             )
         };
         self.connection.respond(wire_id, Ok(reply)).await?;
-        let mut state = self.state.lock().unwrap();
-        if let Some(mut pending) = state.interactions.remove(id) {
-            if let ItemKind::Request(request) = &mut pending.draft.kind {
-                request.resolution = Some(resolution);
+        let schedule = {
+            let mut state = self.state.lock().unwrap();
+            if let Some(mut pending) = state.interactions.remove(id) {
+                if let ItemKind::Request(request) = &mut pending.draft.kind {
+                    request.resolution = Some(resolution);
+                }
+                state.upsert(pending.draft.clone());
+                state.status_after_input(false);
             }
-            state.upsert(pending.draft.clone());
-            state.status_after_input(false);
+            if state.interactions.is_empty() {
+                state.schedule_autonomous_settle(Some("tool_call_update"))
+            } else {
+                None
+            }
+        };
+        if let Some((turn_id, gen, delay)) = schedule {
+            Self::spawn_autonomous_settle(self, turn_id, gen, delay);
         }
         Ok(())
     }
 
     async fn approve_pending_permissions(&self) {
+        let Some(session) = self.connection.session(&self.id) else {
+            return;
+        };
         let pending: Vec<(String, String)> = {
-            let state = self.state.lock().unwrap();
+            let state = session.state.lock().unwrap();
             state
                 .interactions
                 .iter()
@@ -606,7 +708,7 @@ impl AcpSession {
                 .collect()
         };
         for (id, option_id) in pending {
-            let _ = self
+            let _ = session
                 .respond_pending(&id, RequestResolution::Selected { option_id })
                 .await;
         }
@@ -653,6 +755,13 @@ impl Session for AcpSession {
         let (turn_id, steering) = {
             let mut state = self.state.lock().unwrap();
             state.ensure_open()?;
+            if state.interactions.is_empty()
+                && state.turn.as_ref().is_some_and(|turn| {
+                    turn.autonomous && turn.pending == 0 && turn.active_tools.is_empty()
+                })
+            {
+                Self::finish_prompt(&mut state, StopReason::EndTurn);
+            }
             let session_running = state.turn.is_some();
             if let Some(turn) = state.turn.as_mut().filter(|_| self.kiro_steering) {
                 let [ContentBlock::Text { text }] = content.as_slice() else {
@@ -687,6 +796,10 @@ impl Session for AcpSession {
                         id: state.id("turn"),
                         since: Instant::now(),
                         pending: 1,
+                        autonomous: false,
+                        reply_closed: false,
+                        settle_gen: 0,
+                        active_tools: HashSet::new(),
                         user: Some(content),
                         user_item_id: None,
                         usage: None,
@@ -712,15 +825,31 @@ impl Session for AcpSession {
 
     async fn interrupt(&self) -> Result<()> {
         let _outbound = self.outbound.lock().await;
-        let turn_id = {
+        let (turn_id, autonomous) = {
             let state = self.state.lock().unwrap();
             state.ensure_open()?;
-            state.turn.as_ref().map(|turn| turn.id.clone())
+            (
+                state.turn.as_ref().map(|turn| turn.id.clone()),
+                state
+                    .turn
+                    .as_ref()
+                    .is_some_and(|turn| turn.autonomous && turn.pending == 0),
+            )
         };
         self.connection
             .notify("session/cancel", json!({ "sessionId": self.id }))
             .await?;
-        if let (Some(turn_id), Some(session)) = (turn_id, self.connection.session(&self.id)) {
+        if autonomous {
+            if let Some(ref expected) = turn_id {
+                let mut state = self.state.lock().unwrap();
+                if state.turn.as_ref().is_some_and(|turn| {
+                    turn.id == *expected && turn.autonomous && turn.pending == 0
+                }) {
+                    Self::finish_prompt(&mut state, StopReason::Cancelled);
+                }
+            }
+        } else if let (Some(turn_id), Some(session)) = (turn_id, self.connection.session(&self.id))
+        {
             let session = Arc::downgrade(&session);
             tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_secs(30)).await;
@@ -928,6 +1057,96 @@ fn auto_approve_permission_option(request: &InteractionRequest) -> Option<String
 }
 
 impl State {
+    fn is_late_terminal_tool_update(&self, value: &Value) -> bool {
+        let Some(call_id) = string(value, "toolCallId") else {
+            return false;
+        };
+        let Some(draft) = self.tools.get(&format!("tool:{call_id}")) else {
+            return false;
+        };
+        let prev_active = matches!(
+            &draft.kind,
+            ItemKind::ToolCall(tool)
+                if matches!(tool.status, ToolStatus::Pending | ToolStatus::InProgress)
+        );
+        match value["status"].as_str() {
+            Some("completed" | "failed" | "cancelled") => true,
+            None => !prev_active,
+            _ => false,
+        }
+    }
+
+    fn start_autonomous_turn(&mut self) {
+        if self.turn.is_some() || self.replay.is_some() || self.closed {
+            return;
+        }
+        self.turn = Some(Turn {
+            id: self.id("turn"),
+            since: Instant::now(),
+            pending: 0,
+            autonomous: true,
+            reply_closed: false,
+            settle_gen: 0,
+            active_tools: HashSet::new(),
+            user: None,
+            user_item_id: None,
+            usage: None,
+            steering: Steering::default(),
+        });
+        self.status_after_input(false);
+    }
+
+    fn schedule_autonomous_settle(
+        &mut self,
+        update: Option<&str>,
+    ) -> Option<(String, u64, Duration)> {
+        let delay_pair = {
+            let open_message = self.open.is_some();
+            let interactions_empty = self.interactions.is_empty();
+            let timings = self.timings;
+            let turn = self
+                .turn
+                .as_mut()
+                .filter(|turn| turn.autonomous && turn.pending == 0)?;
+            match update {
+                Some(
+                    "agent_message_chunk"
+                    | "agent_thought_chunk"
+                    | "tool_call"
+                    | "tool_call_update"
+                    | "plan",
+                ) => {
+                    turn.reply_closed = false;
+                    turn.settle_gen = turn.settle_gen.wrapping_add(1);
+                }
+                Some("usage_update") => {
+                    turn.reply_closed = true;
+                    turn.settle_gen = turn.settle_gen.wrapping_add(1);
+                }
+                _ => return None,
+            }
+            if !interactions_empty {
+                return None;
+            }
+            let delay = if turn.reply_closed {
+                if turn.active_tools.is_empty() {
+                    timings.reply_closed
+                } else {
+                    // Bound waiting if usage_update arrived without a final tool completion event.
+                    timings.tool_quiet
+                }
+            } else if !turn.active_tools.is_empty() {
+                return None;
+            } else if open_message {
+                timings.message_quiet
+            } else {
+                timings.tool_quiet
+            };
+            Some((turn.id.clone(), turn.settle_gen, delay))
+        };
+        delay_pair
+    }
+
     fn sync_turbo(&mut self) {
         if self.turbo
             && (self
@@ -1237,6 +1456,13 @@ impl State {
         draft.ts = draft.ts.or_else(|| mapping::update_timestamp(value));
         if let ItemKind::ToolCall(tool) = &mut draft.kind {
             mapping::patch_tool(tool, value);
+            if let Some(turn) = &mut self.turn {
+                if matches!(tool.status, ToolStatus::Pending | ToolStatus::InProgress) {
+                    turn.active_tools.insert(id.clone());
+                } else {
+                    turn.active_tools.remove(&id);
+                }
+            }
         }
         self.tools.insert(id, draft.clone());
         self.upsert(draft);
@@ -1303,4 +1529,156 @@ fn replay_turns(items: Vec<ItemDraft>) -> Vec<ItemDraft> {
         replay.push(item);
     }
     replay
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::sync::mpsc;
+
+    use super::*;
+
+    fn autonomous_state() -> (State, mpsc::UnboundedReceiver<SessionEvent>) {
+        let (sink, events) = mpsc::unbounded_channel();
+        let state = State {
+            sink: Some(sink),
+            instance: 1,
+            timings: SettleTimings {
+                reply_closed: Duration::from_millis(20),
+                message_quiet: Duration::from_millis(60),
+                tool_quiet: Duration::from_millis(100),
+            },
+            ..State::default()
+        };
+        (state, events)
+    }
+
+    #[test]
+    fn autonomous_settle_tracks_tools_and_usage_updates() {
+        let (mut state, mut events) = autonomous_state();
+        state.update_usage(&json!({ "used": 10, "size": 100 }));
+        assert!(state.turn.is_none());
+        assert!(matches!(events.try_recv().unwrap(), SessionEvent::Usage(_)));
+
+        state.start_autonomous_turn();
+        assert!(matches!(
+            events.try_recv().unwrap(),
+            SessionEvent::Status(ThreadStatus::Running)
+        ));
+
+        state.tool(
+            &json!({ "toolCallId": "c1", "title": "Search", "status": "in_progress" }),
+            true,
+            "antigravity",
+        );
+        assert_eq!(state.schedule_autonomous_settle(Some("tool_call")), None);
+
+        state.tool(
+            &json!({ "toolCallId": "c1", "status": "completed" }),
+            false,
+            "antigravity",
+        );
+        let first = state
+            .schedule_autonomous_settle(Some("tool_call_update"))
+            .unwrap();
+        assert_eq!(first.2, Duration::from_millis(100));
+
+        state.message(
+            Role::Agent,
+            &json!({ "content": { "type": "text", "text": "Done." } }),
+            "antigravity",
+        );
+        let second = state
+            .schedule_autonomous_settle(Some("agent_message_chunk"))
+            .unwrap();
+        assert_eq!(second.2, Duration::from_millis(60));
+        assert!(second.1 > first.1);
+
+        state.update_usage(&json!({ "used": 20, "size": 100 }));
+        let third = state
+            .schedule_autonomous_settle(Some("usage_update"))
+            .unwrap();
+        assert_eq!(third.2, Duration::from_millis(20));
+
+        // Mid-continuation tool after usage_update cancels reply_closed fast-settle.
+        state.tool(
+            &json!({ "toolCallId": "c2", "title": "Next", "status": "pending" }),
+            true,
+            "antigravity",
+        );
+        assert_eq!(state.schedule_autonomous_settle(Some("tool_call")), None);
+        assert!(!state.turn.as_ref().unwrap().reply_closed);
+
+        state.tool(
+            &json!({ "toolCallId": "c2", "status": "completed" }),
+            false,
+            "antigravity",
+        );
+        state.message(
+            Role::Agent,
+            &json!({ "content": { "type": "text", "text": "Final." } }),
+            "antigravity",
+        );
+        state.update_usage(&json!({ "used": 30, "size": 100 }));
+        let fourth = state
+            .schedule_autonomous_settle(Some("usage_update"))
+            .unwrap();
+        assert!(fourth.1 > third.1);
+
+        AcpSession::finish_prompt(&mut state, StopReason::EndTurn);
+        assert!(state.turn.is_none());
+        let drained: Vec<_> = std::iter::from_fn(|| events.try_recv().ok()).collect();
+        assert!(drained.iter().any(|event| matches!(
+            event,
+            SessionEvent::Item(item) if matches!(&item.kind, ItemKind::AgentMessage { text, streaming: false } if text == "Final.")
+        )));
+        assert!(drained.iter().any(|event| matches!(
+            event,
+            SessionEvent::Item(item) if matches!(&item.kind, ItemKind::TurnEnd { stop_reason: StopReason::EndTurn, .. })
+        )));
+        assert!(matches!(
+            drained.last(),
+            Some(SessionEvent::Status(ThreadStatus::Idle))
+        ));
+    }
+
+    #[test]
+    fn replay_mode_never_starts_autonomous_turn() {
+        let (mut state, _events) = autonomous_state();
+        state.replay = Some(Replay::default());
+        state.start_autonomous_turn();
+        assert!(state.turn.is_none());
+    }
+
+    #[test]
+    fn late_terminal_tool_update_and_dangling_usage_settle_safely() {
+        let (mut state, _events) = autonomous_state();
+        state.start_autonomous_turn();
+        state.tool(
+            &json!({ "toolCallId": "done", "title": "Read", "status": "completed" }),
+            true,
+            "antigravity",
+        );
+        AcpSession::finish_prompt(&mut state, StopReason::EndTurn);
+        assert!(state.turn.is_none());
+        assert!(state.is_late_terminal_tool_update(&json!({
+            "toolCallId": "done",
+            "status": "completed"
+        })));
+        assert!(!state.is_late_terminal_tool_update(&json!({
+            "toolCallId": "new-tool",
+            "status": "completed"
+        })));
+
+        state.start_autonomous_turn();
+        state.tool(
+            &json!({ "toolCallId": "dangling", "title": "Run", "status": "in_progress" }),
+            true,
+            "antigravity",
+        );
+        assert_eq!(state.schedule_autonomous_settle(Some("tool_call")), None);
+        let fallback = state
+            .schedule_autonomous_settle(Some("usage_update"))
+            .unwrap();
+        assert_eq!(fallback.2, Duration::from_millis(100));
+    }
 }

@@ -52,10 +52,15 @@ export function VoiceButton({
   const [phase, setPhase] = useState<"idle" | "starting" | "recording" | "transcribing">("idle");
   const [elapsed, setElapsed] = useState(0);
   const [level, setLevel] = useState(0);
+  const [inFlight, setInFlight] = useState(0);
   const [setupOpen, setSetupOpen] = useState(false);
   const recorderRef = useRef<RecordingSession | null>(null);
   const requestRef = useRef<AbortController | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const sessionIdRef = useRef(0);
+  const queueRef = useRef<Promise<void>>(Promise.resolve());
+  const insertedAnyRef = useRef(false);
+  const hadErrorRef = useRef(false);
 
   const stopTimer = useCallback(() => {
     if (timerRef.current) {
@@ -65,6 +70,7 @@ export function VoiceButton({
   }, []);
 
   const releaseRecording = useCallback(() => {
+    sessionIdRef.current += 1;
     requestRef.current?.abort();
     requestRef.current = null;
     stopTimer();
@@ -77,41 +83,91 @@ export function VoiceButton({
     setPhase("idle");
     setElapsed(0);
     setLevel(0);
+    setInFlight(0);
   }, [releaseRecording]);
+
+  const enqueueSegment = useCallback(
+    (sessionId: number, base64: string) => {
+      setInFlight((count) => count + 1);
+      const task = queueRef.current.then(async () => {
+        if (sessionIdRef.current !== sessionId) return;
+        try {
+          const result = await client().request("voice.transcribe", { audioBase64: base64 });
+          if (sessionIdRef.current !== sessionId) return;
+          const text = result.text.trim();
+          if (text) {
+            insertedAnyRef.current = true;
+            onTranscript(text);
+          }
+        } catch (error) {
+          if (sessionIdRef.current !== sessionId) return;
+          hadErrorRef.current = true;
+          toast.error(errorMessage(error));
+        } finally {
+          if (sessionIdRef.current === sessionId) {
+            setInFlight((count) => Math.max(0, count - 1));
+          }
+        }
+      });
+      queueRef.current = task;
+      return task;
+    },
+    [onTranscript],
+  );
 
   const stopAndTranscribe = useCallback(async () => {
     const active = recorderRef.current;
     if (!active) return;
+    const sessionId = sessionIdRef.current;
     recorderRef.current = null;
     stopTimer();
     setPhase("transcribing");
     setLevel(0);
     try {
       const { base64, durationMs } = await active.stop();
-      if (durationMs < 250) {
-        setPhase("idle");
-        return;
+      if (durationMs >= 250 && base64) {
+        enqueueSegment(sessionId, base64);
       }
-      const result = await client().request("voice.transcribe", { audioBase64: base64 });
-      const text = result.text.trim();
-      if (text) onTranscript(text);
-      else toast.info(t("voice.empty"));
+      await queueRef.current;
+      if (sessionIdRef.current === sessionId && !insertedAnyRef.current && !hadErrorRef.current) {
+        toast.info(t("voice.empty"));
+      }
     } catch (error) {
-      toast.error(errorMessage(error));
+      if (sessionIdRef.current === sessionId) {
+        toast.error(errorMessage(error));
+      }
     } finally {
-      setPhase("idle");
-      setElapsed(0);
+      if (sessionIdRef.current === sessionId) {
+        setPhase("idle");
+        setElapsed(0);
+        setInFlight(0);
+      }
     }
-  }, [onTranscript, stopTimer, t]);
+  }, [enqueueSegment, stopTimer, t]);
 
   const begin = useCallback(async () => {
     if (disabled || phase !== "idle" || requestRef.current) return;
+    const sessionId = sessionIdRef.current + 1;
+    sessionIdRef.current = sessionId;
+    insertedAnyRef.current = false;
+    hadErrorRef.current = false;
+    queueRef.current = Promise.resolve();
+    setInFlight(0);
+
+    if (voice?.mode === "local") {
+      void client().request("voice.warmup", {}).catch(() => undefined);
+    }
+
     const request = new AbortController();
     requestRef.current = request;
     setPhase("starting");
     try {
-      const session = await startRecording(request.signal, setLevel);
-      if (request.signal.aborted) {
+      const session = await startRecording(request.signal, setLevel, (segment) => {
+        if (segment.base64 && segment.durationMs >= 250) {
+          enqueueSegment(sessionId, segment.base64);
+        }
+      });
+      if (request.signal.aborted || sessionIdRef.current !== sessionId) {
         session.cancel();
         return;
       }
@@ -123,14 +179,14 @@ export function VoiceButton({
         setElapsed(Math.floor((Date.now() - started) / 1000));
       }, 250);
     } catch (error) {
-      if (!request.signal.aborted) {
+      if (!request.signal.aborted && sessionIdRef.current === sessionId) {
         setPhase("idle");
         toast.error(error instanceof Error ? error.message : t("voice.micDenied"));
       }
     } finally {
       if (requestRef.current === request) requestRef.current = null;
     }
-  }, [disabled, phase, t]);
+  }, [disabled, enqueueSegment, phase, t, voice?.mode]);
 
   useEffect(() => releaseRecording, [releaseRecording]);
 
@@ -159,6 +215,7 @@ export function VoiceButton({
           style={{ transform: `scale(${0.85 + level * 0.55})` }}
         />
         <span className="min-w-7 text-center">{formatClock(elapsed)}</span>
+        {inFlight > 0 ? <Spinner className="size-3 text-destructive-foreground/75" /> : null}
         <Tip label={t("voice.finish")}>
           <button
             type="button"

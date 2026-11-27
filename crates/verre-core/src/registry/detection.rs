@@ -1,25 +1,55 @@
 use std::{env, path::PathBuf};
 use verre_agent_api::detection::{search_directories, usable};
 
-fn binary_name(command: &str) -> String {
+fn binary_candidates(command: &str) -> Vec<String> {
     if cfg!(windows) {
         let lower = command.to_ascii_lowercase();
         if lower.ends_with(".exe") || lower.ends_with(".cmd") || lower.ends_with(".bat") {
-            command.to_owned()
+            vec![command.to_owned()]
         } else {
-            format!("{command}.exe")
+            vec![
+                format!("{command}.exe"),
+                format!("{command}.cmd"),
+                format!("{command}.bat"),
+            ]
         }
     } else {
-        command.to_owned()
+        vec![command.to_owned()]
     }
 }
 
+fn binary_name(command: &str) -> String {
+    binary_candidates(command)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| command.to_owned())
+}
+
 fn on_path(command: &str) -> Option<PathBuf> {
-    let name = binary_name(command);
-    let dirs = search_directories().into_iter();
+    #[cfg(windows)]
+    let mut dirs = search_directories();
+    #[cfg(not(windows))]
+    let dirs = search_directories();
+    #[cfg(windows)]
+    if let Some(appdata) = env::var_os("APPDATA") {
+        dirs.push(PathBuf::from(appdata).join("npm"));
+    }
     #[cfg(all(feature = "acp", windows))]
-    let dirs = dirs.chain(windows_registry_path_dirs());
-    dirs.map(|dir| dir.join(&name)).find(|file| usable(file))
+    dirs.extend(windows_registry_path_dirs());
+    find_in_dirs(command, &dirs)
+}
+
+fn find_in_dirs(command: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
+    let names = binary_candidates(command);
+    for dir in dirs {
+        for name in &names {
+            let candidate = dir.join(name);
+            if usable(&candidate) {
+                return Some(candidate);
+            }
+        }
+    }
+    None
 }
 
 #[cfg(all(feature = "acp", windows))]
@@ -152,7 +182,25 @@ pub(super) fn acp(command: &str) -> Option<PathBuf> {
             };
             on_path(command).or(installed)
         }
+        "cursor-agent" => on_path(command).or_else(cursor_install),
         _ => on_path(command),
+    }
+}
+
+#[cfg(feature = "acp")]
+fn cursor_install() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        let root = PathBuf::from(env::var_os("LOCALAPPDATA")?).join("cursor-agent");
+        ["cursor-agent.exe", "cursor-agent.cmd"]
+            .into_iter()
+            .map(|name| root.join(name))
+            .find(|path| usable(path))
+    }
+    #[cfg(not(windows))]
+    {
+        let path = env::home_dir()?.join(".local/bin/cursor-agent");
+        usable(&path).then_some(path)
     }
 }
 
@@ -228,4 +276,23 @@ fn devin_install_locations() -> Vec<PathBuf> {
         }
     }
     roots
+}
+
+#[cfg(all(test, windows))]
+#[test]
+fn windows_detection_finds_cmd_and_prefers_exe() {
+    let dir = tempfile::tempdir().unwrap();
+    let cmd = dir.path().join("gemini.cmd");
+    std::fs::write(&cmd, "@echo off\r\n").unwrap();
+    assert_eq!(
+        find_in_dirs("gemini", &[dir.path().to_path_buf()]),
+        Some(cmd)
+    );
+
+    let exe = dir.path().join("gemini.exe");
+    std::fs::write(&exe, b"mz").unwrap();
+    assert_eq!(
+        find_in_dirs("gemini", &[dir.path().to_path_buf()]),
+        Some(exe)
+    );
 }

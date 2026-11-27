@@ -1,5 +1,6 @@
 use std::{
     cmp::Ordering,
+    env,
     ffi::{OsStr, OsString},
     fs::File,
     future::Future,
@@ -10,6 +11,7 @@ use std::{
         io::{AsRawHandle, FromRawHandle, OwnedHandle},
         process::ExitStatusExt,
     },
+    path::Path,
     process::ExitStatus,
     ptr::{null, null_mut},
     sync::OnceLock,
@@ -86,7 +88,15 @@ pub(super) fn spawn(
         .as_ref()
         .map_err(|code| io::Error::from_raw_os_error(*code))?;
     let job = create_job()?;
-    let mut command = command_line(spec.program.as_os_str(), &spec.args)?;
+    let (application, mut command) = if is_batch_script(spec.program.as_ref()) {
+        let comspec = resolve_comspec();
+        (
+            Some(terminated(&comspec)?),
+            batch_command_line(&comspec, spec.program.as_os_str(), &spec.args)?,
+        )
+    } else {
+        (None, command_line(spec.program.as_os_str(), &spec.args)?)
+    };
     let cwd = spec
         .cwd
         .map(|path| terminated(path.as_os_str()))
@@ -120,7 +130,7 @@ pub(super) fn spawn(
     let mut info = PROCESS_INFORMATION::default();
     checked(unsafe {
         CreateProcessW(
-            null(),
+            application.as_ref().map_or(null(), |app| app.as_ptr()),
             command.as_mut_ptr(),
             null(),
             null(),
@@ -238,6 +248,112 @@ fn terminated(value: &OsStr) -> io::Result<Vec<u16>> {
     let mut value = wide(value)?;
     value.push(0);
     Ok(value)
+}
+
+fn is_batch_script(path: &Path) -> bool {
+    path.extension()
+        .and_then(OsStr::to_str)
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("bat"))
+}
+
+fn resolve_comspec() -> OsString {
+    env::var_os("ComSpec")
+        .filter(|value| {
+            !value.is_empty() && Path::new(value).is_absolute() && Path::new(value).is_file()
+        })
+        .unwrap_or_else(|| OsString::from(r"C:\Windows\System32\cmd.exe"))
+}
+
+fn batch_command_line(comspec: &OsStr, program: &OsStr, args: &[OsString]) -> io::Result<Vec<u16>> {
+    let mut inner = Vec::new();
+    push_batch_quoted(&mut inner, program, false)?;
+    for arg in args {
+        inner.push(b' ' as u16);
+        push_batch_quoted(&mut inner, arg, true)?;
+    }
+
+    let mut command = Vec::new();
+    push_crt_quoted(&mut command, comspec, false)?;
+    for unit in wide(OsStr::new(" /D /V:OFF /S /C "))? {
+        command.push(unit);
+    }
+    command.push(b'"' as u16);
+    command.extend(inner);
+    command.push(b'"' as u16);
+    command.push(0);
+    Ok(command)
+}
+
+// `cmd.exe /S /C` still interprets `"`, `%`, and `!` even inside double quotes,
+// so reject metacharacters that could break out of quoting or expand env vars.
+fn push_batch_quoted(out: &mut Vec<u16>, value: &OsStr, allow_empty: bool) -> io::Result<()> {
+    const QUOTE: u16 = b'"' as u16;
+    const SLASH: u16 = b'\\' as u16;
+    const PERCENT: u16 = b'%' as u16;
+    const BANG: u16 = b'!' as u16;
+    let units = wide(value)?;
+    if (!allow_empty && units.is_empty())
+        || units.contains(&QUOTE)
+        || units.contains(&PERCENT)
+        || units.contains(&BANG)
+        || units.contains(&(b'\r' as u16))
+        || units.contains(&(b'\n' as u16))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid batch command argument",
+        ));
+    }
+    let trailing_slashes = units
+        .iter()
+        .rev()
+        .take_while(|&&unit| unit == SLASH)
+        .count();
+    out.push(QUOTE);
+    out.extend(units);
+    out.extend(std::iter::repeat_n(SLASH, trailing_slashes));
+    out.push(QUOTE);
+    Ok(())
+}
+
+fn push_crt_quoted(out: &mut Vec<u16>, value: &OsStr, allow_empty: bool) -> io::Result<()> {
+    const QUOTE: u16 = b'"' as u16;
+    const SLASH: u16 = b'\\' as u16;
+    let units = wide(value)?;
+    if (!allow_empty && units.is_empty())
+        || units.contains(&(b'\r' as u16))
+        || units.contains(&(b'\n' as u16))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid command argument",
+        ));
+    }
+    if !allow_empty && units.contains(&QUOTE) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid executable path",
+        ));
+    }
+    out.push(QUOTE);
+    let mut slashes = 0;
+    for unit in units {
+        if unit == SLASH {
+            slashes += 1;
+        } else {
+            let count = if unit == QUOTE {
+                slashes * 2 + 1
+            } else {
+                slashes
+            };
+            out.extend(std::iter::repeat_n(SLASH, count));
+            out.push(unit);
+            slashes = 0;
+        }
+    }
+    out.extend(std::iter::repeat_n(SLASH, slashes * 2));
+    out.push(QUOTE);
+    Ok(())
 }
 
 fn command_line(program: &OsStr, args: &[OsString]) -> io::Result<Vec<u16>> {

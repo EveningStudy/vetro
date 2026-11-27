@@ -539,7 +539,10 @@ function AddProjectButton() {
           setOpen(false);
           actions
             .addProject(path)
-            .then((project) => actions.toggleProject(project.path, true))
+            .then((project) => {
+              actions.toggleProject(project.path, true);
+              actions.navigate({ view: "new", projectPath: project.path, agentId: null });
+            })
             .catch((error: unknown) => toast.error(errorMessage(error)));
         }}
       />

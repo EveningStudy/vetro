@@ -52,12 +52,146 @@ function KiroMark(props: IconProps) {
   );
 }
 
+function GeminiMark({ className, ...props }: IconProps) {
+  return (
+    <svg {...props} viewBox="0 0 24 24" className={cn("fill-[#4285f4] dark:fill-[#669df6]", className)}>
+      <path d="M12 2c.7 5.2 4.8 9.3 10 10-5.2.7-9.3 4.8-10 10-.7-5.2-4.8-9.3-10-10 5.2-.7 9.3-4.8 10-10Z" />
+    </svg>
+  );
+}
+
+function OpenCodeMark({ className, ...props }: IconProps) {
+  return (
+    <svg {...props} viewBox="0 0 24 24" className={cn("fill-none stroke-current", className)} strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="4" y="4" width="16" height="16" rx="4" />
+      <path d="M9.5 9.5 7 12l2.5 2.5M14.5 9.5 17 12l-2.5 2.5" />
+    </svg>
+  );
+}
+
+function CursorMark({ className, ...props }: IconProps) {
+  return (
+    <svg {...props} viewBox="0 0 24 24" className={cn("fill-current", className)}>
+      <path d="M5 3.8 19.2 10.6l-6.1 2.1-2.2 6.1Z" />
+    </svg>
+  );
+}
+
+function CopilotMark({ className, ...props }: IconProps) {
+  return (
+    <svg {...props} viewBox="0 0 24 24" className={cn("fill-none stroke-current", className)} strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4.5 11.5C4.5 7.9 7.8 5 12 5s7.5 2.9 7.5 6.5V16a2.5 2.5 0 0 1-2.5 2.5H7A2.5 2.5 0 0 1 4.5 16Z" />
+      <circle cx="9.5" cy="12" r="1.1" className="fill-current stroke-none" />
+      <circle cx="14.5" cy="12" r="1.1" className="fill-current stroke-none" />
+    </svg>
+  );
+}
+
+function GooseMark({ className, ...props }: IconProps) {
+  return (
+    <svg {...props} viewBox="0 0 24 24" className={cn("fill-none stroke-current", className)} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M6 18c0-3.5 2.8-6 6-6h2.2a2.8 2.8 0 0 0 2.6-1.8l1.2-3.4a2 2 0 0 0-3.5-1.8L11 9.5" />
+      <path d="M17.5 6.5h2.2" />
+    </svg>
+  );
+}
+
+function ClineMark({ className, ...props }: IconProps) {
+  return (
+    <svg {...props} viewBox="0 0 24 24" className={cn("fill-none stroke-current", className)} strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M17.5 7.5a6.8 6.8 0 1 0 0 9" />
+      <path d="m11 12 4.5-3M11 12l4.5 3" />
+    </svg>
+  );
+}
+
+function KimiMark({ className, ...props }: IconProps) {
+  return (
+    <svg {...props} viewBox="0 0 24 24" className={cn("fill-none stroke-current", className)} strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M7 5v14M16.5 5 9 12l7.5 7" />
+    </svg>
+  );
+}
+
+function QwenMark({ className, ...props }: IconProps) {
+  return (
+    <svg {...props} viewBox="0 0 24 24" className={cn("fill-none stroke-[#6d5dfc] dark:stroke-[#8b7eff]", className)} strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round">
+      <polygon points="12,3.5 19.5,7.8 19.5,16.2 12,20.5 4.5,16.2 4.5,7.8" />
+      <path d="m13.5 14 4 3.5" />
+    </svg>
+  );
+}
+
+function DroidMark({ className, ...props }: IconProps) {
+  return (
+    <svg {...props} viewBox="0 0 24 24" className={cn("fill-none stroke-current", className)} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="5" y="7" width="14" height="11" rx="3" />
+      <path d="M9 4.5v2.5M15 4.5v2.5M9.5 12h.01M14.5 12h.01" />
+    </svg>
+  );
+}
+
+function AmpMark({ className, ...props }: IconProps) {
+  return (
+    <svg {...props} viewBox="0 0 24 24" className={cn("fill-none stroke-[#ea580c] dark:stroke-[#fb923c]", className)} strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M13 3 6.5 13h5l-1 8L17.5 11h-5Z" />
+    </svg>
+  );
+}
+
+function AuggieMark({ className, ...props }: IconProps) {
+  return (
+    <svg {...props} viewBox="0 0 24 24" className={cn("fill-none stroke-current", className)} strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M5.5 18.5 12 4.5l6.5 14M8.2 13.5h7.6" />
+    </svg>
+  );
+}
+
+function VibeMark({ className, ...props }: IconProps) {
+  return (
+    <svg {...props} viewBox="0 0 24 24" className={cn("fill-none stroke-[#f59e0b] dark:stroke-[#fbbf24]", className)} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="m5 6 7 12L19 6" />
+    </svg>
+  );
+}
+
+function KiloMark({ className, ...props }: IconProps) {
+  return (
+    <svg {...props} viewBox="0 0 24 24" className={cn("fill-none stroke-current", className)} strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M6 6v12M13 6l-5 6 5 6M15.5 12h3.5" />
+    </svg>
+  );
+}
+
+function GrokMark({ className, ...props }: IconProps) {
+  return (
+    <svg {...props} viewBox="0 0 24 24" className={cn("fill-none stroke-current", className)} strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="7.5" />
+      <path d="M6 18 18 6" />
+    </svg>
+  );
+}
+
 const marks: Record<string, (props: IconProps) => React.ReactElement> = {
   codex: OpenAIMark,
   claude: ClaudeMark,
   antigravity: AntigravityMark,
   devin: DevinMark,
   kiro: KiroMark,
+  gemini: GeminiMark,
+  opencode: OpenCodeMark,
+  cursor: CursorMark,
+  copilot: CopilotMark,
+  goose: GooseMark,
+  cline: ClineMark,
+  kimi: KimiMark,
+  "qwen-code": QwenMark,
+  droid: DroidMark,
+  amp: AmpMark,
+  auggie: AuggieMark,
+  vibe: VibeMark,
+  kilo: KiloMark,
+  grok: GrokMark,
 };
 
 export function AgentIcon({ agentId, className }: { agentId: string; className?: string }) {

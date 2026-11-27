@@ -6,7 +6,27 @@ import { Button } from "../ui/button";
 import { Badge, Input, Label, Textarea } from "../ui/primitives";
 
 /** Agents the core ships adapters for. A custom entry with one of these ids is ignored by the core. */
-export const BUILTIN_AGENT_IDS = ["claude", "codex", "antigravity", "devin", "kiro"];
+export const BUILTIN_AGENT_IDS = [
+  "claude",
+  "codex",
+  "antigravity",
+  "devin",
+  "kiro",
+  "gemini",
+  "opencode",
+  "cursor",
+  "copilot",
+  "goose",
+  "cline",
+  "kimi",
+  "qwen-code",
+  "droid",
+  "amp",
+  "auggie",
+  "vibe",
+  "kilo",
+  "grok",
+];
 
 const EMPTY: CustomAcpAgent = { id: "", name: "", command: "", args: [], env: {} };
 

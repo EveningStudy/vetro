@@ -117,6 +117,7 @@ export function Composer(props: ComposerProps) {
   const [dragging, setDragging] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const voiceCaretRef = useRef<{ draftKey: string; start: number; end: number } | null>(null);
 
   const setDraft = (text: string) => actions.updateDraft(props.draftKey, (current) => ({ ...current, text }));
   const appendAttachments = (images: Omit<DraftAttachment, "id">[]) => {
@@ -125,11 +126,17 @@ export function Composer(props: ComposerProps) {
     actions.updateDraft(props.draftKey, (current) => ({ ...current, attachments: [...current.attachments, ...added] }));
   };
 
+  useEffect(() => {
+    voiceCaretRef.current = null;
+  }, [props.draftKey]);
+
   const insertTranscript = (spoken: string) => {
     const area = textareaRef.current;
     const current = useStore.getState().drafts[props.draftKey]?.text ?? "";
-    const start = area ? area.selectionStart : current.length;
-    const end = area ? area.selectionEnd : current.length;
+    const focused = area && document.activeElement === area;
+    const remembered = voiceCaretRef.current?.draftKey === props.draftKey ? voiceCaretRef.current : null;
+    const start = focused ? area.selectionStart : Math.min(current.length, remembered?.start ?? current.length);
+    const end = focused ? area.selectionEnd : Math.min(current.length, remembered?.end ?? start);
     const before = current.slice(0, start);
     const after = current.slice(end);
     const needLeadSpace = before.length > 0 && /[A-Za-z0-9]$/.test(before) && /^[A-Za-z0-9]/.test(spoken);
@@ -138,9 +145,11 @@ export function Composer(props: ComposerProps) {
     const next = before + inserted + after;
     setDraft(next);
     const caret = start + inserted.length;
+    voiceCaretRef.current = { draftKey: props.draftKey, start: caret, end: caret };
     requestAnimationFrame(() => {
-      textareaRef.current?.focus();
-      textareaRef.current?.setSelectionRange(caret, caret);
+      if (textareaRef.current && document.activeElement === textareaRef.current) {
+        textareaRef.current.setSelectionRange(caret, caret);
+      }
     });
   };
 
@@ -317,11 +326,26 @@ export function Composer(props: ComposerProps) {
     setSending(true);
     try {
       await props.onSubmit(content);
-      actions.updateDraft(props.draftKey, (current) => ({
-        text: current.text === text ? "" : current.text,
-        attachments: current.attachments.filter((attachment) => !attachments.includes(attachment)),
-        mentioned: current.text === text ? [] : current.mentioned,
-      }));
+      actions.updateDraft(props.draftKey, (current) => {
+        const keptAttachments = current.attachments.filter((attachment) => !attachments.includes(attachment));
+        if (current.text === text) {
+          if (voiceCaretRef.current?.draftKey === props.draftKey) {
+            voiceCaretRef.current = { draftKey: props.draftKey, start: 0, end: 0 };
+          }
+          return { text: "", attachments: keptAttachments, mentioned: [] };
+        }
+        if (text && current.text.startsWith(text)) {
+          const remainder = current.text.slice(text.length).replace(/^\s+/, "");
+          const removed = current.text.length - remainder.length;
+          if (voiceCaretRef.current?.draftKey === props.draftKey) {
+            const start = Math.max(0, voiceCaretRef.current.start - removed);
+            const end = Math.max(start, voiceCaretRef.current.end - removed);
+            voiceCaretRef.current = { draftKey: props.draftKey, start, end };
+          }
+          return { text: remainder, attachments: keptAttachments, mentioned: [] };
+        }
+        return { text: current.text, attachments: keptAttachments, mentioned: current.mentioned };
+      });
     } catch (error) {
       toast.error(errorMessage(error));
     } finally {
@@ -479,11 +503,32 @@ export function Composer(props: ComposerProps) {
           disabled={props.readOnly}
           placeholder={props.placeholder}
           onChange={(event) => {
+            voiceCaretRef.current = {
+              draftKey: props.draftKey,
+              start: event.target.selectionStart,
+              end: event.target.selectionEnd,
+            };
             setDraft(event.target.value);
             updateTrigger(event.target.value, event.target.selectionStart);
           }}
-          onSelect={(event) => updateTrigger(event.currentTarget.value, event.currentTarget.selectionStart)}
-          onBlur={() => setTimeout(() => setTrigger(null), 120)}
+          onSelect={(event) => {
+            if (document.activeElement === event.currentTarget) {
+              voiceCaretRef.current = {
+                draftKey: props.draftKey,
+                start: event.currentTarget.selectionStart,
+                end: event.currentTarget.selectionEnd,
+              };
+            }
+            updateTrigger(event.currentTarget.value, event.currentTarget.selectionStart);
+          }}
+          onBlur={(event) => {
+            voiceCaretRef.current = {
+              draftKey: props.draftKey,
+              start: event.currentTarget.selectionStart,
+              end: event.currentTarget.selectionEnd,
+            };
+            setTimeout(() => setTrigger(null), 120);
+          }}
           onPaste={(event) => {
             const data = event.clipboardData;
             const fromFiles = [...data.files].filter(isImageFile);

@@ -107,6 +107,16 @@ impl Sessions {
         })
     }
 
+    pub(crate) fn has_active_work(&self) -> bool {
+        self.snapshot().into_iter().any(|thread| {
+            let busy = matches!(
+                thread.state.lock().unwrap().summary.status,
+                ThreadStatus::Running | ThreadStatus::AwaitingInput
+            );
+            busy || thread.background_processes() > 0
+        })
+    }
+
     pub(crate) fn has_open(&self, agent_id: &str) -> bool {
         self.0.lock().unwrap().values().any(|thread| {
             Arc::strong_count(thread) > 1
@@ -1878,6 +1888,20 @@ fn new_summary(
     };
     summary.internal = crate::storage::classified(&summary);
     summary
+}
+
+#[cfg(test)]
+impl Sessions {
+    pub(crate) fn insert_test_status(&self, core: &Arc<Core>, id: &str, status: ThreadStatus) {
+        let mut summary = new_summary("codex", id, id.into(), None);
+        summary.status = status;
+        let state = Timeline::new(summary);
+        self.insert(Arc::new(Thread {
+            operations: AsyncMutex::new(()),
+            state: Mutex::new(state),
+            core: Arc::downgrade(core),
+        }));
+    }
 }
 
 #[cfg(test)]

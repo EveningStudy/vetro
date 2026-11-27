@@ -115,6 +115,17 @@ pub enum ServerEvent {
         done: bool,
         error: Option<String>,
     },
+    /// Download and install progress for in-app desktop updates.
+    #[serde(rename = "update.progress")]
+    UpdateProgress {
+        stage: String,
+        #[ts(type = "number")]
+        downloaded_bytes: u64,
+        #[ts(type = "number | null")]
+        total_bytes: Option<u64>,
+        done: bool,
+        error: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
@@ -167,6 +178,36 @@ pub struct AppInfo {
     pub data_dir: String,
     /// This connection comes from another device.
     pub remote_client: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct UpdateCheckResult {
+    pub current_version: String,
+    pub latest_version: Option<String>,
+    pub available: bool,
+    pub can_auto_install: bool,
+    pub release_url: Option<String>,
+    pub notes: Option<String>,
+    pub published_at: Option<String>,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct UpdateInstallParams {
+    #[serde(default)]
+    #[ts(optional)]
+    pub force: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct UpdateInstallResult {
+    pub restarting: bool,
+    pub opened_external: bool,
 }
 
 // --- agents ------------------------------------------------------------------------------------

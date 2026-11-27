@@ -1,12 +1,27 @@
 const TARGET_SAMPLE_RATE = 16_000;
+const PREROLL_CHUNKS = 3;
+const MIN_SPEECH_MS = 450;
+const TRAILING_SILENCE_MS = 650;
+const MAX_SEGMENT_MS = 12_000;
+const TAIL_KEEP_CHUNKS = 2;
+
+export interface AudioSegment {
+  base64: string;
+  durationMs: number;
+}
 
 export interface RecordingSession {
-  stop: () => Promise<{ base64: string; durationMs: number }>;
+  stop: () => Promise<AudioSegment>;
   cancel: () => void;
 }
 
-/** Captures microphone audio and encodes it as 16 kHz mono 16-bit PCM WAV. */
-export async function startRecording(signal: AbortSignal, onLevel?: (level: number) => void): Promise<RecordingSession> {
+/** Captures microphone audio and encodes it as 16 kHz mono 16-bit PCM WAV,
+ * optionally emitting pause-segmented phrases while recording. */
+export async function startRecording(
+  signal: AbortSignal,
+  onLevel?: (level: number) => void,
+  onSegment?: (segment: AudioSegment) => void,
+): Promise<RecordingSession> {
   if (!navigator.mediaDevices?.getUserMedia) {
     throw new Error("Microphone recording is not available in this browser.");
   }
@@ -24,7 +39,7 @@ export async function startRecording(signal: AbortSignal, onLevel?: (level: numb
   try {
     if (signal.aborted) throw new DOMException("Recording cancelled", "AbortError");
     ctx = new AudioCtx();
-    return connectRecorder(stream, ctx, onLevel);
+    return connectRecorder(stream, ctx, onLevel, onSegment);
   } catch (error) {
     for (const track of stream.getTracks()) track.stop();
     void ctx?.close().catch(() => undefined);
@@ -32,29 +47,132 @@ export async function startRecording(signal: AbortSignal, onLevel?: (level: numb
   }
 }
 
-function connectRecorder(stream: MediaStream, ctx: AudioContext, onLevel?: (level: number) => void): RecordingSession {
+function connectRecorder(
+  stream: MediaStream,
+  ctx: AudioContext,
+  onLevel?: (level: number) => void,
+  onSegment?: (segment: AudioSegment) => void,
+): RecordingSession {
   const source = ctx.createMediaStreamSource(stream);
   const processor = ctx.createScriptProcessor(4096, 1, 1);
   const silentGain = ctx.createGain();
   silentGain.gain.value = 0;
 
-  const chunks: Float32Array[] = [];
-  let totalSamples = 0;
+  const tailChunks: Float32Array[] = [];
+  let tailSamples = 0;
+  let tailPeakRms = 0;
+  let preroll: Float32Array[] = [];
+  let segmentChunks: Float32Array[] = [];
+  let segmentSamples = 0;
+  let speechSamples = 0;
+  let silenceSamples = 0;
+  let speaking = false;
+  let emittedSegments = 0;
+  let noiseFloor = 0.008;
   let closed = false;
   const startedAt = performance.now();
 
+  const clearTail = () => {
+    tailChunks.length = 0;
+    tailSamples = 0;
+    tailPeakRms = 0;
+  };
+
+  const encodeChunks = (chunks: Float32Array[], totalSamples: number, sampleRate: number): AudioSegment => {
+    const merged = new Float32Array(totalSamples);
+    let offset = 0;
+    for (const chunk of chunks) {
+      merged.set(chunk, offset);
+      offset += chunk.length;
+    }
+    const resampled = downsample(merged, sampleRate, TARGET_SAMPLE_RATE);
+    const wav = encodeWav(resampled, TARGET_SAMPLE_RATE);
+    const durationMs = Math.round((totalSamples / Math.max(1, sampleRate)) * 1000);
+    return { base64: bytesToBase64(wav), durationMs };
+  };
+
+  const resetSegment = () => {
+    segmentChunks = [];
+    segmentSamples = 0;
+    speechSamples = 0;
+    silenceSamples = 0;
+    speaking = false;
+  };
+
+  const flushVadSegment = (sampleRate: number) => {
+    if (!onSegment || segmentSamples === 0) return;
+    // Trim excessive trailing silence while keeping ~170ms tail for clean word endings.
+    const extraSilentChunks = Math.max(0, Math.floor((silenceSamples / Math.max(1, segmentChunks[0]?.length ?? 4096)) - TAIL_KEEP_CHUNKS));
+    const usableCount = Math.max(1, segmentChunks.length - extraSilentChunks);
+    const slice = segmentChunks.slice(0, usableCount);
+    const samples = slice.reduce((sum, chunk) => sum + chunk.length, 0);
+    resetSegment();
+    preroll = [];
+    if (samples / Math.max(1, sampleRate) < 0.25) return;
+    emittedSegments += 1;
+    clearTail();
+    onSegment(encodeChunks(slice, samples, sampleRate));
+  };
+
   processor.onaudioprocess = (event) => {
     if (closed) return;
+    const sampleRate = ctx.sampleRate || 48_000;
     const input = event.inputBuffer.getChannelData(0);
     const copy = new Float32Array(input.length);
     copy.set(input);
-    chunks.push(copy);
-    totalSamples += copy.length;
-    if (onLevel) {
-      let sum = 0;
-      for (let index = 0; index < copy.length; index += 1) sum += copy[index]! * copy[index]!;
-      const rms = Math.sqrt(sum / Math.max(1, copy.length));
-      onLevel(Math.min(1, rms * 4.5));
+
+    let sum = 0;
+    for (let index = 0; index < copy.length; index += 1) sum += copy[index]! * copy[index]!;
+    const rms = Math.sqrt(sum / Math.max(1, copy.length));
+    onLevel?.(Math.min(1, rms * 4.5));
+
+    tailChunks.push(copy);
+    tailSamples += copy.length;
+    tailPeakRms = Math.max(tailPeakRms, rms);
+    const maxTailSamples = sampleRate * (onSegment ? 45 : 120);
+    while (tailSamples > maxTailSamples && tailChunks.length > 1) {
+      tailSamples -= tailChunks.shift()!.length;
+    }
+    if (!onSegment) return;
+
+    const onsetThreshold = Math.max(0.015, noiseFloor * 2.5);
+    const continueThreshold = Math.max(0.010, noiseFloor * 1.7);
+    const isSpeech = speaking ? rms > continueThreshold : rms > onsetThreshold;
+
+    if (!speaking) {
+      if (isSpeech) {
+        speaking = true;
+        for (const chunk of preroll) {
+          segmentChunks.push(chunk);
+          segmentSamples += chunk.length;
+        }
+        preroll = [];
+        segmentChunks.push(copy);
+        segmentSamples += copy.length;
+        speechSamples += copy.length;
+        silenceSamples = 0;
+      } else {
+        noiseFloor = Math.min(0.035, Math.max(0.004, noiseFloor * 0.96 + rms * 0.04));
+        preroll.push(copy);
+        if (preroll.length > PREROLL_CHUNKS) preroll.shift();
+      }
+      return;
+    }
+
+    segmentChunks.push(copy);
+    segmentSamples += copy.length;
+    if (isSpeech) {
+      speechSamples += copy.length;
+      silenceSamples = 0;
+    } else {
+      silenceSamples += copy.length;
+    }
+
+    const speechMs = (speechSamples / sampleRate) * 1000;
+    const silenceMs = (silenceSamples / sampleRate) * 1000;
+    const totalMs = (segmentSamples / sampleRate) * 1000;
+    if ((silenceMs >= TRAILING_SILENCE_MS && speechMs >= MIN_SPEECH_MS) || totalMs >= MAX_SEGMENT_MS) {
+      flushVadSegment(sampleRate);
     }
   };
 
@@ -81,17 +199,27 @@ function connectRecorder(stream: MediaStream, ctx: AudioContext, onLevel?: (leve
     cancel: cleanup,
     stop: async () => {
       const sampleRate = ctx.sampleRate || 48_000;
-      const durationMs = Math.max(0, Math.round(performance.now() - startedAt));
+      const wallDurationMs = Math.max(0, Math.round(performance.now() - startedAt));
       cleanup();
-      const merged = new Float32Array(totalSamples);
-      let offset = 0;
-      for (const chunk of chunks) {
-        merged.set(chunk, offset);
-        offset += chunk.length;
+      if (!onSegment) {
+        if (tailSamples === 0) return { base64: "", durationMs: 0 };
+        const encoded = encodeChunks(tailChunks, tailSamples, sampleRate);
+        return { base64: encoded.base64, durationMs: wallDurationMs };
       }
-      const resampled = downsample(merged, sampleRate, TARGET_SAMPLE_RATE);
-      const wav = encodeWav(resampled, TARGET_SAMPLE_RATE);
-      return { base64: bytesToBase64(wav), durationMs };
+      if (speaking && speechSamples > 0) {
+        const segment = encodeChunks(segmentChunks, segmentSamples, sampleRate);
+        if (segment.durationMs >= 250) return segment;
+      }
+      const tailDurationMs = (tailSamples / Math.max(1, sampleRate)) * 1000;
+      const hasAudibleTail = tailDurationMs >= 250 && tailPeakRms > Math.max(0.006, noiseFloor * 1.3);
+      if (tailSamples > 0 && ((emittedSegments === 0 && wallDurationMs >= 250) || hasAudibleTail)) {
+        const encoded = encodeChunks(tailChunks, tailSamples, sampleRate);
+        return {
+          base64: encoded.base64,
+          durationMs: emittedSegments === 0 ? wallDurationMs : encoded.durationMs,
+        };
+      }
+      return { base64: "", durationMs: 0 };
     },
   };
 }

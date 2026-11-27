@@ -442,6 +442,11 @@ async fn call(
             core.set_badge(params.count);
             empty()
         }
+        "app.checkUpdate" => output(core.check_update(client.remote()).await?),
+        "app.installUpdate" => {
+            client.desktop()?;
+            output(core.install_update(parse(params)?).await?)
+        }
         "settings.get" => {
             let mut settings = core.home.settings();
             if client.remote() {
@@ -509,6 +514,10 @@ async fn call(
             output(core.voice_uninstall(parse(params)?).await?)
         }
         "voice.transcribe" => output(core.voice_transcribe(parse(params)?).await?),
+        "voice.warmup" => {
+            core.voice_warmup();
+            empty()
+        }
         _ => Err(AgentError::new(
             ErrorCode::NotFound,
             format!("Unknown RPC method: {method}"),

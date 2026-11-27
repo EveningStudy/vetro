@@ -8,13 +8,13 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
     },
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 use base64::Engine;
 use futures_util::StreamExt;
 use sha2::{Digest, Sha256};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex as AsyncMutex, RwLock};
 use verre_agent_api::{
     process::{Process, SpawnSpec},
     AgentError, Result, WireLog,
@@ -29,6 +29,7 @@ use verre_proto::{
 
 use crate::{bad_request, internal};
 
+mod native;
 #[cfg(windows)]
 mod windows;
 
@@ -179,9 +180,27 @@ fn runtime_asset() -> Option<Asset> {
 
 #[derive(Default)]
 pub(crate) struct VoiceManager {
-    assets: RwLock<()>,
+    assets: Arc<RwLock<()>>,
     installing: AtomicBool,
     last_error: Mutex<Option<String>>,
+    warm: Arc<AsyncMutex<Option<WarmEngine>>>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct WarmKey {
+    lib_path: PathBuf,
+    model_id: &'static str,
+    files: Vec<PathBuf>,
+    punct_model: Option<PathBuf>,
+    language: Option<&'static str>,
+    hotwords: String,
+    threads: i32,
+}
+
+struct WarmEngine {
+    key: WarmKey,
+    engine: native::NativeEngine,
+    last_used: Instant,
 }
 
 struct Runtime {
@@ -189,6 +208,7 @@ struct Runtime {
     lib_dirs: Vec<PathBuf>,
 }
 
+#[derive(Clone)]
 enum ModelFiles {
     SenseVoice {
         model: PathBuf,
@@ -286,6 +306,8 @@ impl VoiceManager {
             None => active_preset(settings),
         };
         let _guard = self.assets.try_write().map_err(|_| assets_busy())?;
+        self.unload().await;
+        cleanup_stale_temp(&root, None);
         self.installing.store(true, Ordering::Release);
         let progress = InstallProgress(&self.installing);
         *self.last_error.lock().unwrap() = None;
@@ -383,6 +405,7 @@ impl VoiceManager {
         model_id: Option<&str>,
     ) -> Result<VoiceStatus> {
         let _guard = self.assets.try_write().map_err(|_| assets_busy())?;
+        self.unload().await;
         *self.last_error.lock().unwrap() = None;
         if let Some(id) = model_id {
             let model = model_preset(Some(id))?;
@@ -395,6 +418,74 @@ impl VoiceManager {
             remove_dir(root).map_err(internal)?;
         }
         Ok(self.status(root, settings))
+    }
+
+    pub(crate) async fn unload(&self) {
+        *self.warm.lock().await = None;
+    }
+
+    pub(crate) async fn evict_idle(&self, max_idle: Duration) {
+        if let Ok(mut warm) = self.warm.try_lock() {
+            if warm
+                .as_ref()
+                .is_some_and(|engine| engine.last_used.elapsed() >= max_idle)
+            {
+                *warm = None;
+            }
+        }
+    }
+
+    pub(crate) fn warmup(&self, root: PathBuf, settings: VoiceSettings) {
+        if configured_endpoint(&settings).is_some() {
+            return;
+        }
+        let Ok(asset_guard) = Arc::clone(&self.assets).try_read_owned() else {
+            return;
+        };
+        let Some((key, files)) = warm_key(&root, &settings, None) else {
+            return;
+        };
+        if let Ok(mut guard) = self.warm.try_lock() {
+            if let Some(existing) = guard.as_mut() {
+                if existing.key == key {
+                    existing.last_used = Instant::now();
+                    return;
+                }
+            }
+        }
+        let warm = Arc::clone(&self.warm);
+        let asset_guard = Arc::new(asset_guard);
+        tokio::spawn(async move {
+            let mut guard = warm.lock_owned().await;
+            if let Some(existing) = guard.as_mut() {
+                if existing.key == key {
+                    existing.last_used = Instant::now();
+                    return;
+                }
+            }
+            *guard = None;
+            let guard_ref = Arc::clone(&asset_guard);
+            let loaded = tokio::task::spawn_blocking(move || {
+                let _asset_guard = guard_ref;
+                native::NativeEngine::load(
+                    &key.lib_path,
+                    &files,
+                    key.punct_model.as_deref(),
+                    key.language,
+                    &key.hotwords,
+                    key.threads,
+                )
+                .map(|engine| WarmEngine {
+                    key,
+                    engine,
+                    last_used: Instant::now(),
+                })
+            })
+            .await;
+            if let Ok(Ok(engine)) = loaded {
+                *guard = Some(engine);
+            }
+        });
     }
 
     pub(crate) async fn transcribe(
@@ -419,7 +510,11 @@ impl VoiceManager {
             )
             .await?
         } else {
-            let _guard = self.assets.try_read().map_err(|_| assets_busy())?;
+            let asset_guard = Arc::new(
+                Arc::clone(&self.assets)
+                    .try_read_owned()
+                    .map_err(|_| assets_busy())?,
+            );
             let model = active_preset(settings);
             let dir = model.dir(root);
             let unavailable = || {
@@ -430,11 +525,44 @@ impl VoiceManager {
             };
             let runtime = find_runtime(root).ok_or_else(unavailable)?;
             let files = find_model(&dir, model.kind).ok_or_else(unavailable)?;
-            let text = transcribe_local(root, &runtime, &files, settings, language, &bytes).await?;
-            if matches!(files, ModelFiles::SenseVoice { .. }) {
-                punctuate(root, &runtime, &dir, strip_sensevoice_tags(&text)).await
+            let punct_model = matches!(files, ModelFiles::SenseVoice { .. })
+                .then(|| find_punctuation_model(&dir))
+                .flatten();
+            if let Some(lib_path) = native::find_c_api_lib(&runtime) {
+                let key = WarmKey {
+                    lib_path,
+                    model_id: model.id,
+                    files: files.paths(),
+                    punct_model,
+                    language,
+                    hotwords: glossary_hotwords(&settings.replacements),
+                    threads: default_threads(),
+                };
+                match self
+                    .transcribe_native(Arc::clone(&asset_guard), key, files.clone(), bytes.clone())
+                    .await
+                {
+                    Ok(text) => text,
+                    Err(error) if error.code == ErrorCode::BadRequest => return Err(error),
+                    Err(_) => {
+                        let text =
+                            transcribe_local(root, &runtime, &files, settings, language, &bytes)
+                                .await?;
+                        if matches!(files, ModelFiles::SenseVoice { .. }) {
+                            punctuate(root, &runtime, &dir, strip_sensevoice_tags(&text)).await
+                        } else {
+                            text
+                        }
+                    }
+                }
             } else {
-                text
+                let text =
+                    transcribe_local(root, &runtime, &files, settings, language, &bytes).await?;
+                if matches!(files, ModelFiles::SenseVoice { .. }) {
+                    punctuate(root, &runtime, &dir, strip_sensevoice_tags(&text)).await
+                } else {
+                    text
+                }
             }
         };
 
@@ -445,6 +573,153 @@ impl VoiceManager {
             duration_ms: started.elapsed().as_millis() as u64,
         })
     }
+
+    async fn transcribe_native(
+        &self,
+        asset_guard: Arc<tokio::sync::OwnedRwLockReadGuard<()>>,
+        key: WarmKey,
+        files: ModelFiles,
+        wav_bytes: Vec<u8>,
+    ) -> Result<String> {
+        let mut guard = Arc::clone(&self.warm).lock_owned().await;
+        if guard.as_ref().is_none_or(|warm| warm.key != key) {
+            *guard = None;
+            let loaded_key = key.clone();
+            let load_asset = Arc::clone(&asset_guard);
+            let (out_guard, load_result) = tokio::task::spawn_blocking(move || {
+                let _asset_guard = load_asset;
+                let res = native::NativeEngine::load(
+                    &loaded_key.lib_path,
+                    &files,
+                    loaded_key.punct_model.as_deref(),
+                    loaded_key.language,
+                    &loaded_key.hotwords,
+                    loaded_key.threads,
+                );
+                match res {
+                    Ok(engine) => {
+                        *guard = Some(WarmEngine {
+                            key: loaded_key,
+                            engine,
+                            last_used: Instant::now(),
+                        });
+                        (guard, Ok(()))
+                    }
+                    Err(error) => (guard, Err(error)),
+                }
+            })
+            .await
+            .map_err(internal)?;
+            guard = out_guard;
+            load_result?;
+        }
+
+        let (_guard, result) = tokio::task::spawn_blocking(move || {
+            let _asset_guard = asset_guard;
+            let Some(warm) = guard.as_mut() else {
+                return (guard, Err(internal("Warm voice engine missing")));
+            };
+            let res = warm.engine.transcribe(&wav_bytes);
+            warm.last_used = Instant::now();
+            (guard, res)
+        })
+        .await
+        .map_err(internal)?;
+        result
+    }
+}
+
+pub(crate) fn cleanup_stale_temp(root: &Path, min_age: Option<Duration>) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    let now = SystemTime::now();
+    for entry in entries.flatten() {
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if !name.starts_with(".tmp") {
+            continue;
+        }
+        if let Some(min_age) = min_age {
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            let Ok(modified) = meta.modified() else {
+                continue;
+            };
+            if now.duration_since(modified).unwrap_or_default() < min_age {
+                continue;
+            }
+        }
+        let path = entry.path();
+        if path.is_dir() {
+            let _ = fs::remove_dir_all(path);
+        } else {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
+impl ModelFiles {
+    fn paths(&self) -> Vec<PathBuf> {
+        match self {
+            Self::SenseVoice { model, tokens } => vec![model.clone(), tokens.clone()],
+            Self::Qwen3Asr {
+                frontend,
+                encoder,
+                decoder,
+                tokenizer,
+            } => vec![
+                frontend.clone(),
+                encoder.clone(),
+                decoder.clone(),
+                tokenizer.clone(),
+            ],
+            Self::FunAsrNano {
+                encoder_adaptor,
+                llm,
+                embedding,
+                tokenizer,
+            } => vec![
+                encoder_adaptor.clone(),
+                llm.clone(),
+                embedding.clone(),
+                tokenizer.clone(),
+            ],
+        }
+    }
+}
+
+fn default_threads() -> i32 {
+    std::thread::available_parallelism()
+        .map(|n| n.get().clamp(1, 4) as i32)
+        .unwrap_or(2)
+}
+
+fn warm_key(
+    root: &Path,
+    settings: &VoiceSettings,
+    language: Option<&'static str>,
+) -> Option<(WarmKey, ModelFiles)> {
+    let runtime = find_runtime(root)?;
+    let lib_path = native::find_c_api_lib(&runtime)?;
+    let model = active_preset(settings);
+    let dir = model.dir(root);
+    let files = find_model(&dir, model.kind)?;
+    let punct_model = matches!(files, ModelFiles::SenseVoice { .. })
+        .then(|| find_punctuation_model(&dir))
+        .flatten();
+    let key = WarmKey {
+        lib_path,
+        model_id: model.id,
+        files: files.paths(),
+        punct_model,
+        language,
+        hotwords: glossary_hotwords(&settings.replacements),
+        threads: default_threads(),
+    };
+    Some((key, files))
 }
 
 pub(crate) fn validate_settings(voice: &VoiceSettings) -> Result<()> {
@@ -1351,5 +1626,86 @@ mod tests {
         assert!(validate_settings(&settings).is_err());
         settings.endpoint_url = Some("file:///etc/passwd".into());
         assert!(validate_settings(&settings).is_err());
+    }
+
+    #[test]
+    fn cleans_stale_tmp_entries_inside_voice_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let tmp_dir = root.join(".tmpLeftover");
+        fs::create_dir_all(&tmp_dir).unwrap();
+        fs::write(tmp_dir.join("part"), b"123").unwrap();
+        let tmp_file = root.join(".tmpFile");
+        fs::write(&tmp_file, b"456").unwrap();
+        let keep = root.join("models");
+        fs::create_dir_all(&keep).unwrap();
+
+        // With 30m threshold, freshly created temp entries stay untouched.
+        cleanup_stale_temp(root, Some(Duration::from_secs(1800)));
+        assert!(tmp_dir.exists() && tmp_file.exists());
+
+        // With no age limit (before install), stale temp entries are cleared while models stay.
+        cleanup_stale_temp(root, None);
+        assert!(!tmp_dir.exists() && !tmp_file.exists());
+        assert!(keep.exists());
+    }
+
+    #[tokio::test]
+    #[ignore = "uses locally installed sherpa-onnx runtime and voice models under ~/.verre/voice"]
+    async fn warm_native_voice_engine_benchmarks_qwen3_and_funasr() {
+        let voice_root = std::env::home_dir().unwrap().join(".verre/voice");
+        let manager = VoiceManager::default();
+        for model_id in ["qwen3-asr", "funasr-nano"] {
+            let wav_path = files_in(&voice_root.join("models").join(model_id))
+                .into_iter()
+                .find(|path| {
+                    path.extension()
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("wav"))
+                })
+                .expect("sample wav");
+            let wav_b64 =
+                base64::engine::general_purpose::STANDARD.encode(fs::read(&wav_path).unwrap());
+            let settings = VoiceSettings {
+                model_id: Some(model_id.into()),
+                ..Default::default()
+            };
+            let cold = manager
+                .transcribe(
+                    &voice_root,
+                    &settings,
+                    VoiceTranscribeParams {
+                        audio_base64: wav_b64.clone(),
+                        language: None,
+                    },
+                )
+                .await
+                .unwrap();
+            let warm = manager
+                .transcribe(
+                    &voice_root,
+                    &settings,
+                    VoiceTranscribeParams {
+                        audio_base64: wav_b64,
+                        language: None,
+                    },
+                )
+                .await
+                .unwrap();
+            assert!(
+                !warm.text.trim().is_empty(),
+                "{model_id} produced empty output"
+            );
+            eprintln!(
+                "{model_id}: cold={}ms, warm={}ms, text={:?}",
+                cold.duration_ms, warm.duration_ms, warm.text
+            );
+            assert!(
+                warm.duration_ms < cold.duration_ms,
+                "{model_id}: expected warm ({}) < cold ({})",
+                warm.duration_ms,
+                cold.duration_ms
+            );
+        }
+        manager.unload().await;
     }
 }

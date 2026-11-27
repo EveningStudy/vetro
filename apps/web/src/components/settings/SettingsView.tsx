@@ -80,7 +80,17 @@ import { useHeaderChromeClass, useWindowDragProps } from "../WindowChrome";
 import { ThemeGallery } from "./ThemeStudio";
 import { useNow } from "../hooks";
 import { Button } from "../ui/button";
-import { Menu, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from "../ui/overlay";
+import {
+  Dialog,
+  DialogDescription,
+  DialogPopup,
+  DialogTitle,
+  Menu,
+  MenuPopup,
+  MenuRadioGroup,
+  MenuRadioItem,
+  MenuTrigger,
+} from "../ui/overlay";
 import { Badge, Input, Label, Spinner, Switch, Textarea } from "../ui/primitives";
 import { Segmented } from "../ui/segmented";
 
@@ -99,6 +109,7 @@ export function SettingsView({ section }: { section: SettingsSection }) {
   const t = useT();
   const drag = useWindowDragProps();
   const chromeClass = useHeaderChromeClass("main-full");
+  const updateAvailable = useStore((s) => !!s.updateCheck?.available);
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <header {...drag} className={cn("flex h-(--workspace-topbar-height) shrink-0 items-center gap-2 px-(--workspace-gutter)", chromeClass)}>
@@ -119,7 +130,10 @@ export function SettingsView({ section }: { section: SettingsSection }) {
               )}
             >
               <Icon className="size-4 text-muted-foreground" />
-              {t(`settings.${id}`)}
+              <span className="truncate">{t(`settings.${id}`)}</span>
+              {id === "about" && updateAvailable ? (
+                <span className="ms-auto size-2 shrink-0 rounded-full bg-primary" />
+              ) : null}
             </button>
           ))}
         </nav>
@@ -1269,6 +1283,32 @@ function NotificationsSection() {
 function AboutSection() {
   const t = useT();
   const app = useStore((s) => s.app);
+  const updateCheck = useStore((s) => s.updateCheck);
+  const updateChecking = useStore((s) => s.updateChecking);
+  const updateInstalling = useStore((s) => s.updateInstalling);
+  const updateConfirm = useStore((s) => s.updateConfirm);
+  const updateProgress = useStore((s) => s.updateProgress);
+  const remoteClient = app?.remoteClient ?? false;
+
+  const progressPercent =
+    updateProgress?.totalBytes && updateProgress.totalBytes > 0
+      ? Math.min(100, Math.round((updateProgress.downloadedBytes / updateProgress.totalBytes) * 100))
+      : 0;
+
+  const statusText = updateProgress?.error
+    ? updateProgress.error
+    : updateInstalling || (updateProgress && !updateProgress.done)
+      ? updateProgress?.stage === "installing"
+        ? t("update.installing")
+        : t("update.downloading", { percent: progressPercent })
+      : updateProgress?.stage === "restarting"
+        ? t("update.restarting")
+        : updateCheck?.available && updateCheck.latestVersion
+          ? t("update.available", { version: updateCheck.latestVersion })
+          : updateCheck
+            ? t("update.upToDate")
+            : t("update.notChecked");
+
   return (
     <section>
       <SectionTitle title={t("settings.about")} />
@@ -1276,6 +1316,43 @@ function AboutSection() {
         <Row label={t("settings.version")}>
           <span className="font-mono text-xs text-muted-foreground">{app?.version}</span>
         </Row>
+        <Row label={t("update.title")} hint={statusText}>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={updateChecking || updateInstalling}
+              onClick={() => void actions.checkUpdate(false)}
+            >
+              {updateChecking ? <Spinner className="size-3.5" /> : <RefreshCwIcon className="size-3.5" />}
+              {updateChecking ? t("update.checking") : t("update.check")}
+            </Button>
+            {updateCheck?.available && !remoteClient ? (
+              <Button
+                size="sm"
+                disabled={updateInstalling}
+                onClick={() => void actions.installUpdate()}
+              >
+                {updateInstalling ? <Spinner className="size-3.5" /> : <DownloadIcon className="size-3.5" />}
+                {updateCheck.canAutoInstall ? t("update.installRestart") : t("update.downloadPage")}
+              </Button>
+            ) : null}
+          </div>
+        </Row>
+        {updateProgress && !updateProgress.done && updateProgress.stage === "downloading" ? (
+          <div className="px-4 py-2.5">
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+              <div className="h-full bg-primary transition-[width]" style={{ width: `${progressPercent}%` }} />
+            </div>
+          </div>
+        ) : null}
+        {updateCheck?.available && updateCheck.notes ? (
+          <div className="px-4 py-3">
+            <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap font-sans text-xs leading-relaxed text-muted-foreground">
+              {updateCheck.notes}
+            </pre>
+          </div>
+        ) : null}
         <Row label={t("settings.dataDir")}>
           <span className="max-w-xs truncate font-mono text-xs text-muted-foreground">{app?.dataDir}</span>
         </Row>
@@ -1288,6 +1365,32 @@ function AboutSection() {
           <span className="font-mono text-xs text-muted-foreground">v{app?.protocolVersion}</span>
         </Row>
       </Group>
+      {updateConfirm ? (
+        <Dialog open onOpenChange={(open) => !open && actions.dismissUpdateConfirm()}>
+          <DialogPopup className="max-w-md">
+            <div className="flex flex-col gap-4 p-5">
+              <div className="flex flex-col gap-1.5 pe-8">
+                <DialogTitle>{t("update.activeWorkTitle")}</DialogTitle>
+                <DialogDescription>{t("update.activeWorkBody")}</DialogDescription>
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button variant="ghost" onClick={() => actions.dismissUpdateConfirm()}>
+                  {t("common.cancel")}
+                </Button>
+                <Button
+                  variant="destructive"
+                  onClick={() => {
+                    actions.dismissUpdateConfirm();
+                    void actions.installUpdate(true);
+                  }}
+                >
+                  {t("update.activeWorkConfirm")}
+                </Button>
+              </div>
+            </div>
+          </DialogPopup>
+        </Dialog>
+      ) : null}
     </section>
   );
 }

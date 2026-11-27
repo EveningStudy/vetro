@@ -1,4 +1,5 @@
 mod core;
+mod updater;
 
 use std::error::Error;
 use std::ffi::OsStr;
@@ -6,7 +7,7 @@ use std::ffi::OsStr;
 use std::path::PathBuf;
 #[cfg(target_os = "windows")]
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, Weak};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 #[cfg(any(target_os = "windows", test))]
@@ -28,7 +29,7 @@ use crate::core::{CoreHandle, ShutdownHandle};
 
 const MAIN_WINDOW: &str = "main";
 
-struct CoreShutdown(Mutex<Option<ShutdownHandle>>);
+pub(crate) struct CoreShutdown(pub(crate) Mutex<Option<ShutdownHandle>>);
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -45,12 +46,19 @@ pub fn run() -> Result<()> {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(move |app| {
             let tag = tag.as_deref();
             let handle_app = app.handle().clone();
             let core = tauri::async_runtime::block_on(crate::core::start());
             let (language_rx, lang) = match core {
                 Ok(mut handle) => {
+                    if let Some(core_arc) = handle.embedded_core.upgrade() {
+                        core_arc.set_updater(Arc::new(crate::updater::DesktopUpdater::new(
+                            handle_app.clone(),
+                            Arc::downgrade(&core_arc),
+                        )));
+                    }
                     app.manage(CoreShutdown(Mutex::new(handle.shutdown.take())));
                     let language_rx = handle.language_rx.clone();
                     let initial_lang = language_rx.as_ref().and_then(|rx| rx.borrow().clone());

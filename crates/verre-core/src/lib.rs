@@ -12,6 +12,7 @@ pub mod server;
 pub mod service;
 mod sessions;
 pub mod storage;
+pub mod updater;
 mod voice;
 pub mod workspace;
 

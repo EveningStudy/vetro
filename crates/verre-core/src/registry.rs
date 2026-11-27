@@ -1,3 +1,5 @@
+#[cfg(feature = "acp")]
+use std::ffi::OsStr;
 use std::{
     collections::BTreeMap,
     path::PathBuf,
@@ -270,6 +272,141 @@ impl Entry {
     }
 }
 
+#[cfg(feature = "acp")]
+pub(crate) struct AcpBuiltin {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub commands: &'static [&'static str],
+    pub default_args: &'static [&'static str],
+    pub default_env: &'static [(&'static str, &'static str)],
+}
+
+#[cfg(feature = "acp")]
+pub(crate) const ACP_BUILTINS: &[AcpBuiltin] = &[
+    AcpBuiltin {
+        id: "antigravity",
+        name: "Antigravity",
+        commands: &["agy"],
+        default_args: &["acp"],
+        default_env: &[],
+    },
+    AcpBuiltin {
+        id: "devin",
+        name: "Devin",
+        commands: &["devin"],
+        default_args: &["acp", "--process-model", "in-process"],
+        default_env: &[],
+    },
+    AcpBuiltin {
+        id: "kiro",
+        name: "Kiro",
+        commands: &["kiro-cli"],
+        default_args: &["acp"],
+        default_env: &[],
+    },
+    AcpBuiltin {
+        id: "gemini",
+        name: "Gemini CLI",
+        commands: &["gemini"],
+        default_args: &["--acp"],
+        default_env: &[],
+    },
+    AcpBuiltin {
+        id: "opencode",
+        name: "OpenCode",
+        commands: &["opencode"],
+        default_args: &["acp"],
+        default_env: &[],
+    },
+    AcpBuiltin {
+        id: "cursor",
+        name: "Cursor",
+        commands: &["cursor-agent"],
+        default_args: &["acp"],
+        default_env: &[],
+    },
+    AcpBuiltin {
+        id: "copilot",
+        name: "GitHub Copilot",
+        commands: &["copilot"],
+        default_args: &["--acp"],
+        default_env: &[],
+    },
+    AcpBuiltin {
+        id: "goose",
+        name: "Goose",
+        commands: &["goose"],
+        default_args: &["acp"],
+        default_env: &[],
+    },
+    AcpBuiltin {
+        id: "cline",
+        name: "Cline",
+        commands: &["cline"],
+        default_args: &["--acp"],
+        default_env: &[],
+    },
+    AcpBuiltin {
+        id: "kimi",
+        name: "Kimi Code",
+        commands: &["kimi-code", "kimi"],
+        default_args: &["acp"],
+        default_env: &[],
+    },
+    AcpBuiltin {
+        id: "qwen-code",
+        name: "Qwen Code",
+        commands: &["qwen", "qwen-code"],
+        default_args: &["--acp"],
+        default_env: &[],
+    },
+    AcpBuiltin {
+        id: "droid",
+        name: "Factory Droid",
+        commands: &["droid"],
+        default_args: &["exec", "--output-format", "acp-daemon"],
+        default_env: &[
+            ("DROID_DISABLE_AUTO_UPDATE", "true"),
+            ("FACTORY_DROID_AUTO_UPDATE_ENABLED", "false"),
+        ],
+    },
+    AcpBuiltin {
+        id: "amp",
+        name: "Amp",
+        commands: &["amp-acp"],
+        default_args: &[],
+        default_env: &[],
+    },
+    AcpBuiltin {
+        id: "auggie",
+        name: "Auggie",
+        commands: &["auggie"],
+        default_args: &["--acp"],
+        default_env: &[("AUGMENT_DISABLE_AUTO_UPDATE", "1")],
+    },
+    AcpBuiltin {
+        id: "vibe",
+        name: "Mistral Vibe",
+        commands: &["vibe-acp"],
+        default_args: &[],
+        default_env: &[],
+    },
+    AcpBuiltin {
+        id: "kilo",
+        name: "Kilo",
+        commands: &["kilo"],
+        default_args: &["acp"],
+        default_env: &[],
+    },
+    AcpBuiltin {
+        id: "grok",
+        name: "Grok",
+        commands: &["grok"],
+        default_args: &["agent", "stdio"],
+        default_env: &[],
+    },
+];
+
 fn built_ins(_settings: &Settings) -> Vec<Arc<dyn Agent>> {
     #[allow(unused_mut)]
     let mut agents: Vec<Arc<dyn Agent>> = Vec::new();
@@ -297,21 +434,35 @@ fn built_ins(_settings: &Settings) -> Vec<Arc<dyn Agent>> {
     #[cfg(feature = "acp")]
     {
         use verre_agent_acp::{AcpAgent, SpawnSpec};
-        for (id, name, command) in [
-            ("antigravity", "Antigravity", "agy"),
-            ("devin", "Devin", "devin"),
-            ("kiro", "Kiro", "kiro-cli"),
-        ] {
-            let config = _settings.agents.get(id);
-            let binary = binary_override(config)
-                .map(std::path::Path::to_owned)
-                .or_else(|| detection::acp(command))
-                .unwrap_or_else(|| command.into());
-            let mut spec = launch_spec(binary, config);
-            acp_defaults(id, &mut spec);
-            let agent = AcpAgent::new(id, name, spec);
+        for builtin in ACP_BUILTINS {
+            let config = _settings.agents.get(builtin.id);
+            let detected = binary_override(config)
+                .map(resolve_binary)
+                .or_else(|| builtin.commands.iter().find_map(|cmd| detection::acp(cmd)));
+            let legacy_custom = _settings
+                .custom_acp_agents
+                .iter()
+                .find(|custom| custom.id == builtin.id);
+            let spec = if let (None, Some(custom)) = (&detected, legacy_custom) {
+                let mut custom_spec = SpawnSpec::new(resolve_command(&custom.command));
+                custom_spec.args.extend(custom.args.iter().map(Into::into));
+                custom_spec.env.extend(
+                    custom
+                        .env
+                        .iter()
+                        .map(|(key, value)| (key.into(), value.into())),
+                );
+                apply_config(&mut custom_spec, config);
+                custom_spec
+            } else {
+                let binary = detected.unwrap_or_else(|| PathBuf::from(builtin.commands[0]));
+                let mut builtin_spec = launch_spec(binary, config);
+                acp_defaults(builtin, &mut builtin_spec);
+                builtin_spec
+            };
+            let agent = AcpAgent::new(builtin.id, builtin.name, spec);
             #[cfg(feature = "antigravity-store")]
-            if id == "antigravity" {
+            if builtin.id == "antigravity" {
                 if let Some(home) = std::env::home_dir() {
                     agents.push(Arc::new(antigravity::Antigravity::new(agent, home)));
                     continue;
@@ -331,12 +482,7 @@ fn built_ins(_settings: &Settings) -> Vec<Arc<dyn Agent>> {
             let command = config
                 .and_then(|config| config.binary_path.as_ref())
                 .unwrap_or(&custom.command);
-            let binary = if std::path::Path::new(command).components().count() == 1 {
-                detection::acp(command).unwrap_or_else(|| PathBuf::from(command))
-            } else {
-                PathBuf::from(command)
-            };
-            let mut spec = SpawnSpec::new(binary);
+            let mut spec = SpawnSpec::new(resolve_command(command));
             spec.args.extend(custom.args.iter().map(Into::into));
             spec.env.extend(
                 custom
@@ -352,21 +498,46 @@ fn built_ins(_settings: &Settings) -> Vec<Arc<dyn Agent>> {
 }
 
 #[cfg(feature = "acp")]
-fn acp_defaults(id: &str, spec: &mut verre_agent_api::process::SpawnSpec) {
-    if id == "devin"
-        && !spec.args.iter().any(|arg| {
+fn acp_defaults(builtin: &AcpBuiltin, spec: &mut verre_agent_api::process::SpawnSpec) {
+    if builtin.id == "devin" {
+        if !spec.args.iter().any(|arg| {
             arg == "--process-model" || arg.to_string_lossy().starts_with("--process-model=")
-        })
-    {
-        spec.args
-            .splice(..0, ["--process-model".into(), "in-process".into()]);
+        }) {
+            spec.args
+                .splice(..0, ["--process-model".into(), "in-process".into()]);
+        }
+        if let Some(index) = spec.args.iter().position(|arg| arg == "acp") {
+            let acp = spec.args.remove(index);
+            spec.args.insert(0, acp);
+        } else {
+            spec.args.insert(0, "acp".into());
+        }
+    } else if !builtin.default_args.is_empty() {
+        let defaults: Vec<std::ffi::OsString> =
+            builtin.default_args.iter().map(Into::into).collect();
+        if builtin.default_args == ["acp"] {
+            if let Some(index) = spec.args.iter().position(|arg| arg == "acp") {
+                let acp = spec.args.remove(index);
+                spec.args.insert(0, acp);
+            } else {
+                spec.args.insert(0, "acp".into());
+            }
+        } else if !spec.args.starts_with(&defaults)
+            && !defaults.iter().all(|flag| spec.args.contains(flag))
+        {
+            spec.args.splice(..0, defaults);
+        }
     }
-    if let Some(index) = spec.args.iter().position(|arg| arg == "acp") {
-        let acp = spec.args.remove(index);
-        spec.args.insert(0, acp);
-    } else {
-        spec.args.insert(0, "acp".into());
+    for (key, value) in builtin.default_env {
+        spec.env
+            .entry(OsStr::new(key).to_os_string())
+            .or_insert_with(|| OsStr::new(value).to_os_string());
     }
+}
+
+#[cfg(all(test, feature = "acp"))]
+fn find_builtin(id: &str) -> &'static AcpBuiltin {
+    ACP_BUILTINS.iter().find(|entry| entry.id == id).unwrap()
 }
 
 #[cfg(all(test, feature = "acp"))]
@@ -374,19 +545,78 @@ fn acp_defaults(id: &str, spec: &mut verre_agent_api::process::SpawnSpec) {
 fn devin_respects_explicit_process_model() {
     use verre_agent_api::process::SpawnSpec;
 
+    let devin = find_builtin("devin");
     for args in [
         vec!["--process-model", "in-process"],
         vec!["--process-model=in-process"],
     ] {
         let mut spec = SpawnSpec::new("devin");
         spec.args.extend(args.iter().map(|arg| (*arg).into()));
-        acp_defaults("devin", &mut spec);
+        acp_defaults(devin, &mut spec);
         assert_eq!(spec.args[0], "acp");
         assert_eq!(spec.args.len(), args.len() + 1);
     }
     let mut spec = SpawnSpec::new("devin");
-    acp_defaults("devin", &mut spec);
+    acp_defaults(devin, &mut spec);
     assert_eq!(spec.args, ["acp", "--process-model", "in-process"]);
+}
+
+#[cfg(all(test, feature = "acp"))]
+#[test]
+fn builtin_acp_presets_construct_idempotent_args_and_unique_ids() {
+    use std::collections::HashSet;
+    use verre_agent_api::process::SpawnSpec;
+
+    let mut ids = HashSet::new();
+    for builtin in ACP_BUILTINS {
+        assert!(
+            ids.insert(builtin.id),
+            "duplicate builtin id {}",
+            builtin.id
+        );
+        let mut spec = SpawnSpec::new(builtin.commands[0]);
+        acp_defaults(builtin, &mut spec);
+        let first = spec.args.clone();
+        acp_defaults(builtin, &mut spec);
+        assert_eq!(
+            spec.args, first,
+            "acp_defaults not idempotent for {}",
+            builtin.id
+        );
+        let expected: Vec<std::ffi::OsString> =
+            builtin.default_args.iter().map(Into::into).collect();
+        assert_eq!(spec.args, expected, "unexpected args for {}", builtin.id);
+    }
+
+    let mut gemini = SpawnSpec::new("gemini");
+    gemini.args = vec!["--model".into(), "pro".into()];
+    acp_defaults(find_builtin("gemini"), &mut gemini);
+    assert_eq!(gemini.args, ["--acp", "--model", "pro"]);
+
+    let mut amp = SpawnSpec::new("amp-acp");
+    acp_defaults(find_builtin("amp"), &mut amp);
+    assert!(amp.args.is_empty());
+
+    let mut droid = SpawnSpec::new("droid");
+    droid
+        .env
+        .insert("DROID_DISABLE_AUTO_UPDATE".into(), "false".into());
+    acp_defaults(find_builtin("droid"), &mut droid);
+    assert_eq!(droid.args, ["exec", "--output-format", "acp-daemon"]);
+    assert_eq!(
+        droid
+            .env
+            .get(std::ffi::OsStr::new("DROID_DISABLE_AUTO_UPDATE"))
+            .unwrap(),
+        "false"
+    );
+    assert_eq!(
+        droid
+            .env
+            .get(std::ffi::OsStr::new("FACTORY_DROID_AUTO_UPDATE_ENABLED"))
+            .unwrap(),
+        "false"
+    );
 }
 
 #[cfg(all(test, feature = "acp"))]
@@ -396,8 +626,9 @@ async fn kiro_is_registered_once_and_uses_builtin_overrides() {
     use verre_proto::rpc::{AgentSettings, CustomAcpAgent};
 
     let mut spec = SpawnSpec::new("kiro-cli");
-    acp_defaults("kiro", &mut spec);
-    acp_defaults("kiro", &mut spec);
+    let kiro = find_builtin("kiro");
+    acp_defaults(kiro, &mut spec);
+    acp_defaults(kiro, &mut spec);
     assert_eq!(spec.args, ["acp"]);
 
     let directory = tempfile::tempdir().unwrap();
@@ -428,6 +659,31 @@ async fn kiro_is_registered_once_and_uses_builtin_overrides() {
     let info = registry.get("kiro").unwrap().info().await;
     assert_eq!(info.name, "Kiro");
     assert!(!info.installed);
+
+    let custom_gemini_path = std::env::current_exe()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let mut fallback_settings = Settings::default();
+    fallback_settings.agents.insert(
+        "gemini".into(),
+        AgentSettings {
+            binary_path: None,
+            ..Default::default()
+        },
+    );
+    fallback_settings.custom_acp_agents.push(CustomAcpAgent {
+        id: "gemini".into(),
+        name: "Custom Gemini".into(),
+        command: custom_gemini_path,
+        args: vec!["--experimental-acp".into()],
+        env: BTreeMap::new(),
+    });
+    let fallback_registry = Registry::from_settings(&fallback_settings).unwrap();
+    let gemini_info = fallback_registry.get("gemini").unwrap().info().await;
+    if detection::acp("gemini").is_none() {
+        assert!(gemini_info.installed);
+    }
 }
 
 #[cfg(feature = "claude")]
@@ -451,6 +707,20 @@ fn agent_path(settings: &Settings, id: &str, variable: &str, default: &str) -> O
 #[cfg(any(feature = "claude", feature = "codex", feature = "acp"))]
 fn binary_override(config: Option<&verre_proto::rpc::AgentSettings>) -> Option<&std::path::Path> {
     config?.binary_path.as_deref().map(std::path::Path::new)
+}
+
+#[cfg(feature = "acp")]
+fn resolve_command(command: &str) -> PathBuf {
+    resolve_binary(std::path::Path::new(command))
+}
+
+#[cfg(feature = "acp")]
+fn resolve_binary(path: &std::path::Path) -> PathBuf {
+    if path.components().count() == 1 {
+        detection::acp(&path.to_string_lossy()).unwrap_or_else(|| path.to_owned())
+    } else {
+        path.to_owned()
+    }
 }
 
 #[cfg(any(feature = "claude", feature = "codex", feature = "acp"))]
@@ -483,10 +753,16 @@ pub(crate) fn disabled_info(id: &str) -> AgentInfo {
     let (name, kind) = match id {
         "claude" => ("Claude Code", AgentKind::Claude),
         "codex" => ("Codex", AgentKind::Codex),
-        "antigravity" => ("Antigravity", AgentKind::Acp),
-        "devin" => ("Devin", AgentKind::Acp),
-        "kiro" => ("Kiro", AgentKind::Acp),
-        _ => (id, AgentKind::Acp),
+        _ => {
+            #[cfg(feature = "acp")]
+            let name = ACP_BUILTINS
+                .iter()
+                .find(|entry| entry.id == id)
+                .map_or(id, |entry| entry.name);
+            #[cfg(not(feature = "acp"))]
+            let name = id;
+            (name, AgentKind::Acp)
+        }
     };
     AgentInfo {
         id: id.into(),

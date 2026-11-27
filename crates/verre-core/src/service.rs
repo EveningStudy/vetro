@@ -21,6 +21,7 @@ use crate::{
     registry::Registry,
     sessions::Sessions,
     storage::{Filter, Index},
+    updater::{GithubReleasesUpdater, UpdateDriver},
     voice::VoiceManager,
     workspace,
 };
@@ -48,6 +49,7 @@ pub struct Core {
     pub(crate) project_refresh_requested: AtomicBool,
     shutting_down: AtomicBool,
     voice: VoiceManager,
+    updater: RwLock<Arc<dyn UpdateDriver>>,
     pub home: Home,
 }
 
@@ -80,6 +82,11 @@ impl Core {
             Ok(_) => {}
             Err(error) => home.log(&format!("Could not read Verre session origins: {error}")),
         }
+        if let Ok(voice_root) = home.voice_root() {
+            if voice_root.is_dir() {
+                crate::voice::cleanup_stale_temp(&voice_root, Some(Duration::from_secs(1800)));
+            }
+        }
         Arc::new(Self {
             home,
             registry: RwLock::new(Arc::new(registry)),
@@ -98,6 +105,7 @@ impl Core {
             project_refresh_requested: AtomicBool::new(false),
             shutting_down: AtomicBool::new(false),
             voice: VoiceManager::default(),
+            updater: RwLock::new(Arc::new(GithubReleasesUpdater)),
         })
     }
 
@@ -303,19 +311,25 @@ impl Core {
             self.registry()
                 .release_idle(|id| self.sessions.has_live(id), idle)
                 .await;
+            self.voice.evict_idle(Duration::from_secs(300)).await;
             self.log_native_drift();
         }
     }
 
-    pub async fn shutdown(&self) {
-        self.shutting_down.store(true, Ordering::Release);
+    pub async fn prepare_for_update(&self) {
         let mut tasks = tokio::task::JoinSet::new();
         for thread in self.sessions.snapshot() {
             tasks.spawn(async move { thread.shutdown().await });
         }
         while tasks.join_next().await.is_some() {}
+        self.voice.unload().await;
         self.registry().shutdown().await;
         self.log_native_drift();
+    }
+
+    pub async fn shutdown(&self) {
+        self.shutting_down.store(true, Ordering::Release);
+        self.prepare_for_update().await;
     }
 
     pub(crate) fn log_native_drift(&self) {
@@ -821,14 +835,19 @@ impl Core {
         let agents_changed =
             params.patch.get("agents").is_some() || params.patch.get("customAcpAgents").is_some();
         let refresh = self.detection_refresh.lock().await;
-        let (updated, replacement) =
+        let (updated, (voice_changed, replacement)) =
             self.home
                 .update_settings(params.patch, |previous, current| {
                     crate::voice::validate_settings(&current.voice)?;
-                    agents_changed
+                    let voice_changed = previous.voice != current.voice;
+                    let replacement = agents_changed
                         .then(|| self.registry().reconfigure(previous, current))
-                        .transpose()
+                        .transpose()?;
+                    Ok((voice_changed, replacement))
                 })?;
+        if voice_changed {
+            self.voice.unload().await;
+        }
         if let Some((next, retired)) = replacement {
             retired.retire();
             *self.registry.write().unwrap() = Arc::new(next);
@@ -1099,7 +1118,9 @@ impl Core {
             .to_string_lossy()
             .into_owned();
         self.home.change_state(|state| {
-            state.projects.entry(path.clone()).or_default().added = true;
+            let overlay = state.projects.entry(path.clone()).or_default();
+            overlay.added = true;
+            overlay.hidden = false;
         })?;
         self.project_changed(&path)
     }
@@ -1215,6 +1236,43 @@ impl Core {
         let root = self.home.voice_root()?;
         let settings = self.home.settings();
         self.voice.transcribe(&root, &settings.voice, params).await
+    }
+
+    pub fn voice_warmup(&self) {
+        if let Ok(root) = self.home.voice_root() {
+            let settings = self.home.settings();
+            self.voice.warmup(root, settings.voice);
+        }
+    }
+
+    pub fn set_updater(&self, driver: Arc<dyn UpdateDriver>) {
+        *self.updater.write().unwrap() = driver;
+    }
+
+    pub(crate) async fn check_update(&self, remote_client: bool) -> Result<UpdateCheckResult> {
+        let driver = self.updater.read().unwrap().clone();
+        let mut result = driver.check().await?;
+        if remote_client {
+            result.can_auto_install = false;
+        }
+        Ok(result)
+    }
+
+    pub(crate) async fn install_update(
+        self: &Arc<Self>,
+        params: UpdateInstallParams,
+    ) -> Result<UpdateInstallResult> {
+        if !params.force.unwrap_or(false) && self.sessions.has_active_work() {
+            return Err(AgentError::new(
+                ErrorCode::BackgroundWork,
+                "Active sessions or background processes are still running",
+            ));
+        }
+        let driver = self.updater.read().unwrap().clone();
+        let core = Arc::clone(self);
+        driver
+            .install(Arc::new(move |event| core.publish(event)))
+            .await
     }
 }
 
@@ -1694,5 +1752,63 @@ mod tests {
                 .iter()
                 .all(|choice| choice.value != "turbo"));
         }
+    }
+
+    struct StubUpdater;
+
+    impl UpdateDriver for StubUpdater {
+        fn check(&self) -> crate::updater::UpdateFuture<'_, UpdateCheckResult> {
+            Box::pin(async {
+                Ok(UpdateCheckResult {
+                    current_version: "0.3.0".into(),
+                    latest_version: Some("0.3.1".into()),
+                    available: true,
+                    can_auto_install: true,
+                    release_url: None,
+                    notes: None,
+                    published_at: None,
+                })
+            })
+        }
+
+        fn install(
+            &self,
+            _publish: Arc<dyn Fn(ServerEvent) + Send + Sync>,
+        ) -> crate::updater::UpdateFuture<'_, UpdateInstallResult> {
+            Box::pin(async {
+                Ok(UpdateInstallResult {
+                    restarting: true,
+                    opened_external: false,
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn install_update_blocks_active_work_unless_forced() {
+        let root = tempfile::tempdir().unwrap();
+        let home = Home::open(root.path().join(".verre"), root.path().into()).unwrap();
+        let core = Core::new(home, Registry::default());
+        core.set_updater(Arc::new(StubUpdater));
+
+        let idle_res = core
+            .install_update(UpdateInstallParams::default())
+            .await
+            .unwrap();
+        assert!(idle_res.restarting);
+
+        core.sessions
+            .insert_test_status(&core, "t-run", ThreadStatus::Running);
+        let blocked = core
+            .install_update(UpdateInstallParams::default())
+            .await
+            .unwrap_err();
+        assert_eq!(blocked.code, ErrorCode::BackgroundWork);
+
+        let forced = core
+            .install_update(UpdateInstallParams { force: Some(true) })
+            .await
+            .unwrap();
+        assert!(forced.restarting);
     }
 }

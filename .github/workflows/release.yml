@@ -27,6 +27,8 @@ jobs:
     needs: verify
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    outputs:
+      updater: ${{ steps.signing.outputs.updater }}
     strategy:
       fail-fast: false
       matrix:
@@ -45,6 +47,17 @@ jobs:
         uses: actions/checkout@v5
         with:
           ref: ${{ env.RELEASE_TAG }}
+
+      - name: Verify release version matches tag
+        shell: bash
+        run: |
+          tag_version="${RELEASE_TAG#v}"
+          cargo_version=$(sed -n '/^\[workspace\.package\]/,/^\[/{s/^version = "\([^"]*\)"/\1/p}' Cargo.toml | head -n1)
+          tauri_version=$(sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' apps/desktop/src-tauri/tauri.conf.json | head -n1)
+          if [ "$cargo_version" != "$tag_version" ] || [ "$tauri_version" != "$tag_version" ]; then
+            printf 'Version mismatch: tag=%s Cargo.toml=%s tauri.conf.json=%s\n' "$tag_version" "$cargo_version" "$tauri_version" >&2
+            exit 1
+          fi
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -86,10 +99,13 @@ jobs:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           WINDOWS_CODESIGN_PFX: ${{ secrets.WINDOWS_CODESIGN_PFX }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          VERRE_UPDATER_PUBKEY: ${{ secrets.VERRE_UPDATER_PUBKEY }}
         run: |
           {
             echo "apple=$(if [ -n "$APPLE_CERTIFICATE" ] && [ -n "$APPLE_SIGNING_IDENTITY" ]; then echo true; else echo false; fi)"
             echo "windows=$(if [ -n "$WINDOWS_CODESIGN_PFX" ]; then echo true; else echo false; fi)"
+            echo "updater=$(if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] && [ -n "$VERRE_UPDATER_PUBKEY" ]; then echo true; else echo false; fi)"
           } >> "$GITHUB_OUTPUT"
 
       - name: Enable macOS signing and notarization (optional)
@@ -151,16 +167,28 @@ jobs:
           "VERRE_WINDOWS_SIGNING_CONFIG=$config" >> $env:GITHUB_ENV
           "VERRE_WINDOWS_SIGNING_THUMBPRINT=$thumbprint" >> $env:GITHUB_ENV
 
+      - name: Configure updater signing (optional)
+        if: steps.signing.outputs.updater == 'true'
+        shell: pwsh
+        run: |
+          $config = Join-Path $env:RUNNER_TEMP "verre-updater.json"
+          @{ bundle = @{ createUpdaterArtifacts = $true } } | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $config
+          "VERRE_UPDATER_CONFIG=$config" >> $env:GITHUB_ENV
+
       - name: Build desktop app
         working-directory: apps/desktop
         shell: pwsh
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/apps/desktop/src-tauri/target/desktop
           APPIMAGE_EXTRACT_AND_RUN: ${{ runner.os == 'Linux' && '1' || '' }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          VERRE_UPDATER_PUBKEY: ${{ secrets.VERRE_UPDATER_PUBKEY }}
         run: |
           $tauriArgs = @("build")
           if ($env:RUNNER_OS -eq "Windows") { $tauriArgs += @("--bundles", "nsis") }
           if ($env:VERRE_WINDOWS_SIGNING_CONFIG) { $tauriArgs += @("--config", $env:VERRE_WINDOWS_SIGNING_CONFIG) }
+          if ($env:VERRE_UPDATER_CONFIG) { $tauriArgs += @("--config", $env:VERRE_UPDATER_CONFIG) }
           pnpm dlx @tauri-apps/cli@2.12.6 @tauriArgs
 
       - name: Test Linux AppImage
@@ -260,13 +288,26 @@ jobs:
             Windows)
               ext=".exe"
               copy_bundle "$B"/nsis/*.exe
+              set -- "$B"/nsis/*.exe.sig
+              if [ "$#" -eq 1 ] && [ -s "$1" ]; then
+                copy_bundle "$1"
+              fi
               ;;
             macOS)
               copy_bundle "$B"/dmg/*.dmg
               ditto -c -k --keepParent "$B/macos/Verre.app" "dist-release/Verre-$ASSET_TARGET.zip"
+              set -- "$B"/macos/*.app.tar.gz
+              if [ "$#" -eq 1 ] && [ -s "$1" ] && [ -s "$1.sig" ]; then
+                cp -- "$1" "dist-release/Verre-$ASSET_TARGET.app.tar.gz"
+                cp -- "$1.sig" "dist-release/Verre-$ASSET_TARGET.app.tar.gz.sig"
+              fi
               ;;
             Linux)
               copy_bundle "$B"/appimage/*.AppImage
+              set -- "$B"/appimage/*.AppImage.sig
+              if [ "$#" -eq 1 ] && [ -s "$1" ]; then
+                copy_bundle "$1"
+              fi
               copy_bundle "$B"/deb/*.deb
               ;;
             *)
@@ -304,11 +345,54 @@ jobs:
 
       - name: Verify the complete release asset set
         shell: bash
+        env:
+          GH_REPO: ${{ github.repository }}
+          UPDATER_EXPECTED: ${{ needs.build.outputs.updater }}
         run: |
+          sigs=$(find dist-release -maxdepth 1 -name '*.sig' -type f -size +0c | wc -l)
           count=$(find dist-release -maxdepth 1 -type f -size +0c | wc -l)
-          if [ "$count" -ne 11 ]; then
-            printf 'Expected 11 release assets, found %s\n' "$count" >&2
-            exit 1
+          if [ "$UPDATER_EXPECTED" = "true" ]; then
+            if [ "$sigs" -ne 4 ] || [ "$count" -ne 17 ]; then
+              printf 'Expected 17 signed release assets with 4 signatures, found count=%s sigs=%s\n' "$count" "$sigs" >&2
+              exit 1
+            fi
+          else
+            if [ "$sigs" -ne 0 ] || [ "$count" -ne 11 ]; then
+              printf 'Expected 11 unsigned release assets, found count=%s sigs=%s\n' "$count" "$sigs" >&2
+              exit 1
+            fi
+          fi
+          if [ "$UPDATER_EXPECTED" = "true" ]; then
+            node - <<'EOF'
+          const fs = require("fs");
+          const path = require("path");
+          const dir = "dist-release";
+          const tag = process.env.RELEASE_TAG;
+          const version = tag.replace(/^v/i, "");
+          const repo = process.env.GH_REPO;
+          const files = fs.readdirSync(dir);
+          const pick = (re) => {
+            const match = files.find((name) => re.test(name));
+            if (!match) throw new Error(`Missing release asset matching ${re}`);
+            const sig = `${match}.sig`;
+            if (!files.includes(sig)) throw new Error(`Missing updater signature ${sig}`);
+            return {
+              signature: fs.readFileSync(path.join(dir, sig), "utf8").trim(),
+              url: `https://github.com/${repo}/releases/download/${tag}/${encodeURIComponent(match)}`,
+            };
+          };
+          const manifest = {
+            version,
+            pub_date: new Date().toISOString(),
+            platforms: {
+              "windows-x86_64": pick(/_x64-setup\.exe$/),
+              "darwin-aarch64": pick(/^Verre-macos-arm64\.app\.tar\.gz$/),
+              "darwin-x86_64": pick(/^Verre-macos-x64\.app\.tar\.gz$/),
+              "linux-x86_64": pick(/_amd64\.AppImage$/),
+            },
+          };
+          fs.writeFileSync(path.join(dir, "latest.json"), JSON.stringify(manifest, null, 2) + "\n");
+          EOF
           fi
 
       - name: Attach artifacts to draft release

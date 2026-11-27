@@ -23,6 +23,7 @@ import type {
   ThreadStatus,
   ThreadSummary,
   ThreadUsage,
+  UpdateCheckResult,
   VoiceStatus,
   WorktreesResult,
 } from "~/api/types";
@@ -129,6 +130,11 @@ interface State {
   worktrees: Record<string, WorktreesResult>;
   voice: VoiceStatus | null;
   voiceProgress: { stage: string; downloadedBytes: number; totalBytes: number; done: boolean; error: string | null } | null;
+  updateCheck: UpdateCheckResult | null;
+  updateChecking: boolean;
+  updateInstalling: boolean;
+  updateConfirm: string | null;
+  updateProgress: { stage: string; downloadedBytes: number; totalBytes: number | null; done: boolean; error: string | null } | null;
 }
 
 export function routeFromLocation(): Route {
@@ -194,6 +200,11 @@ export const useStore = create<State>(() => ({
   worktrees: {},
   voice: null,
   voiceProgress: null,
+  updateCheck: null,
+  updateChecking: false,
+  updateInstalling: false,
+  updateConfirm: null,
+  updateProgress: null,
 }));
 
 const set = useStore.setState;
@@ -352,6 +363,13 @@ function handleEvent(event: ServerEvent) {
       set({ voiceProgress: event.data });
       if (event.data.done) void actions.refreshVoice();
       break;
+    case "update.progress":
+      set({
+        updateProgress: event.data,
+        updateInstalling: !event.data.done,
+      });
+      if (event.data.error) toast.error(event.data.error);
+      break;
     case "index.progress":
       break;
     case "app.resync":
@@ -476,6 +494,8 @@ async function syncLists() {
 }
 
 let started = false;
+let updateCheckTimer: ReturnType<typeof setTimeout> | null = null;
+let updateCheckDone = false;
 let lastBadgeCount: number | null = null;
 
 function syncBadge() {
@@ -523,6 +543,20 @@ export function startSync() {
     lastBadgeCount = null;
     syncBadge();
     void syncLists().catch((error) => toast.error(errorMessage(error)));
+    if (info && !info.remoteClient && !updateCheckDone && !updateCheckTimer) {
+      updateCheckTimer = setTimeout(() => {
+        updateCheckTimer = null;
+        if (get().connection !== "open" || get().app?.remoteClient) return;
+        void actions.checkUpdate(true).then((result) => {
+          if (!result) return;
+          updateCheckDone = true;
+          if (result.available && result.latestVersion) {
+            const lang = resolvedLanguage(usePrefs.getState().language);
+            toast.info(translate(lang, "update.availableToast", { version: `v${result.latestVersion}` }));
+          }
+        });
+      }, 4500);
+    }
     if (reconnected) for (const id of Object.keys(get().open)) void actions.openThread(id, true);
   });
   api.start();
@@ -1183,6 +1217,42 @@ export const actions = {
     } catch (error) {
       toast.error(errorMessage(error));
       return null;
+    }
+  },
+
+  async checkUpdate(silent = false): Promise<UpdateCheckResult | null> {
+    if (get().updateChecking) return get().updateCheck;
+    set({ updateChecking: true });
+    try {
+      const updateCheck = await client().request("app.checkUpdate", {});
+      set({ updateCheck, updateChecking: false });
+      return updateCheck;
+    } catch (error) {
+      set({ updateChecking: false });
+      if (!silent) toast.error(errorMessage(error));
+      return null;
+    }
+  },
+
+  dismissUpdateConfirm() {
+    set({ updateConfirm: null });
+  },
+
+  async installUpdate(force = false) {
+    if (get().updateInstalling) return;
+    set({ updateInstalling: true, updateProgress: null, updateConfirm: null });
+    try {
+      const result = await client().request("app.installUpdate", force ? { force } : {});
+      if (!result.restarting) {
+        set({ updateInstalling: false });
+      }
+    } catch (error) {
+      if (!force && error instanceof RpcFailure && error.code === "background_work") {
+        set({ updateInstalling: false, updateConfirm: error.message });
+      } else {
+        set({ updateInstalling: false });
+        toast.error(errorMessage(error));
+      }
     }
   },
 };

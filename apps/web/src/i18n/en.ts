@@ -568,6 +568,21 @@ export const en = {
   "voice.model.qwen3-asr.desc": "About 838 MB. Native punctuation, strong mixed Chinese and English.",
   "voice.model.funasr-nano": "Accurate · Fun-ASR-Nano",
   "voice.model.funasr-nano.desc": "About 803 MB. Native punctuation, handles noise well.",
+  "update.title": "Updates",
+  "update.check": "Check for updates",
+  "update.checking": "Checking…",
+  "update.upToDate": "You are on the latest version.",
+  "update.notChecked": "Check GitHub Releases for newer versions.",
+  "update.available": "v{version} available",
+  "update.availableToast": "Verre {version} is available in Settings → About.",
+  "update.installRestart": "Install & restart",
+  "update.downloadPage": "Open release",
+  "update.downloading": "Downloading update… {percent}%",
+  "update.installing": "Installing update…",
+  "update.restarting": "Restarting Verre…",
+  "update.activeWorkTitle": "Stop running work and update?",
+  "update.activeWorkBody": "One or more sessions or background processes are still running. Installing the update will stop them and restart Verre.",
+  "update.activeWorkConfirm": "Stop & update",
 } as const;
 
 export type MessageKey = keyof typeof en;

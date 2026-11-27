@@ -63,6 +63,8 @@ Unknown fields must be ignored by both sides. Timestamps are milliseconds since 
 | `workspace.openExternal` | `OpenExternalParams` | `Empty` | Desktop local client only. Opens a workspace folder, terminal, or file in the user's configured external app. |
 | `app.notify` | `NotifyParams` | `Empty` | Desktop local client only. Requests a native OS desktop notification when enabled in settings. |
 | `app.setBadge` | `BadgeParams` | `Empty` | Desktop local client only. Updates the taskbar overlay or Dock/launcher badge count. |
+| `app.checkUpdate` | `Empty` | `UpdateCheckResult` | Checks for newer Verre desktop releases (signed Tauri manifest or GitHub Releases). |
+| `app.installUpdate` | `UpdateInstallParams` | `UpdateInstallResult` | Desktop local client only. Fails with `background_work` if sessions or background work are active unless `force` is `true`. Installs a signed desktop update with `update.progress` events and restarts, or opens the release page. |
 | `settings.get` | `Empty` | `Settings` | |
 | `settings.update` | `SettingsUpdateParams` | `Settings` | Desktop client only. |
 | `prefs.get` | `Empty` | `Prefs` | UI preferences of the calling device, stored by the core so they survive a WebView without persistent storage. |
@@ -71,6 +73,7 @@ Unknown fields must be ignored by both sides. Timestamps are milliseconds since 
 | `remote.set` | `RemoteSetParams` | `RemoteStatus` | Local client only. Enable with `tailscaleServe: true` or `externalUrl` set to an HTTPS origin. Disable with `enabled: false`. |
 | `remote.createPairing` | `Empty` | `Pairing` | Desktop client only. |
 | `remote.revokeDevice` | `RemoteRevokeParams` | `RemoteStatus` | Remote clients can revoke their own device. |
+| `voice.warmup` | `Empty` | `Empty` | Preloads the configured local voice model in memory when recording begins. |
 
 ## Events
 
@@ -79,7 +82,7 @@ Unknown fields must be ignored by both sides. Timestamps are milliseconds since 
 - `thread.event`: for opened threads only; `seq` increases by one per thread. `ThreadEvent` is `item_added`, `item_updated`, `text_delta`, `summary`, `options`, `commands` or `usage`.
 - `threads.upserted` / `threads.removed`: the thread list changed (new session, title, status, link, history refresh). Sent to every connection.
 - `agents.changed`: a single agent with a newly observed official rate-limit snapshot. The core also broadcasts the updated agent list via `agents.updated`.
-- `agents.updated`, `projects.updated`, `index.progress`, `remote.updated`, `app.navigate`.
+- `agents.updated`, `projects.updated`, `index.progress`, `remote.updated`, `app.navigate`, `voice.progress`, `update.progress`.
 - `app.resync`: replace cached lists and snapshots of open threads after a history replacement or missed events.
 
 Listings and searches use the local index immediately. During a rebuild its initial results can be incomplete. `index.progress` reports a scan per agent. `done` means the scan ended, including sessions whose transcripts require sign-in. `threads.upserted` carries newly indexed summaries and changes to links. Open history threads receive item events as their native transcripts change.

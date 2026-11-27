@@ -740,6 +740,16 @@ export class MockTransport implements Transport {
     "app.ping": () => ({}),
     "app.notify": () => ({}),
     "app.setBadge": () => ({}),
+    "app.checkUpdate": () => ({
+      currentVersion: "0.3.0",
+      latestVersion: "0.3.0",
+      available: false,
+      canAutoInstall: false,
+      releaseUrl: "https://github.com/EveningStudy/verre/releases/latest",
+      notes: null,
+      publishedAt: null,
+    }),
+    "app.installUpdate": () => ({ restarting: false, openedExternal: true }),
     "settings.get": () => this.settings,
     "settings.update": (params) => {
       this.desktopOnly();
@@ -788,6 +798,7 @@ export class MockTransport implements Transport {
       return this.voiceStatus();
     },
     "voice.transcribe": () => ({ text: "Mock voice transcript", durationMs: 120 }),
+    "voice.warmup": () => ({}),
   };
 }
 

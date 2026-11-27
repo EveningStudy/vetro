@@ -52,6 +52,9 @@ import type { ThreadStartParams } from "./bindings/ThreadStartParams";
 import type { ThreadUpdateParams } from "./bindings/ThreadUpdateParams";
 import type { ThreadsListParams } from "./bindings/ThreadsListParams";
 import type { ThreadsListResult } from "./bindings/ThreadsListResult";
+import type { UpdateCheckResult } from "./bindings/UpdateCheckResult";
+import type { UpdateInstallParams } from "./bindings/UpdateInstallParams";
+import type { UpdateInstallResult } from "./bindings/UpdateInstallResult";
 import type { VoiceModelParams } from "./bindings/VoiceModelParams";
 import type { VoiceStatus } from "./bindings/VoiceStatus";
 import type { VoiceTranscribeParams } from "./bindings/VoiceTranscribeParams";
@@ -101,6 +104,8 @@ export interface Methods {
   "workspace.openExternal": [OpenExternalParams, Empty];
   "app.notify": [NotifyParams, Empty];
   "app.setBadge": [BadgeParams, Empty];
+  "app.checkUpdate": [Empty, UpdateCheckResult];
+  "app.installUpdate": [UpdateInstallParams, UpdateInstallResult];
   "settings.get": [Empty, Settings];
   "settings.update": [SettingsUpdateParams, Settings];
   "prefs.get": [Empty, Prefs];
@@ -113,6 +118,7 @@ export interface Methods {
   "voice.install": [VoiceModelParams, VoiceStatus];
   "voice.uninstall": [VoiceModelParams, VoiceStatus];
   "voice.transcribe": [VoiceTranscribeParams, VoiceTranscribeResult];
+  "voice.warmup": [Empty, Empty];
 }
 
 export type Method = keyof Methods;
