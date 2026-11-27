@@ -40,15 +40,34 @@
 - **跨代理共用單一側邊欄。** 統一瀏覽 Verre、各家桌面版與 CLI 的本機紀錄，支援中英文全文檢索，並能直接展開由代理啟動的關聯子工作階段（如 Claude Code 執行的 `codex exec`）。
 - **手機與瀏覽器私密遠控。** 透過 Tailscale Serve 或自建 HTTPS 反向代理配對裝置（僅監聽 `127.0.0.1`），外出也能即時核准權限或中途插話。
 
-| 原始通訊日誌與啟動命令列 | 權限核准卡片與暖白紙感主題 |
-|---|---|
-| ![Codex 對話旁展開的原始通訊日誌面板](../images/zh-Hant/raw-log.webp) | ![Devin 權限請求與暖白紙感淺色主題](../images/zh-Hant/permission.webp) |
-| **Claude Code 發起的關聯子工作階段** | **內建與自訂主題** |
-| ![Claude Code 對話右側展開的 Codex 子工作階段](../images/zh-Hant/linked-child.webp) | ![外觀設定頁面展示全部 10 款內建主題](../images/zh-Hant/themes.webp) |
+## 介面一覽
+
+**10 款內建與自訂主題**
+
+![外觀設定頁面展示全部 10 款內建主題](../images/zh-Hant/themes.webp)
+
+<details>
+<summary>展開更多截圖：原始通訊日誌、權限核准、關聯子工作階段與手機版</summary>
+
+#### 原始通訊日誌與啟動命令列
+
+![Codex 對話旁展開的原始通訊日誌面板](../images/zh-Hant/raw-log.webp)
+
+#### 權限核准卡片與暖白紙感主題
+
+![Devin 權限請求與暖白紙感淺色主題](../images/zh-Hant/permission.webp)
+
+#### Claude Code 發起的關聯子工作階段
+
+![Claude Code 對話右側展開的 Codex 子工作階段](../images/zh-Hant/linked-child.webp)
+
+#### 手機與瀏覽器遠端核准
 
 <p align="center">
-  <img src="../images/zh-Hant/phone.webp" width="260" alt="手機版面中的互動式選項卡片">
+  <img src="../images/zh-Hant/phone.webp" width="300" alt="手機版面中的互動式選項卡片">
 </p>
+
+</details>
 
 ## 支援的代理
 

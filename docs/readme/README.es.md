@@ -40,15 +40,34 @@
 - **Una barra lateral para todo.** Explora sesiones locales de Verre, apps oficiales y CLIs, busca en inglés y CJK, y salta directo a sesiones secundarias lanzadas por otro agente (como Claude Code ejecutando `codex exec`).
 - **Acceso remoto privado.** Empareja un teléfono o navegador mediante Tailscale Serve o tu propio proxy inverso HTTPS (`127.0.0.1`), aprueba permisos desde cualquier lugar e interviene en turnos activos.
 
-| Registro sin procesar y línea de comandos | Aprobación de permisos y tema Papel cálido |
-|---|---|
-| ![Panel de registro sin procesar junto a un hilo de Codex](../images/es/raw-log.webp) | ![Solicitud de permiso de Devin en el tema claro Papel cálido](../images/es/permission.webp) |
-| **Sesión secundaria vinculada** | **Temas integrados y personalizados** |
-| ![Hilo de Claude Code inspeccionando una sesión secundaria de Codex](../images/es/linked-child.webp) | ![Ajustes de apariencia mostrando los 10 temas integrados](../images/es/themes.webp) |
+## Capturas de pantalla
+
+**10 temas integrados y personalizados**
+
+![Ajustes de apariencia mostrando los 10 temas integrados](../images/es/themes.webp)
+
+<details>
+<summary>Ver más capturas — registro sin procesar, aprobaciones, sesiones secundarias y móvil</summary>
+
+#### Registro sin procesar y línea de comandos
+
+![Panel de registro sin procesar junto a un hilo de Codex](../images/es/raw-log.webp)
+
+#### Aprobación de permisos y tema Papel cálido
+
+![Solicitud de permiso de Devin en el tema claro Papel cálido](../images/es/permission.webp)
+
+#### Sesión secundaria vinculada
+
+![Hilo de Claude Code inspeccionando una sesión secundaria de Codex](../images/es/linked-child.webp)
+
+#### Aprobación remota desde el móvil
 
 <p align="center">
-  <img src="../images/es/phone.webp" width="260" alt="Diseño móvil mostrando opciones interactivas de respuesta">
+  <img src="../images/es/phone.webp" width="300" alt="Diseño móvil mostrando opciones interactivas de respuesta">
 </p>
+
+</details>
 
 ## Agentes compatibles
 

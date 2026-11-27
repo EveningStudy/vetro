@@ -52,8 +52,26 @@ jobs:
         shell: bash
         run: |
           tag_version="${RELEASE_TAG#v}"
-          cargo_version=$(sed -n '/^\[workspace\.package\]/,/^\[/{s/^version = "\([^"]*\)"/\1/p}' Cargo.toml | head -n1)
-          tauri_version=$(sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' apps/desktop/src-tauri/tauri.conf.json | head -n1)
+          cargo_version=$(awk '
+            { gsub(/\r/, "") }
+            /^\[workspace\.package\]/ { in_pkg = 1; next }
+            /^\[/ { in_pkg = 0 }
+            in_pkg && /^version = "/ {
+              sub(/^version = "/, "")
+              sub(/".*$/, "")
+              print
+              exit
+            }
+          ' Cargo.toml)
+          tauri_version=$(awk '
+            { gsub(/\r/, "") }
+            /"version"[[:space:]]*:[[:space:]]*"/ {
+              sub(/^.*"version"[[:space:]]*:[[:space:]]*"/, "")
+              sub(/".*$/, "")
+              print
+              exit
+            }
+          ' apps/desktop/src-tauri/tauri.conf.json)
           if [ "$cargo_version" != "$tag_version" ] || [ "$tauri_version" != "$tag_version" ]; then
             printf 'Version mismatch: tag=%s Cargo.toml=%s tauri.conf.json=%s\n' "$tag_version" "$cargo_version" "$tauri_version" >&2
             exit 1

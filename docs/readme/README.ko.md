@@ -40,15 +40,34 @@
 - **도구를 아우르는 하나의 사이드바.** Verre, 공식 데스크톱 앱, CLI의 로컬 기록을 한곳에서 탐색하고 영어·한중일 전체 검색과 에이전트 간 하위 세션(예: Claude Code가 실행한 `codex exec`) 이동을 지원합니다.
 - **비공개 원격 액세스.** Tailscale Serve 또는 직접 구성한 HTTPS 리버스 프록시(`127.0.0.1`만 수신)로 스마트폰이나 브라우저를 페어링해 이동 중에도 승인 요청을 처리하고 실행 중인 턴에 개입할 수 있습니다.
 
-| 원본 통신 로그 및 실행 명령 | 승인 카드 및 웜 페이퍼 테마 |
-|---|---|
-| ![Codex 스레드 옆에 열린 원본 로그 패널](../images/ko/raw-log.webp) | ![웜 페이퍼 라이트 테마의 Devin 권한 요청 카드](../images/ko/permission.webp) |
-| **연결된 하위 세션** | **기본 및 사용자 지정 테마** |
-| ![Claude Code 스레드에서 확인하는 Codex 하위 세션](../images/ko/linked-child.webp) | ![10가지 기본 테마 전체를 보여 주는 화면 스타일 설정](../images/ko/themes.webp) |
+## 스크린샷
+
+**10가지 기본 및 사용자 지정 테마**
+
+![10가지 기본 테마 전체를 보여 주는 화면 스타일 설정](../images/ko/themes.webp)
+
+<details>
+<summary>더 많은 스크린샷 보기 — 원본 로그, 권한 승인, 연결된 하위 세션, 모바일</summary>
+
+#### 원본 통신 로그 및 실행 명령
+
+![Codex 스레드 옆에 열린 원본 로그 패널](../images/ko/raw-log.webp)
+
+#### 승인 카드 및 웜 페이퍼 테마
+
+![웜 페이퍼 라이트 테마의 Devin 권한 요청 카드](../images/ko/permission.webp)
+
+#### 연결된 하위 세션
+
+![Claude Code 스레드에서 확인하는 Codex 하위 세션](../images/ko/linked-child.webp)
+
+#### 모바일 원격 승인
 
 <p align="center">
-  <img src="../images/ko/phone.webp" width="260" alt="모바일 레이아웃의 대화형 질문 선택지">
+  <img src="../images/ko/phone.webp" width="300" alt="모바일 레이아웃의 대화형 질문 선택지">
 </p>
+
+</details>
 
 ## 지원 에이전트
 

@@ -40,15 +40,34 @@
 - **跨代理同一侧边栏。** 统一浏览 Verre、官方桌面端和 CLI 的本地会话，支持中英文全文检索，并直接点开代理调用产生的关联子会话（例如 Claude Code 启动的 `codex exec`）。
 - **手机与网页私密远控。** 通过 Tailscale Serve 或自备 HTTPS 反代配对手机或远程浏览器（仅监听 `127.0.0.1`），随时审批权限并中途插话。
 
-| 原始通信日志与启动命令行 | 权限审批卡片与暖白纸感主题 |
-|---|---|
-| ![Codex 会话旁展开的原始通信日志面板](../images/zh/raw-log.webp) | ![Devin 权限请求与暖白纸感浅色主题](../images/zh/permission.webp) |
-| **Claude Code 发起的关联子会话** | **内置与自定义主题** |
-| ![Claude Code 会话右侧展开的 Codex 子会话](../images/zh/linked-child.webp) | ![外观设置页展示全部 10 套内置主题](../images/zh/themes.webp) |
+## 界面一览
+
+**10 套内置与自定义主题**
+
+![外观设置页展示全部 10 套内置主题](../images/zh/themes.webp)
+
+<details>
+<summary>展开更多截图：原始通信日志、权限审批、关联子会话与手机端</summary>
+
+#### 原始通信日志与启动命令行
+
+![Codex 会话旁展开的原始通信日志面板](../images/zh/raw-log.webp)
+
+#### 权限审批卡片与暖白纸感主题
+
+![Devin 权限请求与暖白纸感浅色主题](../images/zh/permission.webp)
+
+#### Claude Code 发起的关联子会话
+
+![Claude Code 会话右侧展开的 Codex 子会话](../images/zh/linked-child.webp)
+
+#### 手机与网页远程审批
 
 <p align="center">
-  <img src="../images/zh/phone.webp" width="260" alt="手机端布局中的交互式选项卡片">
+  <img src="../images/zh/phone.webp" width="300" alt="手机端布局中的交互式选项卡片">
 </p>
+
+</details>
 
 ## 支持的代理
 

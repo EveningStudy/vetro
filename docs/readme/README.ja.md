@@ -40,15 +40,34 @@
 - **ツール横断の単一サイドバー。** Verre や各社公式アプリ・CLI のローカル履歴をまとめて表示し、英語・CJK の全文検索や、Claude Code が起動した `codex exec` のような子セッションへのジャンプも行えます。
 - **プライベートなリモート操作。** Tailscale Serve や自前の HTTPS リバースプロキシ経由でスマートフォンやブラウザーをペアリング可能（`127.0.0.1` のみ待機）。移動中でも承認や割り込み送信ができます。
 
-| 生プロトコルログと起動コマンド | 承認カードとウォームペーパーテーマ |
-|---|---|
-| ![Codex スレッド横に開いた生ログパネル](../images/ja/raw-log.webp) | ![ウォームペーパーテーマ上の Devin 権限リクエスト](../images/ja/permission.webp) |
-| **リンクされた子セッション** | **組み込み・カスタムテーマ** |
-| ![Claude Code スレッド内で展開した Codex 子セッション](../images/ja/linked-child.webp) | ![全 10 種類の組み込みテーマを表示した外観設定画面](../images/ja/themes.webp) |
+## スクリーンショット
+
+**10 種類の組み込み・カスタムテーマ**
+
+![全 10 種類の組み込みテーマを表示した外観設定画面](../images/ja/themes.webp)
+
+<details>
+<summary>その他のスクリーンショットを見る（生ログ・承認カード・子セッション・モバイル）</summary>
+
+#### 生プロトコルログと起動コマンド
+
+![Codex スレッド横に開いた生ログパネル](../images/ja/raw-log.webp)
+
+#### 承認カードとウォームペーパーテーマ
+
+![ウォームペーパーテーマ上の Devin 権限リクエスト](../images/ja/permission.webp)
+
+#### リンクされた子セッション
+
+![Claude Code スレッド内で展開した Codex 子セッション](../images/ja/linked-child.webp)
+
+#### モバイルからのリモート承認
 
 <p align="center">
-  <img src="../images/ja/phone.webp" width="260" alt="モバイルレイアウトの対話式質問カード">
+  <img src="../images/ja/phone.webp" width="300" alt="モバイルレイアウトの対話式質問カード">
 </p>
+
+</details>
 
 ## 対応エージェント
 

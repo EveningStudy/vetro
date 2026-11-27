@@ -40,15 +40,34 @@
 - **One sidebar across tools.** Browse local sessions from Verre, vendor desktop apps, and CLIs, search full transcripts across English and CJK, and jump straight into linked child sessions (such as Claude Code calling `codex exec`).
 - **Private remote access.** Pair a phone or browser over Tailscale Serve or your own HTTPS reverse proxy (`127.0.0.1` only), handle approvals on the move, and steer running turns.
 
-| Raw wire log & command line | Approval card & Warm Paper theme |
-|---|---|
-| ![Raw wire log drawer next to a Codex thread](docs/images/en/raw-log.webp) | ![Devin permission prompt in Warm Paper light theme](docs/images/en/permission.webp) |
-| **Linked child session** | **Built-in & custom themes** |
-| ![Claude Code thread inspecting a child Codex session](docs/images/en/linked-child.webp) | ![Appearance settings showing all 10 built-in themes](docs/images/en/themes.webp) |
+## Screenshots
+
+**10 built-in & custom themes**
+
+![Appearance settings showing all 10 built-in themes](docs/images/en/themes.webp)
+
+<details>
+<summary>More screenshots — raw wire log, approvals, linked child sessions, and mobile</summary>
+
+#### Raw wire log & command line
+
+![Raw wire log drawer next to a Codex thread](docs/images/en/raw-log.webp)
+
+#### Approval card & Warm Paper theme
+
+![Devin permission prompt in Warm Paper light theme](docs/images/en/permission.webp)
+
+#### Linked child session
+
+![Claude Code thread inspecting a child Codex session](docs/images/en/linked-child.webp)
+
+#### Mobile & remote approval
 
 <p align="center">
-  <img src="docs/images/en/phone.webp" width="260" alt="Mobile layout showing interactive question choices">
+  <img src="docs/images/en/phone.webp" width="300" alt="Mobile layout showing interactive question choices">
 </p>
+
+</details>
 
 ## Supported agents
 

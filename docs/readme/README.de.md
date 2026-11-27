@@ -40,15 +40,34 @@
 - **Eine Seitenleiste für alle Tools.** Durchsuche lokale Sitzungen aus Verre, offiziellen Desktop-Apps und CLIs in Englisch und CJK und springe direkt in verknüpfte Subsitzungen (etwa wenn Claude Code `codex exec` startet).
 - **Privater Fernzugriff.** Kopple Smartphone oder Browser per Tailscale Serve oder eigenem HTTPS-Reverse-Proxy (nur `127.0.0.1`), gib Befehle unterwegs frei und steuere laufende Züge nach.
 
-| Rohprotokoll & Startbefehl | Freigabekarte & Warmes-Papier-Theme |
-|---|---|
-| ![Rohprotokoll-Panel neben einem Codex-Thread](../images/de/raw-log.webp) | ![Devin-Berechtigungsabfrage im hellen Theme Warmes Papier](../images/de/permission.webp) |
-| **Verknüpfte Subsitzung** | **Integrierte & eigene Themes** |
-| ![Claude-Code-Thread mit geöffneter Codex-Subsitzung](../images/de/linked-child.webp) | ![Darstellungseinstellungen mit allen 10 integrierten Themes](../images/de/themes.webp) |
+## Screenshots
+
+**10 integrierte & eigene Themes**
+
+![Darstellungseinstellungen mit allen 10 integrierten Themes](../images/de/themes.webp)
+
+<details>
+<summary>Weitere Screenshots — Rohprotokoll, Freigaben, Subsitzungen und Mobilansicht</summary>
+
+#### Rohprotokoll & Startbefehl
+
+![Rohprotokoll-Panel neben einem Codex-Thread](../images/de/raw-log.webp)
+
+#### Freigabekarte & Warmes-Papier-Theme
+
+![Devin-Berechtigungsabfrage im hellen Theme Warmes Papier](../images/de/permission.webp)
+
+#### Verknüpfte Subsitzung
+
+![Claude-Code-Thread mit geöffneter Codex-Subsitzung](../images/de/linked-child.webp)
+
+#### Mobile Fernfreigabe
 
 <p align="center">
-  <img src="../images/de/phone.webp" width="260" alt="Mobile Ansicht mit interaktiven Auswahloptionen">
+  <img src="../images/de/phone.webp" width="300" alt="Mobile Ansicht mit interaktiven Auswahloptionen">
 </p>
+
+</details>
 
 ## Unterstützte Agenten
 

@@ -40,15 +40,34 @@
 - **Une barre latérale unifiée.** Parcourez les sessions locales issues de Verre, des apps officielles et des CLI, recherchez en anglais et CJC, et ouvrez directement les sous-sessions liées (par exemple quand Claude Code lance `codex exec`).
 - **Accès distant privé.** Associez un téléphone ou un navigateur via Tailscale Serve ou votre propre proxy inverse HTTPS (`127.0.0.1` uniquement), approuvez des actions à distance et intervenez en cours de tour.
 
-| Journal brut et ligne de commande | Demande d’autorisation et thème Papier chaud |
-|---|---|
-| ![Panneau de journal brut à côté d’un fil Codex](../images/fr/raw-log.webp) | ![Demande d’autorisation Devin avec le thème clair Papier chaud](../images/fr/permission.webp) |
-| **Sous-session liée** | **Thèmes intégrés et personnalisés** |
-| ![Fil Claude Code inspectant une sous-session Codex](../images/fr/linked-child.webp) | ![Réglages d’apparence présentant les 10 thèmes intégrés](../images/fr/themes.webp) |
+## Captures d’écran
+
+**10 thèmes intégrés et personnalisés**
+
+![Réglages d’apparence présentant les 10 thèmes intégrés](../images/fr/themes.webp)
+
+<details>
+<summary>Plus de captures — journal brut, autorisations, sous-sessions liées et mobile</summary>
+
+#### Journal brut et ligne de commande
+
+![Panneau de journal brut à côté d’un fil Codex](../images/fr/raw-log.webp)
+
+#### Demande d’autorisation et thème Papier chaud
+
+![Demande d’autorisation Devin avec le thème clair Papier chaud](../images/fr/permission.webp)
+
+#### Sous-session liée
+
+![Fil Claude Code inspectant une sous-session Codex](../images/fr/linked-child.webp)
+
+#### Approbation à distance sur mobile
 
 <p align="center">
-  <img src="../images/fr/phone.webp" width="260" alt="Interface mobile affichant des choix interactifs">
+  <img src="../images/fr/phone.webp" width="300" alt="Interface mobile affichant des choix interactifs">
 </p>
+
+</details>
 
 ## Agents pris en charge
 
