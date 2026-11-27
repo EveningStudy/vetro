@@ -95,10 +95,13 @@ impl Catalog {
                 let name = match id {
                     ":read-only" => "Read only",
                     ":workspace" => "Workspace",
-                    ":danger-full-access" => "Unrestricted sandbox",
+                    ":danger-full-access" => "Full access",
                     other => profile["name"].as_str().unwrap_or(other),
                 };
-                Some(choice(id, name, string(profile, "description")))
+                let description = string(profile, "description").or_else(|| {
+                    (id == ":danger-full-access").then(|| "No sandbox restrictions".into())
+                });
+                Some(choice(id, name, description))
             })
             .collect();
         let approvals: Vec<_> = match &self.approvals {
@@ -114,8 +117,16 @@ impl Catalog {
                 .collect(),
         };
         let approvals = approvals.iter().map(|id| match id.as_str() {
-            "on-request" => choice(id, "Ask when needed", None),
-            "never" => choice(id, "Never ask for approval", None),
+            "on-request" => choice(
+                id,
+                "On request",
+                Some("Ask for approval when needed".into()),
+            ),
+            "never" => choice(
+                id,
+                "Never ask",
+                Some("Run commands and edits without approval prompts".into()),
+            ),
             value if value.starts_with('{') => choice(id, "Granular", None),
             value => choice(id, value, None),
         });
@@ -124,16 +135,13 @@ impl Catalog {
             .into_iter()
             .filter(|_| permissions.is_empty())
             .map(|id| {
-                choice(
-                    id,
-                    match id {
-                        "read-only" => "Read only",
-                        "workspace-write" => "Workspace",
-                        "danger-full-access" => "Unrestricted sandbox",
-                        value => value,
-                    },
-                    None,
-                )
+                let (name, description) = match id {
+                    "read-only" => ("Read only", None),
+                    "workspace-write" => ("Workspace", None),
+                    "danger-full-access" => ("Full access", Some("No sandbox restrictions".into())),
+                    value => (value, None),
+                };
+                choice(id, name, description)
             })
             .collect::<Vec<_>>();
         let mut options: Vec<_> = [

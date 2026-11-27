@@ -892,6 +892,19 @@ async fn exercise(path: &Path, cwd: &Path, fake_bin: &Path, marker_port: u16) {
     let resumed = second.call("threads.open", json!({"threadId": id})).await;
     assert_eq!(resumed["options"][0]["currentValue"], "updated");
     assert_eq!(fake.detaches.load(Ordering::Relaxed), 1);
+    let resumed_items = resumed["items"].as_array().unwrap();
+    let resumed_ids: std::collections::HashSet<&str> = resumed_items
+        .iter()
+        .map(|item| item["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(resumed_ids.len(), resumed_items.len());
+    assert_eq!(
+        resumed_items
+            .iter()
+            .filter(|item| item["type"] == "user_message" && item["content"][0]["text"] == "Resumed")
+            .count(),
+        1
+    );
     fake.authenticated.store(false, Ordering::Relaxed);
     let send = json!({"threadId": id, "content": [{"type": "text", "text": "Retry after login"}]});
     first
@@ -976,6 +989,23 @@ async fn exercise(path: &Path, cwd: &Path, fake_bin: &Path, marker_port: u16) {
     assert_eq!(seq, history["seq"].as_u64().unwrap() + 1);
     assert_eq!(event["item"]["ordinal"], 6);
     assert_eq!(fake.reads.load(Ordering::Relaxed), reads + 1);
+    let refreshed_history = first
+        .call("threads.open", json!({"threadId": "fake:history"}))
+        .await;
+    let history_items = refreshed_history["items"].as_array().unwrap();
+    assert_eq!(history_items.len(), 6);
+    let history_ids: std::collections::HashSet<&str> = history_items
+        .iter()
+        .map(|item| item["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(history_ids.len(), history_items.len());
+    assert_eq!(
+        history_items
+            .iter()
+            .filter(|item| item["id"] == "external-0")
+            .count(),
+        1
+    );
     for (query, marked) in [
         ("external writer", "<mark>External writer</mark>"),
         ("全文检索", "<mark>全文检索</mark>"),

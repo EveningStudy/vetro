@@ -436,6 +436,12 @@ async fn call(
             core.notify(parse(params)?);
             empty()
         }
+        "app.setBadge" => {
+            client.desktop()?;
+            let params: BadgeParams = parse(params)?;
+            core.set_badge(params.count);
+            empty()
+        }
         "settings.get" => {
             let mut settings = core.home.settings();
             if client.remote() {

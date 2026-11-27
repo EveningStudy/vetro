@@ -701,6 +701,71 @@ pub struct NotifyParams {
     pub thread_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct BadgeParams {
+    pub count: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum NotificationMode {
+    Off,
+    #[default]
+    Notifications,
+    Sound,
+    NotificationsAndSound,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum BadgeScope {
+    #[default]
+    Attention,
+    NeedsInput,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum BadgeClearMode {
+    #[default]
+    OnThreadOpen,
+    OnWindowFocus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", default)]
+#[ts(export)]
+pub struct NotificationSettings {
+    pub mode: NotificationMode,
+    pub on_complete: bool,
+    pub on_input: bool,
+    pub on_error: bool,
+    pub background_only: bool,
+    pub badge_enabled: bool,
+    pub badge_scope: BadgeScope,
+    pub badge_clear: BadgeClearMode,
+}
+
+impl Default for NotificationSettings {
+    fn default() -> Self {
+        Self {
+            mode: NotificationMode::Notifications,
+            on_complete: true,
+            on_input: true,
+            on_error: true,
+            background_only: true,
+            badge_enabled: true,
+            badge_scope: BadgeScope::Attention,
+            badge_clear: BadgeClearMode::OnThreadOpen,
+        }
+    }
+}
+
 // --- settings ----------------------------------------------------------------------------------
 
 /// Per-agent launch settings. Vetro passes nothing to an agent beyond what is listed here.
@@ -825,6 +890,7 @@ pub struct Settings {
     pub external_editor: Option<String>,
     /// Show native desktop notifications when background threads need input or finish.
     pub notifications_enabled: bool,
+    pub notifications: NotificationSettings,
     pub voice: VoiceSettings,
 }
 
@@ -838,6 +904,7 @@ impl Default for Settings {
             port: 0,
             external_editor: None,
             notifications_enabled: true,
+            notifications: NotificationSettings::default(),
             voice: VoiceSettings::default(),
         }
     }

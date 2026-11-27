@@ -1,4 +1,5 @@
 import {
+  BellIcon,
   BotIcon,
   ChevronDownIcon,
   DownloadIcon,
@@ -18,11 +19,27 @@ import {
 } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { client } from "~/api/client";
-import type { AgentInfo, AgentSettings, Pairing, Settings } from "~/api/types";
+import type {
+  AgentInfo,
+  AgentSettings,
+  BadgeClearMode,
+  BadgeScope,
+  NotificationMode,
+  NotificationSettings,
+  Pairing,
+  Settings,
+} from "~/api/types";
 import type { RemoteSetParams } from "~/api/bindings/RemoteSetParams";
 import { useT } from "~/i18n";
 import { useDesktopChrome } from "~/lib/desktopChrome";
 import { relativeTime, shortVersion } from "~/lib/format";
+import {
+  hasPopup,
+  hasSound,
+  playNotificationChime,
+  resolvedNotificationSettings,
+  unlockNotificationAudio,
+} from "~/lib/notifications";
 import { cn, copyText } from "~/lib/utils";
 import {
   type BypassMemoryScope,
@@ -71,6 +88,7 @@ const SECTIONS: { id: SettingsSection; icon: typeof BotIcon }[] = [
   { id: "general", icon: SlidersHorizontalIcon },
   { id: "threads", icon: MessageSquareIcon },
   { id: "appearance", icon: PaletteIcon },
+  { id: "notifications", icon: BellIcon },
   { id: "agents", icon: BotIcon },
   { id: "voice", icon: MicIcon },
   { id: "remote", icon: GlobeIcon },
@@ -110,6 +128,7 @@ export function SettingsView({ section }: { section: SettingsSection }) {
             {section === "general" ? <GeneralSection /> : null}
             {section === "threads" ? <ThreadsSection /> : null}
             {section === "appearance" ? <AppearanceSection /> : null}
+            {section === "notifications" ? <NotificationsSection /> : null}
             {section === "agents" ? <AgentsSection /> : null}
             {section === "voice" ? <VoiceSection /> : null}
             {section === "remote" ? <RemoteSection /> : null}
@@ -183,9 +202,15 @@ function AgentsSection() {
   const agents = useStore((s) => s.agents);
   const { settings, update } = useSettings();
   const [refreshing, setRefreshing] = useState(false);
+  const [showMoreAgents, setShowMoreAgents] = useState(false);
   const remoteClient = useStore((s) => s.app?.remoteClient ?? false);
   const isCustom = (id: string) => !BUILTIN_AGENT_IDS.includes(id) && (settings?.customAcpAgents.some((c) => c.id === id) ?? false);
   const listed = agents.filter((agent, index) => agents.findIndex((other) => other.id === agent.id) === index);
+  const isPrimaryAgent = (agent: AgentInfo) =>
+    agent.installed || isCustom(agent.id) || Boolean(settings?.agents[agent.id]?.binaryPath);
+  const installedAgents = listed.filter(isPrimaryAgent);
+  const uninstalledAgents = listed.filter((agent) => !isPrimaryAgent(agent));
+  const expandedMore = showMoreAgents || installedAgents.length === 0;
   return (
     <section>
       <SectionTitle
@@ -211,10 +236,30 @@ function AgentsSection() {
       />
       {remoteClient ? <p className="mb-3 text-xs text-muted-foreground">{t("settings.remoteReadOnly")}</p> : null}
       <div className="flex flex-col gap-3">
-        {listed.map((agent) => (
+        {installedAgents.map((agent) => (
           <AgentCard key={agent.id} agent={agent} settings={settings?.agents[agent.id]} custom={isCustom(agent.id)} onSave={update} readOnly={remoteClient} />
         ))}
       </div>
+      {uninstalledAgents.length > 0 ? (
+        <div className="mt-4">
+          <button
+            type="button"
+            aria-expanded={expandedMore}
+            onClick={() => setShowMoreAgents((open) => !open)}
+            className="flex cursor-pointer items-center gap-2 rounded-md py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground"
+          >
+            <ChevronDownIcon className={cn("size-3.5 transition-transform", !expandedMore && "-rotate-90")} />
+            {t("settings.moreAgents", { n: uninstalledAgents.length })}
+          </button>
+          {expandedMore ? (
+            <div className="mt-2 flex flex-col gap-3">
+              {uninstalledAgents.map((agent) => (
+                <AgentCard key={agent.id} agent={agent} settings={settings?.agents[agent.id]} custom={isCustom(agent.id)} onSave={update} readOnly={remoteClient} />
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       <CustomAgents
         settings={settings}
         readOnly={remoteClient}
@@ -906,14 +951,6 @@ function GeneralSection() {
         <Row label={t("settings.externalEditor")} hint={t("settings.externalEditorHint")}>
           <EditorSelect value={settings?.externalEditor ?? null} disabled={remoteClient || !settings} onChange={(externalEditor) => void update({ externalEditor })} />
         </Row>
-        <Row label={t("settings.notifications")} hint={t("settings.notificationsHint")}>
-          <Switch
-            checked={settings?.notificationsEnabled ?? true}
-            disabled={remoteClient || !settings}
-            aria-label={t("settings.notifications")}
-            onCheckedChange={(notificationsEnabled) => void update({ notificationsEnabled })}
-          />
-        </Row>
         <Row label={t("settings.idleRelease")} hint={t("settings.idleReleaseHint")}>
           <Input
             type="number"
@@ -1081,6 +1118,148 @@ function AppearanceSection() {
         </Row>
         <Row label={t("settings.paperGrain")} hint={t("settings.paperGrainHint")}>
           <Switch checked={paperGrain} aria-label={t("settings.paperGrain")} onCheckedChange={setPaperGrain} />
+        </Row>
+      </Group>
+    </section>
+  );
+}
+
+function NotificationsSection() {
+  const t = useT();
+  const { settings, update } = useSettings();
+  const remoteClient = useStore((s) => s.app?.remoteClient ?? false);
+  const notif = resolvedNotificationSettings(settings);
+  const disabled = remoteClient || !settings;
+  const alertsOff = notif.mode === "off";
+  const modes: NotificationMode[] = ["off", "notifications", "sound", "notifications_and_sound"];
+  const modeLabel = (mode: NotificationMode) => t(`settings.notificationsMode.${mode}`);
+  const patchNotif = (patch: Partial<NotificationSettings>) => void update({ notifications: patch });
+  const testAlert = () => {
+    unlockNotificationAudio();
+    if (alertsOff) {
+      toast.info(t("settings.notificationsTestOff"));
+      return;
+    }
+    if (hasSound(notif.mode)) void playNotificationChime("complete");
+    if (hasPopup(notif.mode)) {
+      if (!remoteClient) {
+        void client()
+          .request("app.notify", {
+            title: t("app.name"),
+            body: t("settings.notificationsTestBody"),
+          })
+          .catch((error) => toast.error(errorMessage(error)));
+      } else {
+        toast.info(t("settings.desktopOnly"));
+      }
+    } else if (notif.mode === "sound") {
+      toast.success(t("settings.notificationsTestSound"));
+    }
+  };
+  return (
+    <section>
+      <SectionTitle
+        title={t("settings.notifications")}
+        action={
+          <Button size="sm" variant="outline" onClick={testAlert}>
+            <BellIcon />
+            {t("settings.notificationsTest")}
+          </Button>
+        }
+      />
+      {remoteClient ? <p className="mb-3 text-xs text-muted-foreground">{t("settings.desktopOnly")}</p> : null}
+      <Group>
+        <Row label={t("settings.notificationsMode")} hint={t("settings.notificationsHint")}>
+          <Menu>
+            <MenuTrigger disabled={disabled} render={<Button size="sm" variant="outline" className="min-w-40 justify-between" />}>
+              <span className="truncate">{modeLabel(notif.mode)}</span>
+              <ChevronDownIcon className="size-3.5 opacity-70" />
+            </MenuTrigger>
+            <MenuPopup align="end" className="w-48">
+              <MenuRadioGroup
+                value={notif.mode}
+                onValueChange={(next) => {
+                  const mode = next as NotificationMode;
+                  if (hasSound(mode)) unlockNotificationAudio();
+                  patchNotif({ mode });
+                }}
+              >
+                {modes.map((mode) => (
+                  <MenuRadioItem key={mode} value={mode}>
+                    {modeLabel(mode)}
+                  </MenuRadioItem>
+                ))}
+              </MenuRadioGroup>
+            </MenuPopup>
+          </Menu>
+        </Row>
+        <Row label={t("settings.notificationsBackgroundOnly")} hint={t("settings.notificationsBackgroundOnlyHint")}>
+          <Switch
+            checked={notif.backgroundOnly}
+            disabled={disabled || alertsOff}
+            aria-label={t("settings.notificationsBackgroundOnly")}
+            onCheckedChange={(backgroundOnly) => patchNotif({ backgroundOnly })}
+          />
+        </Row>
+      </Group>
+      <SubTitle>{t("settings.notificationsEvents")}</SubTitle>
+      <Group>
+        <Row label={t("settings.notificationsOnComplete")}>
+          <Switch
+            checked={notif.onComplete}
+            disabled={disabled || alertsOff}
+            aria-label={t("settings.notificationsOnComplete")}
+            onCheckedChange={(onComplete) => patchNotif({ onComplete })}
+          />
+        </Row>
+        <Row label={t("settings.notificationsOnInput")}>
+          <Switch
+            checked={notif.onInput}
+            disabled={disabled || alertsOff}
+            aria-label={t("settings.notificationsOnInput")}
+            onCheckedChange={(onInput) => patchNotif({ onInput })}
+          />
+        </Row>
+        <Row label={t("settings.notificationsOnError")}>
+          <Switch
+            checked={notif.onError}
+            disabled={disabled || alertsOff}
+            aria-label={t("settings.notificationsOnError")}
+            onCheckedChange={(onError) => patchNotif({ onError })}
+          />
+        </Row>
+      </Group>
+      <SubTitle>{t("settings.notificationsBadgeGroup")}</SubTitle>
+      <Group>
+        <Row label={t("settings.notificationsBadge")} hint={t("settings.notificationsBadgeHint")}>
+          <Switch
+            checked={notif.badgeEnabled}
+            disabled={disabled}
+            aria-label={t("settings.notificationsBadge")}
+            onCheckedChange={(badgeEnabled) => patchNotif({ badgeEnabled })}
+          />
+        </Row>
+        <Row label={t("settings.notificationsBadgeScope")}>
+          <Segmented<BadgeScope>
+            value={notif.badgeScope}
+            disabled={disabled || !notif.badgeEnabled}
+            onChange={(badgeScope) => patchNotif({ badgeScope })}
+            options={[
+              { value: "attention", label: t("settings.notificationsBadgeScope.attention") },
+              { value: "needs_input", label: t("settings.notificationsBadgeScope.needs_input") },
+            ]}
+          />
+        </Row>
+        <Row label={t("settings.notificationsBadgeClear")}>
+          <Segmented<BadgeClearMode>
+            value={notif.badgeClear}
+            disabled={disabled || !notif.badgeEnabled}
+            onChange={(badgeClear) => patchNotif({ badgeClear })}
+            options={[
+              { value: "on_thread_open", label: t("settings.notificationsBadgeClear.on_thread_open") },
+              { value: "on_window_focus", label: t("settings.notificationsBadgeClear.on_window_focus") },
+            ]}
+          />
         </Row>
       </Group>
     </section>

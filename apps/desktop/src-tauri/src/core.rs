@@ -23,6 +23,8 @@ pub struct CoreHandle {
     pub url: String,
     pub embedded_core: Weak<Core>,
     pub theme_rx: Option<watch::Receiver<WindowTheme>>,
+    pub badge_rx: Option<watch::Receiver<u32>>,
+    pub language_rx: Option<watch::Receiver<Option<String>>>,
     pub notify_rx: Option<broadcast::Receiver<NotifyParams>>,
     pub shutdown: Option<ShutdownHandle>,
 }
@@ -40,6 +42,8 @@ pub async fn start() -> anyhow::Result<CoreHandle> {
             url,
             embedded_core: Weak::new(),
             theme_rx: None,
+            badge_rx: None,
+            language_rx: None,
             notify_rx: None,
             shutdown: None,
         });
@@ -50,6 +54,8 @@ pub async fn start() -> anyhow::Result<CoreHandle> {
     let core = Core::new(home, registry);
     let embedded_core = Arc::downgrade(&core);
     let theme_rx = core.theme_watch();
+    let badge_rx = core.badge_watch();
+    let language_rx = core.language_watch();
     let notify_rx = core.notify_subscribe();
     let server = Server::bind(core, None)
         .await
@@ -72,6 +78,8 @@ pub async fn start() -> anyhow::Result<CoreHandle> {
         url,
         embedded_core,
         theme_rx: Some(theme_rx),
+        badge_rx: Some(badge_rx),
+        language_rx: Some(language_rx),
         notify_rx: Some(notify_rx),
         shutdown: Some(ShutdownHandle { trigger, done }),
     })

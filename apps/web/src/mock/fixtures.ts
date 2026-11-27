@@ -126,27 +126,26 @@ export const agentOptions: Record<string, { options: ConfigOption[]; commands: S
         choices: [choice("low", "Low"), choice("medium", "Medium"), choice("high", "High"), choice("xhigh", "Extra high")],
       },
       {
-        id: "approval_preset",
-        name: "Access",
+        id: "permissions",
+        name: "Sandbox profile",
         description: null,
         category: "mode",
-        currentValue: "auto",
+        currentValue: ":danger-full-access",
         choices: [
-          choice("read-only", "Read only", "Asks before editing files or running commands"),
-          choice("auto", "Auto", "Edits and runs commands in the workspace"),
-          choice("full-access", "Full access", "No sandbox, no approvals", null, true),
+          choice(":read-only", "Read only", "Asks before editing files or running commands"),
+          choice(":workspace", "Workspace", "Edits and runs commands in the workspace"),
+          choice(":danger-full-access", "Full access", "No sandbox restrictions", null, true),
         ],
       },
       {
-        id: "sandbox",
-        name: "Sandbox",
+        id: "approvalPolicy",
+        name: "Approval policy",
         description: null,
-        category: "other",
-        currentValue: "workspace-write",
+        category: "mode",
+        currentValue: "never",
         choices: [
-          choice("read-only", "Read only", "The agent can only read files"),
-          choice("workspace-write", "Workspace write", "Edits stay inside the workspace"),
-          choice("danger-full-access", "Full access", "No sandbox", null, true),
+          choice("on-request", "On request", "Ask for approval when needed"),
+          choice("never", "Never ask", "Run commands and edits without approval prompts", null, true),
         ],
       },
     ],
@@ -220,6 +219,14 @@ export const agentOptions: Record<string, { options: ConfigOption[]; commands: S
   devin: {
     options: [
       {
+        id: "mode",
+        name: "Mode",
+        description: null,
+        category: "mode",
+        currentValue: "code",
+        choices: [choice("code", "Code"), choice("plan", "Plan"), choice("ask", "Ask")],
+      },
+      {
         id: "model",
         name: "Model",
         description: null,
@@ -238,14 +245,6 @@ export const agentOptions: Record<string, { options: ConfigOption[]; commands: S
         category: "thought_level",
         currentValue: "high",
         choices: [choice("off", "Off"), choice("medium", "Medium"), choice("high", "High")],
-      },
-      {
-        id: "mode",
-        name: "Mode",
-        description: null,
-        category: "mode",
-        currentValue: "code",
-        choices: [choice("code", "Code"), choice("plan", "Plan"), choice("ask", "Ask")],
       },
     ],
     commands: [
@@ -1178,6 +1177,16 @@ export const settings: Settings = {
   port: 47600,
   externalEditor: null,
   notificationsEnabled: true,
+  notifications: {
+    mode: "notifications",
+    onComplete: true,
+    onInput: true,
+    onError: true,
+    backgroundOnly: true,
+    badgeEnabled: true,
+    badgeScope: "attention",
+    badgeClear: "on_thread_open",
+  },
   voice: { modelId: null, endpointUrl: null, endpointModel: null, replacements: {} },
 };
 

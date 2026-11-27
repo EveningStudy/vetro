@@ -1,4 +1,4 @@
-import { BrainIcon, CheckIcon, ChevronDownIcon, CpuIcon, RotateCcwIcon, SearchIcon, ShieldAlertIcon, ShieldIcon, SlidersHorizontalIcon } from "lucide-react";
+import { BrainIcon, CheckIcon, ChevronDownIcon, CpuIcon, RotateCcwIcon, SearchIcon, ShieldIcon, ShieldOffIcon, SlidersHorizontalIcon } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import type { ConfigOption } from "~/api/types";
 import { useT } from "~/i18n";
@@ -104,28 +104,36 @@ export function OptionPicker({
   const choices = useMemo(() => prepare(option), [option]);
   const current = choices.find((choice) => choice.value === option.currentValue);
   const danger = !!current?.danger;
-  const Icon = danger ? ShieldAlertIcon : categoryIcons[option.category];
+  const emphasized = !danger && option.category === "mode" && Boolean(defaultValue && option.currentValue !== defaultValue);
+  const Icon = danger ? ShieldOffIcon : categoryIcons[option.category];
   const label = current?.label || option.name;
+  const description = current?.description ?? option.description;
+  const tooltip = description ? `${option.name}: ${label} — ${description}` : `${option.name}: ${label}`;
   const triggerClass = cn(
     composerControlClass,
-    danger ? "shrink-0" : option.category === "model" ? "min-w-[4.5rem] max-w-[11rem] shrink" : "max-w-[9rem] @min-[40rem]:max-w-[14rem] @max-[36rem]:px-1.5",
-    danger &&
-      "border-destructive/40 bg-error-surface/70 text-destructive-foreground hover:bg-error-surface hover:text-destructive-foreground [&_svg:not([class*='text-'])]:text-destructive-foreground",
+    "min-w-0 shrink",
+    option.category === "model"
+      ? "min-w-[5.5rem] max-w-[13rem]"
+      : option.category === "thought_level"
+        ? "max-w-[7.5rem]"
+        : "max-w-[10rem] @min-[44rem]:max-w-[12rem] @max-[32rem]:px-1.5",
+    danger && "text-foreground [&_svg:not([class*='text-'])]:text-warning-foreground",
+    emphasized && "text-foreground [&_svg:not([class*='text-'])]:text-foreground/80",
   );
   const trigger = (
     <>
       {option.category !== "model" || compact || danger ? <Icon /> : null}
       <span className={cn("min-w-0 max-w-44 truncate", !current && "text-muted-foreground")}>{label}</span>
-      <ChevronDownIcon className="-me-1 size-3 opacity-70" />
+      <ChevronDownIcon className="-me-1 size-3 shrink-0 opacity-70" />
     </>
   );
   if (choices.length > SEARCHABLE_AFTER)
-    return <SearchablePicker option={option} choices={choices} onChange={onChange} disabled={disabled} trigger={trigger} triggerClass={triggerClass} />;
+    return <SearchablePicker option={option} choices={choices} onChange={onChange} disabled={disabled} trigger={trigger} triggerClass={triggerClass} tooltip={tooltip} />;
   const safeDefault = defaultValue ?? choices.find((choice) => !choice.danger)?.value;
   const resettable = danger && !!safeDefault && safeDefault !== option.currentValue && choices.some((choice) => choice.value === safeDefault);
   return (
     <Menu>
-      <MenuTrigger disabled={disabled} className={triggerClass} aria-label={option.name} title={option.description ?? option.name}>
+      <MenuTrigger disabled={disabled} className={triggerClass} aria-label={option.name} title={tooltip}>
         {trigger}
       </MenuTrigger>
       <MenuPopup side="top" align="start" className="w-64">
@@ -138,8 +146,8 @@ export function OptionPicker({
               {list.map((choice) => (
                 <MenuRadioItem key={choice.value} value={choice.value} className="items-start py-1.5">
                   <span className="flex min-w-0 flex-col">
-                    <span className={cn("inline-flex items-center gap-1.5 truncate", choice.danger && "text-destructive-foreground")}>
-                      {choice.danger ? <ShieldAlertIcon className="size-3.5 shrink-0 text-destructive-foreground" /> : null}
+                    <span className="inline-flex items-center gap-1.5 truncate">
+                      {choice.danger ? <ShieldOffIcon className="size-3.5 shrink-0 text-warning-foreground" /> : null}
                       <span className="truncate">{choice.label}</span>
                     </span>
                     {choice.description ? <span className="text-xs text-muted-foreground">{choice.description}</span> : null}
@@ -170,6 +178,7 @@ function SearchablePicker({
   disabled,
   trigger,
   triggerClass,
+  tooltip,
 }: {
   option: ConfigOption;
   choices: Choice[];
@@ -177,6 +186,7 @@ function SearchablePicker({
   disabled?: boolean;
   trigger: React.ReactNode;
   triggerClass: string;
+  tooltip: string;
 }) {
   const t = useT();
   const [open, setOpen] = useState(false);
@@ -208,7 +218,7 @@ function SearchablePicker({
         }
       }}
     >
-      <PopoverTrigger disabled={disabled} className={triggerClass} aria-label={option.name} title={option.description ?? option.name}>
+      <PopoverTrigger disabled={disabled} className={triggerClass} aria-label={option.name} title={tooltip}>
         {trigger}
       </PopoverTrigger>
       <PopoverPopup side="top" align="start" className="w-72" initialFocus={inputRef}>
@@ -258,8 +268,8 @@ function SearchablePicker({
                     onClick={() => pick(choice)}
                     className={cn("flex min-h-7 w-full items-center gap-2 rounded-sm px-2 py-1 text-left text-sm", current === active && "bg-accent")}
                   >
-                    {choice.danger ? <ShieldAlertIcon className="size-3.5 shrink-0 text-destructive-foreground" /> : null}
-                    <span className={cn("min-w-0 flex-1 truncate", choice.danger && "text-destructive-foreground")}>{choice.label}</span>
+                    {choice.danger ? <ShieldOffIcon className="size-3.5 shrink-0 text-warning-foreground" /> : null}
+                    <span className="min-w-0 flex-1 truncate">{choice.label}</span>
                     {selected ? <CheckIcon className="size-3.5 shrink-0" /> : null}
                   </button>
                 );

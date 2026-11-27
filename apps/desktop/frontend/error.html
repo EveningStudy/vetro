@@ -33,12 +33,22 @@
   </head>
   <body>
     <main>
-      <h1>Vetro could not start</h1>
+      <h1 id="heading">Vetro could not start</h1>
       <p id="error"></p>
     </main>
     <script>
+      const lang =
+        window.__VETRO_LANG__ ||
+        (Array.isArray(navigator.languages) &&
+        navigator.languages.some((value) => String(value).toLowerCase().startsWith("zh"))
+          ? "zh"
+          : "en");
+      document.documentElement.lang = lang;
+      if (lang === "zh") {
+        document.getElementById("heading").textContent = "Vetro 无法启动";
+      }
       document.getElementById("error").textContent =
-        window.__VETRO_ERROR__ || "Unknown error";
+        window.__VETRO_ERROR__ || (lang === "zh" ? "未知错误" : "Unknown error");
     </script>
   </body>
 </html>

@@ -43,7 +43,7 @@ Each agent runs through its native client interface. The options and actions you
 
 | Agent | How Vetro runs it | What keeps working |
 |---|---|---|
-| Codex | `codex app-server`, the protocol the Codex desktop app uses | Everything in `~/.codex/config.toml`: ChatGPT sign-in, API keys, custom providers and gateways, hooks, MCP servers, skills |
+| Codex | `codex app-server`, the protocol the Codex desktop app uses | Your existing `~/.codex/config.toml` setup: ChatGPT sign-in, API keys, custom providers and gateways, hooks, MCP servers, skills |
 | Claude Code | `claude -p` with stream-json in both directions, the protocol the official Agent SDK uses | The real Claude Code system prompt, `CLAUDE.md`, hooks, skills, plugins and MCP servers, as in the terminal |
 | Antigravity | `agy acp`, the integration Google documents for ACP clients ([details](docs/agents/antigravity.md)) | Antigravity's own tools, settings and sign-in |
 | Devin | `devin acp` | Devin's own tools, settings and sign-in |
@@ -61,6 +61,7 @@ Vetro never handles credentials. When an agent needs you to sign in, Vetro offer
 - **Permission requests and questions** from the agent, answered in place.
 - **Model, mode and thinking-level pickers** whose options come from the agent itself.
 - **Remote access** with device pairing through Tailscale Serve or your own HTTPS reverse proxy. The server listens on `127.0.0.1`. See the [setup guide](docs/remote.md).
+- **Local voice input & notifications.** Optional on-demand offline speech-to-text models (downloaded to `~/.vetro/voice` only when requested), plus configurable desktop popups, sound chimes, and taskbar/Dock badges.
 - **Headless mode.** `vetro serve` runs the same core without a window and serves the UI to your browser.
 - English and Simplified Chinese interface, light and dark themes.
 
@@ -78,7 +79,7 @@ The screenshots use synthetic data.
 
 ## Size
 
-Measured on Windows 11 on 2026-11-23, version 0.1.0:
+Baseline measurements on Windows 11 (version 0.1.0, 2026-11-23; release sizes vary slightly across versions and platforms):
 
 | | Size |
 |---|---|
@@ -102,10 +103,11 @@ You do not have to take the rules on trust.
   - a process test that kills the host and checks that no child survives ([crates/vetro-agent-api/tests/transport.rs](crates/vetro-agent-api/tests/transport.rs)).
 - **Look at what is stored.** Everything Vetro writes is in `~/.vetro` (`%USERPROFILE%\.vetro` on Windows; set `VETRO_HOME` to move it):
   - `config.json`: settings;
-  - `state.json`: local token, paired devices, your local titles, archive flags and project names;
+  - `state.json`: local token, hashed paired-device tokens, your local titles, archive flags and project names;
   - `index.db`: the thread index and search text; safe to delete, it is rebuilt from the agents' own stores;
-  - `raw/`: the size-capped wire log of each session you attached in Vetro;
-  - `logs/`: Vetro's own logs.
+  - `raw/`: the wire log of each session you attached in Vetro (ring-capped at 4 MiB per file);
+  - `logs/`: Vetro's own logs (for example `core.log`, capped at 256 KiB).
+  See [SECURITY.md](SECURITY.md) for data boundaries, redaction, and remote pairing limits.
 - **Uninstall.** Delete the app and `~/.vetro`. Nothing else needs cleaning up.
 
 <!-- STATUS:BEGIN -->

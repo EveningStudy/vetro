@@ -43,7 +43,7 @@ Vetro 通过代理的原生接口运行。界面上的选项和操作取决于�
 
 | 代理 | Vetro 的启动方式 | 照常生效的内容 |
 |---|---|---|
-| Codex | `codex app-server`，也就是 Codex 桌面应用自己用的协议 | `~/.codex/config.toml` 里的一切：ChatGPT 登录、API key、自定义 provider 和网关、hooks、MCP 服务器、skills |
+| Codex | `codex app-server`，也就是 Codex 桌面应用自己用的协议 | 你现有的 `~/.codex/config.toml` 配置：ChatGPT 登录、API key、自定义 provider 和网关、hooks、MCP 服务器、skills |
 | Claude Code | `claude -p`，输入输出都用 stream-json，也就是官方 Agent SDK 使用的协议 | 真正的 Claude Code 系统提示词、`CLAUDE.md`、hooks、skills、插件和 MCP 服务器，和在终端里一样 |
 | Antigravity | `agy acp`，Google 为 ACP 客户端提供的官方接入方式（[详细说明](docs/agents/antigravity.md)） | Antigravity 自己的工具、设置和登录 |
 | Devin | `devin acp` | Devin 自己的工具、设置和登录 |
@@ -61,6 +61,7 @@ Vetro 从不经手凭据。代理需要登录时，Vetro 列出代理自己提�
 - **权限请求和提问**：代理发来的请求，直接在会话里回答。
 - **模型、模式和思考强度选择器**：选项都来自代理本身。
 - **远程访问**：通过 Tailscale Serve 或自己的 HTTPS 反向代理配对设备。服务只监听 `127.0.0.1`。见[配置指南](docs/remote.md)。
+- **本地语音输入与通知角标**：按需下载的离线语音转写模型（仅在用户主动下载时写入 `~/.vetro/voice`），并支持弹窗、提示音和任务栏 / 程序坞未读计数角标。
 - **无窗口模式**：`vetro serve` 运行同一个核心，不开窗口，在浏览器里使用界面。
 - 界面支持简体中文和英文，有浅色和深色主题。
 
@@ -78,7 +79,7 @@ Vetro 从不经手凭据。代理需要登录时，Vetro 列出代理自己提�
 
 ## 体积
 
-2026-11-23 在 Windows 11 上测得，版本 0.1.0：
+2026-11-23 在 Windows 11 上测得的 0.1.0 基线参考（不同版本与平台体积会有小幅浮动）：
 
 | | 大小 |
 |---|---|
@@ -102,10 +103,11 @@ Vetro 从不经手凭据。代理需要登录时，Vetro 列出代理自己提�
   - 进程测试：强行结束宿主进程，检查没有子进程存活（[crates/vetro-agent-api/tests/transport.rs](crates/vetro-agent-api/tests/transport.rs)）。
 - **看它存了什么。** Vetro 写的所有东西都在 `~/.vetro` 里（Windows 上是 `%USERPROFILE%\.vetro`，可以用 `VETRO_HOME` 换位置）：
   - `config.json`：设置；
-  - `state.json`：本地令牌、已配对设备、你在本地改的标题、归档标记和项目名称；
+  - `state.json`：本地令牌、已配对设备令牌的 SHA-256 哈希、你在本地改的标题、归档标记和项目名称；
   - `index.db`：会话索引和搜索用的文本，可以随时删除，会从各代理自己的存储重新建立；
-  - `raw/`：你在 Vetro 里打开过的会话的原始通信日志，有大小上限；
-  - `logs/`：Vetro 自己的日志。
+  - `raw/`：你在 Vetro 里打开过的会话的原始通信日志（单文件循环上限 4 MiB）；
+  - `logs/`：Vetro 自己的日志（例如 `core.log`，上限 256 KiB）。
+  数据边界、脱敏规则与远程配对限制见 [SECURITY.md](SECURITY.md)。
 - **卸载。** 删除应用和 `~/.vetro` 即可，没有别的地方需要清理。
 
 <!-- STATUS:BEGIN -->

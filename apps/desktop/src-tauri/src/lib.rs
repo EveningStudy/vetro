@@ -9,7 +9,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, Weak};
 use std::time::Duration;
 
-use tauri::menu::{MenuBuilder, MenuItemBuilder};
+use tauri::image::Image;
+use tauri::menu::{MenuBuilder, MenuItem, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::webview::NewWindowResponse;
 use tauri::window::Color;
@@ -47,16 +48,34 @@ pub fn run() -> Result<()> {
             let tag = tag.as_deref();
             let handle_app = app.handle().clone();
             let core = tauri::async_runtime::block_on(crate::core::start());
-            match core {
+            let (language_rx, lang) = match core {
                 Ok(mut handle) => {
                     app.manage(CoreShutdown(Mutex::new(handle.shutdown.take())));
+                    let language_rx = handle.language_rx.clone();
+                    let initial_lang = language_rx.as_ref().and_then(|rx| rx.borrow().clone());
+                    let lang = resolve_desktop_lang(initial_lang.as_deref());
                     core_window(&handle_app, handle, tag)?;
+                    (language_rx, lang)
                 }
                 Err(err) => {
-                    error_window(&handle_app, &format!("{err:#}"), tag)?;
+                    let lang = resolve_desktop_lang(None);
+                    error_window(&handle_app, &format!("{err:#}"), tag, lang)?;
+                    (None, lang)
                 }
+            };
+            let (open_item, quit_item) = build_tray(&handle_app, tag, lang)?;
+            if let Some(mut language_rx) = language_rx {
+                let tag = tag.map(str::to_owned);
+                tauri::async_runtime::spawn(async move {
+                    while language_rx.changed().await.is_ok() {
+                        let pref = language_rx.borrow_and_update().clone();
+                        let lang = resolve_desktop_lang(pref.as_deref());
+                        let (open_text, quit_text) = tray_labels(lang, tag.as_deref());
+                        let _ = open_item.set_text(open_text);
+                        let _ = quit_item.set_text(quit_text);
+                    }
+                });
             }
-            build_tray(&handle_app, tag)?;
             Ok(())
         })
         .build(tauri::generate_context!())?;
@@ -197,7 +216,7 @@ fn core_window(
             }
         })
         .build()?;
-    watch_window_close(&window, handle.embedded_core);
+    watch_window_close(&window, handle.embedded_core.clone());
     #[cfg(target_os = "windows")]
     {
         watch_window_maximized(&window);
@@ -219,19 +238,44 @@ fn core_window(
             }
         });
     }
+    if let Some(mut badge) = handle.badge_rx {
+        let window = window.clone();
+        tauri::async_runtime::spawn(async move {
+            while badge.changed().await.is_ok() {
+                let count = *badge.borrow_and_update();
+                update_window_badge(&window, count);
+            }
+        });
+    }
     if let Some(mut notifications) = handle.notify_rx {
+        let app_for_action = app.clone();
+        let core_for_action = handle.embedded_core;
+        let _ = app.notification().on_action(move |performed| {
+            show_main_window(&app_for_action);
+            if let Some(thread_id) = performed
+                .notification()
+                .and_then(|data| data.extra().get("threadId"))
+                .and_then(|value| value.as_str())
+            {
+                if let Some(core) = core_for_action.upgrade() {
+                    core.emit_navigate(thread_id.to_owned());
+                }
+            }
+        });
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
             loop {
                 match notifications.recv().await {
                     Ok(params) => {
-                        let result = app
+                        let mut builder = app
                             .notification()
                             .builder()
                             .title(params.title)
-                            .body(params.body)
-                            .show();
-                        if let Err(error) = result {
+                            .body(params.body);
+                        if let Some(thread_id) = params.thread_id {
+                            builder = builder.extra("threadId", thread_id);
+                        }
+                        if let Err(error) = builder.show() {
                             eprintln!("Could not show desktop notification: {error}");
                         }
                     }
@@ -273,10 +317,16 @@ fn native_theme(pref: Option<&str>) -> Option<Theme> {
     }
 }
 
-fn error_window(app: &AppHandle, message: &str, tag: Option<&str>) -> Result<WebviewWindow> {
+fn error_window(
+    app: &AppHandle,
+    message: &str,
+    tag: Option<&str>,
+    lang: &str,
+) -> Result<WebviewWindow> {
     let script = format!(
-        "window.__VETRO_ERROR__ = {};",
-        serde_json::to_string(message)?
+        "window.__VETRO_ERROR__ = {}; window.__VETRO_LANG__ = {};",
+        serde_json::to_string(message)?,
+        serde_json::to_string(lang)?,
     );
     let window = window_builder(app, WebviewUrl::App("error.html".into()), tag)
         .initialization_script(script)
@@ -388,9 +438,165 @@ window.dispatchEvent(new CustomEvent("vetro:window-state", {{ detail: {{ maximiz
     });
 }
 
-fn build_tray(app: &AppHandle, tag: Option<&str>) -> Result<()> {
-    let open = MenuItemBuilder::with_id("open", instance_title("Open Vetro", tag)).build(app)?;
-    let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
+fn resolve_desktop_lang(pref: Option<&str>) -> &'static str {
+    match pref {
+        Some("zh") => "zh",
+        Some("en") => "en",
+        _ => system_lang(),
+    }
+}
+
+fn system_lang() -> &'static str {
+    #[cfg(target_os = "windows")]
+    {
+        unsafe extern "system" {
+            fn GetUserDefaultLocaleName(lp_locale_name: *mut u16, cch_locale_name: i32) -> i32;
+        }
+        let mut buf = [0u16; 85];
+        let len = unsafe { GetUserDefaultLocaleName(buf.as_mut_ptr(), buf.len() as i32) };
+        if len > 1 {
+            let locale = String::from_utf16_lossy(&buf[..(len as usize - 1)]);
+            if locale.to_ascii_lowercase().starts_with("zh") {
+                return "zh";
+            }
+        }
+        "en"
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        for key in ["LC_ALL", "LC_MESSAGES", "LANG"] {
+            if let Ok(value) = std::env::var(key) {
+                if !value.is_empty() {
+                    return if value.to_ascii_lowercase().starts_with("zh") {
+                        "zh"
+                    } else {
+                        "en"
+                    };
+                }
+            }
+        }
+        "en"
+    }
+}
+
+fn tray_labels(lang: &str, tag: Option<&str>) -> (String, String) {
+    if lang == "zh" {
+        (instance_title("打开 Vetro", tag), "退出".into())
+    } else {
+        (instance_title("Open Vetro", tag), "Quit".into())
+    }
+}
+
+fn update_window_badge(window: &WebviewWindow, count: u32) {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = window.set_overlay_icon(render_badge_icon(count));
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = window.set_badge_count((count > 0).then(|| i64::from(count)));
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn render_badge_icon(count: u32) -> Option<Image<'static>> {
+    if count == 0 {
+        return None;
+    }
+    const SIZE: usize = 32;
+    let mut rgba = vec![0u8; SIZE * SIZE * 4];
+    let center = (SIZE as f32 - 1.0) / 2.0;
+    let radius = 14.5_f32;
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let dx = x as f32 - center;
+            let dy = y as f32 - center;
+            let dist = (dx * dx + dy * dy).sqrt();
+            if dist <= radius + 0.5 {
+                let alpha = (radius + 0.5 - dist).clamp(0.0, 1.0);
+                let border = dist > radius - 1.0;
+                let (r, g, b) = if border { (164, 34, 40) } else { (229, 72, 77) };
+                let idx = (y * SIZE + x) * 4;
+                rgba[idx] = r;
+                rgba[idx + 1] = g;
+                rgba[idx + 2] = b;
+                rgba[idx + 3] = (alpha * 255.0).round() as u8;
+            }
+        }
+    }
+    let paint = |rgba: &mut [u8], px: usize, py: usize| {
+        if px < SIZE && py < SIZE {
+            let idx = (py * SIZE + px) * 4;
+            rgba[idx] = 255;
+            rgba[idx + 1] = 255;
+            rgba[idx + 2] = 255;
+            rgba[idx + 3] = 255;
+        }
+    };
+    let draw_glyph = |rgba: &mut [u8], ch: char, ox: usize, oy: usize| {
+        let rows: [u8; 7] = match ch {
+            '1' => [
+                0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110,
+            ],
+            '2' => [
+                0b01110, 0b10001, 0b00001, 0b00110, 0b01000, 0b10000, 0b11111,
+            ],
+            '3' => [
+                0b01110, 0b10001, 0b00001, 0b00110, 0b00001, 0b10001, 0b01110,
+            ],
+            '4' => [
+                0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010,
+            ],
+            '5' => [
+                0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110,
+            ],
+            '6' => [
+                0b01110, 0b10000, 0b11110, 0b10001, 0b10001, 0b10001, 0b01110,
+            ],
+            '7' => [
+                0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000,
+            ],
+            '8' => [
+                0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110,
+            ],
+            '9' => [
+                0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00001, 0b01110,
+            ],
+            '+' => [
+                0b00000, 0b00100, 0b00100, 0b11111, 0b00100, 0b00100, 0b00000,
+            ],
+            _ => [0; 7],
+        };
+        for (ry, bits) in rows.iter().enumerate() {
+            for rx in 0..5 {
+                if (bits >> (4 - rx)) & 1 == 1 {
+                    for dy in 0..2 {
+                        for dx in 0..2 {
+                            paint(rgba, ox + rx * 2 + dx, oy + ry * 2 + dy);
+                        }
+                    }
+                }
+            }
+        }
+    };
+    if count > 9 {
+        draw_glyph(&mut rgba, '9', 6, 9);
+        draw_glyph(&mut rgba, '+', 17, 9);
+    } else {
+        let ch = char::from_digit(count, 10).unwrap_or('9');
+        draw_glyph(&mut rgba, ch, 11, 9);
+    }
+    Some(Image::new_owned(rgba, SIZE as u32, SIZE as u32))
+}
+
+fn build_tray(
+    app: &AppHandle,
+    tag: Option<&str>,
+    lang: &str,
+) -> Result<(MenuItem<Wry>, MenuItem<Wry>)> {
+    let (open_text, quit_text) = tray_labels(lang, tag);
+    let open = MenuItemBuilder::with_id("open", open_text).build(app)?;
+    let quit = MenuItemBuilder::with_id("quit", quit_text).build(app)?;
     let menu = MenuBuilder::new(app).items(&[&open, &quit]).build()?;
 
     let mut builder = TrayIconBuilder::with_id("tray")
@@ -415,7 +621,7 @@ fn build_tray(app: &AppHandle, tag: Option<&str>) -> Result<()> {
         builder = builder.icon(icon.clone());
     }
     builder.build(app)?;
-    Ok(())
+    Ok((open, quit))
 }
 
 fn show_main_window(app: &AppHandle) {
@@ -465,5 +671,31 @@ mod tests {
         assert_eq!(instance_title("Vetro", Some("preview")), "Vetro (preview)");
         assert_eq!(instance_title("Vetro", None), "Vetro");
         assert_eq!(instance_title("Open Vetro", None), "Open Vetro");
+    }
+
+    #[test]
+    fn tray_labels_and_badge_icon_match_language_and_counts() {
+        assert_eq!(resolve_desktop_lang(Some("zh")), "zh");
+        assert_eq!(resolve_desktop_lang(Some("en")), "en");
+        assert_eq!(
+            tray_labels("zh", Some("vetro-dev")),
+            ("打开 Vetro (dev)".into(), "退出".into())
+        );
+        assert_eq!(
+            tray_labels("en", None),
+            ("Open Vetro".into(), "Quit".into())
+        );
+        assert!(render_badge_icon(0).is_none());
+        let single = render_badge_icon(3).unwrap();
+        assert_eq!((single.width(), single.height()), (32, 32));
+        assert_eq!(single.rgba().len(), 32 * 32 * 4);
+        assert!(single.rgba().as_chunks::<4>().0.iter().any(|px| px[3] > 0));
+        let overflow = render_badge_icon(14).unwrap();
+        assert_eq!(overflow.rgba().len(), 32 * 32 * 4);
+        assert!(overflow
+            .rgba()
+            .as_chunks::<4>()
+            .0
+            .contains(&[255, 255, 255, 255]));
     }
 }

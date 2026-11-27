@@ -1530,6 +1530,10 @@ impl Timeline {
             self.align_acp_replay(&mut drafts);
         }
         let history_ids: HashSet<String> = drafts.iter().map(|draft| draft.id.clone()).collect();
+        let history_turn_ids: HashSet<String> = drafts
+            .iter()
+            .filter_map(|draft| draft.turn_id.clone())
+            .collect();
         let mut claimed: HashSet<String> = HashSet::new();
         let mut events = Vec::new();
         for mut draft in drafts {
@@ -1539,12 +1543,36 @@ impl Timeline {
                         !history_ids.contains(&item.id)
                             && !claimed.contains(&item.id)
                             && matches!(&item.kind, ItemKind::UserMessage { content: c } if c == content)
-                            && (item.turn_id.is_none() || item.turn_id == draft.turn_id)
+                            && (item.turn_id.is_none()
+                                || draft.turn_id.is_none()
+                                || item.turn_id == draft.turn_id
+                                || item
+                                    .turn_id
+                                    .as_deref()
+                                    .is_some_and(|tid| !history_turn_ids.contains(tid)))
                     });
                     if let Some(existing) = existing {
                         claimed.insert(existing.id.clone());
                         draft.id = existing.id.clone();
+                        draft.ts = draft.ts.or(existing.ts);
                     }
+                }
+            }
+            if let Some(existing) = self.by_id.get(&draft.id).map(|&index| &self.items[index]) {
+                draft.ts = draft.ts.or(existing.ts);
+                if let (
+                    ItemKind::TurnEnd {
+                        usage, duration_ms, ..
+                    },
+                    ItemKind::TurnEnd {
+                        usage: old_usage,
+                        duration_ms: old_duration,
+                        ..
+                    },
+                ) = (&mut draft.kind, &existing.kind)
+                {
+                    *usage = usage.take().or_else(|| old_usage.clone());
+                    *duration_ms = duration_ms.or(*old_duration);
                 }
             }
             self.decorate(&mut draft.kind);
@@ -1553,7 +1581,7 @@ impl Timeline {
                 item.kind == draft.kind && item.ts == draft.ts && item.turn_id == draft.turn_id
             });
             if !unchanged {
-                events.push(self.item(draft));
+                events.push(self.apply_item(draft, true));
             }
         }
         events
@@ -1631,7 +1659,11 @@ impl Timeline {
         });
     }
 
-    fn item(&mut self, mut draft: ItemDraft) -> ThreadEvent {
+    fn item(&mut self, draft: ItemDraft) -> ThreadEvent {
+        self.apply_item(draft, false)
+    }
+
+    fn apply_item(&mut self, mut draft: ItemDraft, from_history: bool) -> ThreadEvent {
         if let ItemKind::ToolCall(call) = &draft.kind {
             if !call.child_thread_ids.is_empty() {
                 self.native_children
@@ -1648,17 +1680,24 @@ impl Timeline {
             turn_id: draft.turn_id,
             kind: draft.kind,
         };
+        let update_turn_status = !from_history
+            || index + 1 >= self.items.len()
+            || !self.items[index + 1..]
+                .iter()
+                .any(|later| matches!(later.kind, ItemKind::TurnEnd { .. }));
         if let ItemKind::TurnEnd {
             stop_reason, usage, ..
         } = &item.kind
         {
-            self.status = if *stop_reason == StopReason::Error {
-                ThreadStatus::Error
-            } else {
-                ThreadStatus::Idle
-            };
-            if let Some(usage) = usage {
-                self.usage.last_turn = Some(usage.clone());
+            if update_turn_status {
+                self.status = if *stop_reason == StopReason::Error {
+                    ThreadStatus::Error
+                } else {
+                    ThreadStatus::Idle
+                };
+                if let Some(usage) = usage {
+                    self.usage.last_turn = Some(usage.clone());
+                }
             }
         }
         if let ItemKind::Request(request) = &item.kind {
@@ -1938,5 +1977,172 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    fn assistant(id: &str, turn_id: Option<&str>, text: &str) -> ItemDraft {
+        ItemDraft {
+            id: id.into(),
+            ts: None,
+            turn_id: turn_id.map(Into::into),
+            kind: ItemKind::AgentMessage {
+                text: text.into(),
+                streaming: false,
+            },
+        }
+    }
+
+    #[test]
+    fn consecutive_identical_user_messages_stay_deduped_across_rescans() {
+        let mut state = Timeline::new(new_summary("codex", "t1", "t1".into(), None));
+        state.item(user("local-user:1", None, "ping"));
+        state.item(user("local-user:2", None, "ping"));
+
+        let first_rescan = vec![
+            user("native-1", Some("turn-1"), "ping"),
+            user("native-2", Some("turn-2"), "ping"),
+        ];
+        assert_eq!(state.merge_history(first_rescan.clone()).len(), 2);
+        assert_eq!(user_count(&state), 2);
+        assert!(state.merge_history(first_rescan).is_empty());
+
+        let full_rescan = vec![
+            user("native-1", Some("turn-1"), "ping"),
+            user("native-2", Some("turn-2"), "ping"),
+            user("native-3", Some("turn-3"), "ping"),
+        ];
+        assert_eq!(state.merge_history(full_rescan.clone()).len(), 1);
+        assert_eq!(user_count(&state), 3);
+        assert!(state.merge_history(full_rescan).is_empty());
+    }
+
+    #[test]
+    fn steer_consecutive_user_messages_and_synthetic_turn_ids_reconcile() {
+        let mut state = Timeline::new(new_summary("codex", "t1", "t1".into(), None));
+        state.item(user("local-1", Some("live-turn-1"), "start"));
+        state.item(user("local-2", Some("live-turn-1"), "steer"));
+
+        let history = vec![
+            user("native-u1", Some("turn-1"), "start"),
+            user("native-u2", Some("turn-1"), "steer"),
+            assistant("native-a1", Some("turn-1"), "handled both"),
+        ];
+        let events = state.merge_history(history.clone());
+        assert_eq!(events.len(), 3);
+        assert_eq!(user_count(&state), 2);
+        assert_eq!(state.items.len(), 3);
+        assert_eq!(state.items[0].id, "local-1");
+        assert_eq!(state.items[1].id, "local-2");
+        assert_eq!(state.items[0].turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(state.items[1].turn_id.as_deref(), Some("turn-1"));
+        assert!(state.merge_history(history).is_empty());
+    }
+
+    #[test]
+    fn detach_rescan_preserves_live_turn_end_metadata_when_history_omits_it() {
+        let mut state = Timeline::new(new_summary("claude", "c1", "c1".into(), None));
+        let usage = TokenUsage {
+            input: Some(100),
+            cached_input: None,
+            output: Some(25),
+            reasoning: None,
+            context_used: Some(125),
+            context_window: Some(200_000),
+        };
+        state.item(ItemDraft {
+            id: "u1".into(),
+            ts: Some(1000),
+            turn_id: Some("t1".into()),
+            kind: ItemKind::UserMessage {
+                content: vec![ContentBlock::Text { text: "hi".into() }],
+            },
+        });
+        state.item(ItemDraft::turn_end(
+            "t1",
+            StopReason::EndTurn,
+            Some(2000),
+            Some(320),
+            Some(usage.clone()),
+        ));
+
+        let events = state.merge_history(vec![
+            user("u1", Some("t1"), "hi"),
+            ItemDraft::turn_end("t1", StopReason::EndTurn, None, None, None),
+        ]);
+        assert!(events.is_empty());
+        assert_eq!(state.items[0].ts, Some(1000));
+        assert_eq!(state.items[1].ts, Some(2000));
+        assert!(matches!(
+            &state.items[1].kind,
+            ItemKind::TurnEnd {
+                duration_ms: Some(320),
+                usage: Some(u),
+                ..
+            } if *u == usage
+        ));
+    }
+
+    #[test]
+    fn updating_earlier_error_turn_end_does_not_overwrite_latest_idle_status() {
+        let mut state = Timeline::new(new_summary("codex", "t1", "t1".into(), None));
+        state.item(user("u1", Some("t1"), "first"));
+        state.item(ItemDraft::turn_end(
+            "t1",
+            StopReason::Error,
+            Some(1000),
+            None,
+            None,
+        ));
+        state.item(user("u2", Some("t2"), "second"));
+        state.item(ItemDraft::turn_end(
+            "t2",
+            StopReason::EndTurn,
+            Some(2000),
+            Some(50),
+            None,
+        ));
+        state.update_status();
+        assert_eq!(state.summary.status, ThreadStatus::Idle);
+
+        state.merge_history(vec![
+            user("u1", Some("t1"), "first"),
+            ItemDraft::turn_end("t1", StopReason::Error, Some(1000), Some(12), None),
+            user("u2", Some("t2"), "second"),
+            ItemDraft::turn_end("t2", StopReason::EndTurn, Some(2000), Some(50), None),
+        ]);
+        state.update_status();
+        assert_eq!(state.summary.status, ThreadStatus::Idle);
+    }
+
+    #[test]
+    fn live_reused_turn_end_id_still_marks_thread_idle() {
+        let mut state = Timeline::new(new_summary("codex", "t1", "t1".into(), None));
+        state.item(ItemDraft::turn_end(
+            "end",
+            StopReason::EndTurn,
+            Some(1000),
+            None,
+            None,
+        ));
+        state.item(ItemDraft::turn_end(
+            "interrupt",
+            StopReason::Cancelled,
+            Some(1500),
+            None,
+            None,
+        ));
+        state.status = ThreadStatus::Running;
+        state.update_status();
+        assert_eq!(state.summary.status, ThreadStatus::Running);
+
+        state.item(ItemDraft::turn_end(
+            "end",
+            StopReason::EndTurn,
+            Some(2000),
+            Some(40),
+            None,
+        ));
+        state.update_status();
+        assert_eq!(state.status, ThreadStatus::Idle);
+        assert_eq!(state.summary.status, ThreadStatus::Idle);
     }
 }

@@ -63,6 +63,9 @@ jobs:
       - name: Typecheck web
         run: pnpm --dir apps/web typecheck
 
+      - name: Check web i18n
+        run: pnpm --dir apps/web check:i18n
+
       - name: Build web
         run: pnpm --dir apps/web build
 

@@ -664,6 +664,7 @@ try {
     await click("button", "Allow once");
     await textOnScreen("Fake stream");
     await waitFor(() => evaluate(`!document.body.innerText.includes("Confirm?")`), "approval after reconnect");
+    await waitFor(() => evaluate(`!document.querySelector('button[aria-label="Stop"]')`), "turn completion after reconnect");
 
     await send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
     await waitFor(() => evaluate(`matchMedia("(pointer: coarse)").matches`), "touch composer input mode");
@@ -673,7 +674,7 @@ try {
     await send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
     assert.equal(await evaluate('document.querySelector("textarea")?.value'), "First mobile draft line\n",
       "Return starts a new line in the touch composer");
-    assert.equal(await evaluate(`document.querySelector('button[aria-label="Stop"]')`), null,
+    assert.equal(await evaluate(`Boolean(document.querySelector('button[aria-label="Stop"]'))`), false,
       "Return never submits the mobile draft");
     await evaluate(`document.querySelector("textarea").select()`);
     await press("Backspace", 8);
@@ -776,6 +777,7 @@ try {
       "unconfirmed new-thread draft restored after reload");
     await click('button[aria-label="Send"]');
     await textOnScreen("Vetro could not confirm delivery.");
+    await visiblePoint("button", "Send anyway");
     assert.equal(await evaluate("location.pathname"), "/new");
     assert.equal(await evaluate('document.querySelector("textarea")?.value'), undelivered);
     await click("textarea");
@@ -785,6 +787,23 @@ try {
     await waitFor(() => evaluate('decodeURIComponent(location.pathname) === "/t/fake:live-3"'), "fresh start after editing the draft");
     await textOnScreen(`${undelivered} after checking history`);
     await click("button", "Allow once");
+
+    const verbatimResend = "Exact resend without editing";
+    await evaluate('window.droppedRequest = false; window.dropRequestFor = "threads.send"');
+    await sendPrompt(verbatimResend);
+    await waitFor(() => evaluate("window.droppedRequest === true"), "lost follow-up request");
+    await waitFor(() => evaluate(`!document.body.innerText.includes("Reconnecting")`), "reconnect after lost follow-up");
+    await send("Page.reload");
+    await waitFor(() => evaluate(`document.querySelector("textarea")?.value === ${JSON.stringify(verbatimResend)}`),
+      "unconfirmed follow-up draft restored after reload");
+    await click('button[aria-label="Send"]');
+    await textOnScreen("Vetro could not confirm delivery.");
+    await click("button", "Send anyway");
+    await waitFor(() => evaluate(`document.querySelector("textarea")?.value === ""`), "verbatim resend submitted");
+    await textOnScreen(verbatimResend);
+    assert.equal(await evaluate(`document.body.innerText.split(${JSON.stringify(verbatimResend)}).length - 1`), 1);
+    await click('button[aria-label="Stop"]');
+    await waitFor(() => evaluate(`!document.querySelector('button[aria-label="Stop"]')`), "verbatim resend stopped");
 
     await send("Target.closeTarget", { targetId: remoteTarget }, null);
     const remoteThreadUrl = `${origin}/t/fake%3Alive?lang=en`;

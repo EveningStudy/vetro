@@ -1,4 +1,4 @@
-import { FileIcon, ImagePlusIcon, PlusIcon, SlashIcon, SlidersHorizontalIcon, XIcon } from "lucide-react";
+import { AlertTriangleIcon, FileIcon, ImagePlusIcon, PlusIcon, SlashIcon, SlidersHorizontalIcon, XIcon } from "lucide-react";
 import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { client } from "~/api/client";
 import type { AgentInfo, ConfigOption, ContentBlock, QueuedMessage, SlashCommand, ThreadUsage } from "~/api/types";
@@ -47,20 +47,37 @@ function readImage(file: File): Promise<Omit<DraftAttachment, "id">> {
 
 let attachmentSeq = 0;
 
-/** The bar shows one model, one thinking level, one mode picker, and any active danger option; the rest go behind a button. */
-function partitionOptions(options: ConfigOption[]) {
+/** Orders composer options into fixed canonical slots across every agent:
+ * model -> thinking level -> primary mode -> approval policy -> active danger. Remaining options go to overflow. */
+export function partitionOptions(options: ConfigOption[]) {
+  const primary: ConfigOption[] = [];
+  const seen = new Set<string>();
+  const push = (option: ConfigOption | undefined) => {
+    if (!option || seen.has(option.id)) return;
+    seen.add(option.id);
+    primary.push(option);
+  };
   const modes = options.filter((option) => option.category === "mode");
-  const picks = [
-    options.find((option) => option.category === "model"),
-    options.find((option) => option.category === "thought_level"),
-    modes.find((option) => /permission|sandbox/i.test(option.id)) ?? modes[0],
-    modes.find((option) => option.id === "approvalPolicy"),
-    ...options.filter((option) => option.choices.some((choice) => choice.value === option.currentValue && isDangerChoice(option, choice))),
-  ];
-  const chosen = new Set(picks.filter((option) => option !== undefined).map((option) => option.id));
+  const primaryMode = modes.find((option) => /permission|sandbox/i.test(option.id)) ?? modes[0];
+  const approvalMode = modes.find((option) => option.id === "approvalPolicy" && option.id !== primaryMode?.id);
+
+  push(options.find((option) => option.category === "model"));
+  push(options.find((option) => option.category === "thought_level"));
+  push(primaryMode);
+  push(approvalMode);
+  for (const option of options) {
+    if (option.choices.some((choice) => choice.value === option.currentValue && isDangerChoice(option, choice))) {
+      push(option);
+    }
+  }
+
+  const remaining = options.filter((option) => !seen.has(option.id));
   return {
-    primary: options.filter((option) => chosen.has(option.id)),
-    extra: options.filter((option) => !chosen.has(option.id)),
+    primary,
+    extra: [
+      ...remaining.filter((option) => option.category === "mode"),
+      ...remaining.filter((option) => option.category !== "mode"),
+    ],
   };
 }
 
@@ -288,6 +305,7 @@ export function Composer(props: ComposerProps) {
 
   const hasContent = draft.trim().length > 0 || attachments.length > 0;
   const canSend = hasContent && !props.readOnly && !props.sendBlocked && !sending;
+  const unconfirmed = useStore((s) => !!s.unconfirmedDrafts[props.draftKey]);
 
   const submit = async () => {
     if (!canSend) return;
@@ -334,6 +352,34 @@ export function Composer(props: ComposerProps) {
 
   return (
     <div className="mx-auto w-full max-w-(--chat-content-max-width)">
+      {unconfirmed && hasContent && !props.readOnly ? (
+        <div
+          role="alert"
+          className="mb-1.5 flex flex-wrap items-center gap-2 rounded-lg border border-warning/40 bg-warning-surface/70 px-2.5 py-1.5 text-xs text-foreground"
+        >
+          <AlertTriangleIcon className="size-3.5 shrink-0 text-warning-foreground" />
+          <span className="min-w-0 flex-1">{t("composer.deliveryUnknown")}</span>
+          <button
+            type="button"
+            disabled={sending || !!props.sendBlocked}
+            onClick={() => {
+              actions.confirmVerbatimResend(props.draftKey);
+              void submit();
+            }}
+            className="shrink-0 cursor-pointer rounded-md border border-border/80 bg-background/80 px-2 py-0.5 font-medium text-foreground transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-50"
+          >
+            {t("composer.resendAnyway")}
+          </button>
+          <button
+            type="button"
+            aria-label={t("common.close")}
+            onClick={() => actions.dismissUnconfirmedDraft(props.draftKey)}
+            className="inline-flex size-4 shrink-0 cursor-pointer items-center justify-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+          >
+            <XIcon className="size-3" />
+          </button>
+        </div>
+      ) : null}
       {props.queue && props.queue.length > 0 ? (
         <div className="mb-1.5 flex flex-col gap-1 px-1">
           {props.queue.map((entry) => (
@@ -480,8 +526,8 @@ export function Composer(props: ComposerProps) {
           }}
           className="block max-h-[calc(var(--vetro-viewport-height,100dvh)*0.4)] min-h-[3.25rem] w-full resize-none bg-transparent px-4 pt-3.5 pb-1 text-base leading-relaxed text-foreground outline-none placeholder:text-placeholder disabled:cursor-not-allowed sm:text-sm"
         />
-        <div className="flex items-center gap-1 px-2 pt-1 pb-2">
-          <div className="flex min-w-0 flex-1 items-center gap-0.5 @max-[36rem]:flex-wrap @max-[36rem]:gap-y-1">
+        <div className="flex items-end gap-1.5 px-2 pt-1 pb-2">
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-0.5 gap-y-1">
             <Menu>
               <Tip label={t("composer.add")}>
                 <MenuTrigger disabled={props.readOnly} className={cn(composerControlClass, "px-1.5")} aria-label={t("composer.add")}>
@@ -558,8 +604,8 @@ export function Composer(props: ComposerProps) {
               event.target.value = "";
             }}
           />
-          {!props.readOnly ? <VoiceButton disabled={sending} onTranscript={insertTranscript} /> : null}
           <div className="flex shrink-0 items-center gap-1.5">
+            {!props.readOnly ? <VoiceButton disabled={sending} onTranscript={insertTranscript} /> : null}
             {showStop ? (
               <Tip label={t("composer.stop")}>
                 <button

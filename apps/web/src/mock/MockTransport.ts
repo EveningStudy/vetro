@@ -739,6 +739,7 @@ export class MockTransport implements Transport {
     },
     "app.ping": () => ({}),
     "app.notify": () => ({}),
+    "app.setBadge": () => ({}),
     "settings.get": () => this.settings,
     "settings.update": (params) => {
       this.desktopOnly();

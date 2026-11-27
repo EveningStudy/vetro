@@ -1,6 +1,11 @@
 export type { AgentInfo } from "./bindings/AgentInfo";
 export type { AuthenticateResult } from "./bindings/AuthenticateResult";
+export type { BadgeClearMode } from "./bindings/BadgeClearMode";
+export type { BadgeParams } from "./bindings/BadgeParams";
+export type { BadgeScope } from "./bindings/BadgeScope";
 export type { CustomAcpAgent } from "./bindings/CustomAcpAgent";
+export type { NotificationMode } from "./bindings/NotificationMode";
+export type { NotificationSettings } from "./bindings/NotificationSettings";
 export type { AppInfo } from "./bindings/AppInfo";
 export type { ConfigOption } from "./bindings/ConfigOption";
 export type { ContentBlock } from "./bindings/ContentBlock";

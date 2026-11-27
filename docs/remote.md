@@ -6,7 +6,9 @@ If an agent needs sign-in, complete its sign-in on the host. Select **Check now*
 
 Leave **Remember this browser** selected to reconnect from a new tab or after reopening the browser. On a shared browser, clear it to keep the session in the pairing tab. Existing tabs paired with an earlier version can keep using their current session. Pair again with the setting selected to remember that browser.
 
-The pairing tab keeps draft text, file mentions, and pending send receipts when the browser rebuilds the page. Image attachments are kept in the current page. Revoking a pairing clears its saved drafts when the browser detects the revocation.
+The pairing tab keeps draft text, file mentions, and pending send receipts when the browser rebuilds the page. Image attachments are kept in the current page. If a delivery receipt cannot be confirmed after a disconnect or host restart, Vetro blocks automatic duplicates and offers **Send anyway** so you can explicitly resend verbatim after checking the thread history. Revoking a pairing clears its saved drafts when the browser detects the revocation.
+
+Paired devices can only browse and preview files inside known project folders; host-only actions (adding projects, changing settings, running agent sign-in, opening external apps, or managing remote pairing) remain restricted to the computer running Vetro. See [SECURITY.md](../SECURITY.md) for details.
 
 In the desktop app, enable **Keep running when the window closes** to leave the host available after closing its window. Choose **Quit** from the tray or menu bar to stop the app.
 

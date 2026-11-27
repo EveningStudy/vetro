@@ -5,26 +5,29 @@ export function Segmented<T extends string>({
   value,
   options,
   onChange,
+  disabled,
   className,
   label,
 }: {
   value: T;
   options: { value: T; label: string; icon?: LucideIcon }[];
   onChange: (value: T) => void;
+  disabled?: boolean;
   className?: string;
   label?: string;
 }) {
   return (
-    <div className={cn("flex rounded-lg bg-input/40 p-0.5", className)} role="radiogroup" aria-label={label}>
+    <div className={cn("flex rounded-lg bg-input/40 p-0.5", disabled && "opacity-60", className)} role="radiogroup" aria-label={label}>
       {options.map((option) => (
         <button
           key={option.value}
           type="button"
           role="radio"
+          disabled={disabled}
           aria-checked={value === option.value}
           onClick={() => onChange(option.value)}
           className={cn(
-            "flex h-7 items-center justify-center gap-1.5 rounded-md px-2.5 text-xs font-medium whitespace-nowrap text-muted-foreground hover:text-foreground",
+            "flex h-7 items-center justify-center gap-1.5 rounded-md px-2.5 text-xs font-medium whitespace-nowrap text-muted-foreground hover:text-foreground disabled:pointer-events-none",
             value === option.value && "bg-background text-foreground shadow-xs dark:bg-input/72",
           )}
         >

@@ -27,6 +27,16 @@ import type {
   WorktreesResult,
 } from "~/api/types";
 import { translate } from "~/i18n";
+import {
+  type NotificationKind,
+  computeBadgeCount,
+  hasPopup,
+  hasSound,
+  playNotificationChime,
+  resolvedNotificationSettings,
+  setBrowserBadge,
+  unlockNotificationAudio,
+} from "~/lib/notifications";
 import { connectPrefs, type Filters, flushPrefs, getPrefs, type PrefsData, resolvedLanguage, sanitizeFilters, savePrefs, setSidebarCollapsed, usePrefs } from "./prefs";
 import { errorMessage, toast } from "./toast";
 
@@ -74,9 +84,9 @@ export type Route =
   | { view: "new"; projectPath: string | null; agentId: string | null }
   | { view: "settings"; section: SettingsSection };
 
-export type SettingsSection = "general" | "threads" | "appearance" | "agents" | "voice" | "remote" | "about";
+export type SettingsSection = "general" | "threads" | "appearance" | "notifications" | "agents" | "voice" | "remote" | "about";
 
-export const SETTINGS_SECTIONS: readonly SettingsSection[] = ["general", "threads", "appearance", "agents", "voice", "remote", "about"];
+export const SETTINGS_SECTIONS: readonly SettingsSection[] = ["general", "threads", "appearance", "notifications", "agents", "voice", "remote", "about"];
 
 export type RightDrawer =
   | { kind: "raw" }
@@ -104,6 +114,7 @@ interface State {
   paletteOpen: boolean;
   mobileSidebarOpen: boolean;
   drafts: Record<string, Draft>;
+  unconfirmedDrafts: Record<string, boolean>;
   authLost: boolean;
   /** Cursor of the newest-first list; null when everything is loaded. */
   threadsCursor: string | null;
@@ -173,6 +184,7 @@ export const useStore = create<State>(() => ({
   paletteOpen: new URLSearchParams(location.search).get("palette") === "1",
   mobileSidebarOpen: new URLSearchParams(location.search).get("sidebar") === "1",
   drafts: {},
+  unconfirmedDrafts: {},
   authLost: false,
   threadsCursor: null,
   projectCursors: {},
@@ -214,31 +226,38 @@ function isThreadVisible(threadId: string) {
   return route.view === "thread" && route.threadId === threadId && !document.hidden;
 }
 
-function notify(thread: ThreadSummary, key: "notify.finished" | "notify.needsInput" | "notify.failed") {
+function alertThread(thread: ThreadSummary, kind: NotificationKind, key: "notify.finished" | "notify.needsInput" | "notify.failed") {
   const { app, settings } = get();
-  if (!app || app.remoteClient || settings?.notificationsEnabled === false) return;
+  const notif = resolvedNotificationSettings(settings);
+  if (hasSound(notif.mode)) void playNotificationChime(kind);
+  if (!app || app.remoteClient || !hasPopup(notif.mode)) return;
   const lang = resolvedLanguage(usePrefs.getState().language);
   void client()
     .request("app.notify", { title: thread.title, body: translate(lang, key), threadId: thread.id })
     .catch(() => undefined);
 }
 
-/** Status transitions of threads the user is not looking at: mark finished ones unread and ask the
- * desktop for a notification. */
+/** Status transitions of threads the user is not looking at: mark finished ones unread and alert
+ * via sound or desktop notification according to notification settings. */
 function noticeTransitions(threads: ThreadSummary[]) {
   if (!get().threadsLoaded) return;
+  const notif = resolvedNotificationSettings(get().settings);
   let unread: Record<string, boolean> | null = null;
   for (const thread of threads) {
     const before = get().threads[thread.id] ?? get().open[thread.id]?.summary;
-    if (!before || before.status === thread.status || thread.parent || isThreadVisible(thread.id)) continue;
+    if (!before || before.status === thread.status || thread.parent) continue;
+    const visible = isThreadVisible(thread.id);
+    const shouldAlert = !notif.backgroundOnly || !visible;
     if (thread.status === "idle" && BUSY.has(before.status)) {
-      unread ??= { ...get().unreadCompleted };
-      unread[thread.id] = true;
-      notify(thread, "notify.finished");
+      if (!visible) {
+        unread ??= { ...get().unreadCompleted };
+        unread[thread.id] = true;
+      }
+      if (notif.onComplete && shouldAlert) alertThread(thread, "complete", "notify.finished");
     } else if (thread.status === "awaiting_input") {
-      notify(thread, "notify.needsInput");
+      if (notif.onInput && shouldAlert) alertThread(thread, "input", "notify.needsInput");
     } else if (thread.status === "error") {
-      notify(thread, "notify.failed");
+      if (notif.onError && shouldAlert) alertThread(thread, "error", "notify.failed");
     }
   }
   if (unread) set({ unreadCompleted: unread });
@@ -457,10 +476,29 @@ async function syncLists() {
 }
 
 let started = false;
+let lastBadgeCount: number | null = null;
+
+function syncBadge() {
+  const { app, threads, unreadCompleted, settings, connection } = get();
+  if (!app) return;
+  const notif = resolvedNotificationSettings(settings);
+  const count = computeBadgeCount(threads, unreadCompleted, notif);
+  if (lastBadgeCount === count) return;
+  lastBadgeCount = count;
+  if (!app.remoteClient && connection === "open") {
+    void client().request("app.setBadge", { count }).catch(() => undefined);
+  } else {
+    setBrowserBadge(count);
+  }
+}
 
 export function startSync() {
   if (started) return;
   started = true;
+  useStore.subscribe(syncBadge);
+  const unlock = () => unlockNotificationAudio();
+  window.addEventListener("pointerdown", unlock, { once: true, passive: true });
+  window.addEventListener("keydown", unlock, { once: true, passive: true });
   const api = client();
   api.onEvent(handleEvent);
   api.onStatus((status, { info, reconnected }) => {
@@ -474,7 +512,7 @@ export function startSync() {
           if (get().app?.remoteClient) {
             draftStorageKey = null;
             sendAttempts.clear();
-            set({ authLost: true, drafts: {} });
+            set({ authLost: true, drafts: {}, unconfirmedDrafts: {} });
           } else {
             set({ authLost: true });
           }
@@ -482,6 +520,8 @@ export function startSync() {
         .catch(() => undefined);
     }
     if (status !== "open") return;
+    lastBadgeCount = null;
+    syncBadge();
     void syncLists().catch((error) => toast.error(errorMessage(error)));
     if (reconnected) for (const id of Object.keys(get().open)) void actions.openThread(id, true);
   });
@@ -492,8 +532,14 @@ export function startSync() {
     if (route.view === "thread") clearUnread(route.threadId);
   });
   const seen = () => {
+    if (document.hidden) return;
+    const notif = resolvedNotificationSettings(get().settings);
+    if (notif.badgeClear === "on_window_focus") {
+      if (Object.keys(get().unreadCompleted).length > 0) set({ unreadCompleted: {} });
+      return;
+    }
     const route = get().route;
-    if (route.view === "thread" && !document.hidden) clearUnread(route.threadId);
+    if (route.view === "thread") clearUnread(route.threadId);
   };
   document.addEventListener("visibilitychange", seen);
   window.addEventListener("focus", seen);
@@ -624,18 +670,32 @@ async function submitDraft<T>(
   sendAttempts.set(key, attempt);
   persistPairedDrafts();
   let uncertain = false;
+  let deliveryUnknown = false;
   try {
-    return await request({ clientMessageId: attempt.id, ...(recoverOnly ? { recoverOnly } : {}) });
+    const result = await request({ clientMessageId: attempt.id, ...(recoverOnly ? { recoverOnly } : {}) });
+    if (get().unconfirmedDrafts[key]) {
+      const unconfirmedDrafts = { ...get().unconfirmedDrafts };
+      delete unconfirmedDrafts[key];
+      set({ unconfirmedDrafts });
+    }
+    return result;
   } catch (error) {
     if (error instanceof RpcFailure) {
       uncertain = error.code === "disconnected" || error.code === "delivery_unknown";
       if (error.code === "delivery_unknown") {
+        deliveryUnknown = true;
+        set({ unconfirmedDrafts: { ...get().unconfirmedDrafts, [key]: true } });
         const lang = resolvedLanguage(usePrefs.getState().language);
         throw new RpcFailure(error.code, translate(lang, "composer.deliveryUnknown"));
       }
     }
     throw error;
   } finally {
+    if (!deliveryUnknown && get().unconfirmedDrafts[key] && !uncertain) {
+      const unconfirmedDrafts = { ...get().unconfirmedDrafts };
+      delete unconfirmedDrafts[key];
+      set({ unconfirmedDrafts });
+    }
     if (!uncertain && sendAttempts.get(key) === attempt) {
       sendAttempts.delete(key);
       persistPairedDrafts();
@@ -1046,13 +1106,37 @@ export const actions = {
     const drafts = { ...get().drafts };
     const previous = drafts[key] ?? emptyDraft;
     const draft = update(previous);
-    if (draft.text !== previous.text || draft.attachments !== previous.attachments || draft.mentioned !== previous.mentioned) {
+    const changed = draft.text !== previous.text || draft.attachments !== previous.attachments || draft.mentioned !== previous.mentioned;
+    if (changed) {
       sendAttempts.delete(key);
     }
     if (draft.text || draft.attachments.length || draft.mentioned.length) drafts[key] = draft;
     else delete drafts[key];
-    set({ drafts });
+    if (changed && get().unconfirmedDrafts[key]) {
+      const unconfirmedDrafts = { ...get().unconfirmedDrafts };
+      delete unconfirmedDrafts[key];
+      set({ drafts, unconfirmedDrafts });
+    } else {
+      set({ drafts });
+    }
     persistPairedDrafts();
+  },
+
+  dismissUnconfirmedDraft(key: string) {
+    if (!get().unconfirmedDrafts[key]) return;
+    const unconfirmedDrafts = { ...get().unconfirmedDrafts };
+    delete unconfirmedDrafts[key];
+    set({ unconfirmedDrafts });
+  },
+
+  confirmVerbatimResend(key: string) {
+    sendAttempts.delete(key);
+    persistPairedDrafts();
+    if (get().unconfirmedDrafts[key]) {
+      const unconfirmedDrafts = { ...get().unconfirmedDrafts };
+      delete unconfirmedDrafts[key];
+      set({ unconfirmedDrafts });
+    }
   },
 
   async refreshVoice() {

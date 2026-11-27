@@ -28,8 +28,10 @@ Everything Vetro writes is under `~/.vetro` (`VETRO_HOME` overrides):
 - `config.json`: `Settings` from `vetro-proto`.
 - `state.json`: local bootstrap token, session token hashes, paired devices, per-device preferences, thread and project overlays, cached agent options and official rate-limit snapshots.
 - `index.db`: thread index and full-text search. Disposable; rebuilt from the agents' stores.
-- `raw/<thread-id>.jsonl`: wire log of each session attached in Vetro (rotated, size-capped).
-- `logs/`: Vetro's own logs.
+- `raw/<sha256(thread-id)>.jsonl`: wire log of each session attached in Vetro (4 MiB per-session ring cap preserving the launch/handshake prefix; `spawn` env values and Codex `config/read` replies redacted).
+- `logs/core.log`: Vetro's own diagnostic log (256 KiB rolling window).
+
+See [SECURITY.md](../SECURITY.md) for the full local data boundary, redaction rules, and paired-device restrictions.
 
 ## Agent adapters
 

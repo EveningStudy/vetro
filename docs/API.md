@@ -62,6 +62,7 @@ Unknown fields must be ignored by both sides. Timestamps are milliseconds since 
 | `workspace.worktrees` | `WorkspacePathParams` | `WorktreesResult` | Read-only list of registered Git worktrees. Remote clients are limited to known project roots for the requested checkout. |
 | `workspace.openExternal` | `OpenExternalParams` | `Empty` | Desktop local client only. Opens a workspace folder, terminal, or file in the user's configured external app. |
 | `app.notify` | `NotifyParams` | `Empty` | Desktop local client only. Requests a native OS desktop notification when enabled in settings. |
+| `app.setBadge` | `BadgeParams` | `Empty` | Desktop local client only. Updates the taskbar overlay or Dock/launcher badge count. |
 | `settings.get` | `Empty` | `Settings` | |
 | `settings.update` | `SettingsUpdateParams` | `Settings` | Desktop client only. |
 | `prefs.get` | `Empty` | `Prefs` | UI preferences of the calling device, stored by the core so they survive a WebView without persistent storage. |

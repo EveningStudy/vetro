@@ -35,6 +35,8 @@ pub struct Core {
     registry: RwLock<Arc<Registry>>,
     pub(crate) registry_changed: watch::Sender<()>,
     theme: watch::Sender<WindowTheme>,
+    badge: watch::Sender<u32>,
+    language: watch::Sender<Option<String>>,
     notify_tx: broadcast::Sender<NotifyParams>,
     pub(crate) store: Arc<Index>,
     pub(crate) sessions: Sessions,
@@ -61,7 +63,10 @@ impl Core {
             home.log(&format!("Index unavailable: {error}"));
             Index::temporary()
         });
-        let theme = watch::channel(window_theme(&home.prefs("local"))).0;
+        let local_prefs = home.prefs("local");
+        let theme = watch::channel(window_theme(&local_prefs)).0;
+        let language = watch::channel(window_language(&local_prefs)).0;
+        let badge = watch::channel(0).0;
         match store.created_in_vetro() {
             Ok(ids) if !ids.is_empty() => {
                 if let Err(error) = home.change_state(|state| {
@@ -80,6 +85,8 @@ impl Core {
             registry: RwLock::new(Arc::new(registry)),
             registry_changed: watch::channel(()).0,
             theme,
+            badge,
+            language,
             notify_tx: broadcast::channel(64).0,
             store: Arc::new(store),
             sessions: Sessions::default(),
@@ -102,6 +109,14 @@ impl Core {
         self.theme.subscribe()
     }
 
+    pub fn badge_watch(&self) -> watch::Receiver<u32> {
+        self.badge.subscribe()
+    }
+
+    pub fn language_watch(&self) -> watch::Receiver<Option<String>> {
+        self.language.subscribe()
+    }
+
     pub fn notify_subscribe(&self) -> broadcast::Receiver<NotifyParams> {
         self.notify_tx.subscribe()
     }
@@ -110,8 +125,24 @@ impl Core {
         self.publish(ServerEvent::AppNavigate { thread_id });
     }
 
+    pub(crate) fn set_badge(&self, count: u32) {
+        self.badge.send_if_modified(|current| {
+            if *current == count {
+                return false;
+            }
+            *current = count;
+            true
+        });
+    }
+
     pub(crate) fn notify(&self, params: NotifyParams) {
-        if self.home.settings().notifications_enabled {
+        let settings = self.home.settings();
+        if settings.notifications_enabled
+            && matches!(
+                settings.notifications.mode,
+                NotificationMode::Notifications | NotificationMode::NotificationsAndSound
+            )
+        {
             let _ = self.notify_tx.send(params);
         }
     }
@@ -233,12 +264,21 @@ impl Core {
         })?;
         if device_id == "local" {
             self.home.read_state(|state| {
-                let theme = window_theme(&state.prefs["local"]);
+                let local = &state.prefs["local"];
+                let theme = window_theme(local);
                 self.theme.send_if_modified(|current| {
                     if *current == theme {
                         return false;
                     }
                     *current = theme;
+                    true
+                });
+                let language = window_language(local);
+                self.language.send_if_modified(|current| {
+                    if *current == language {
+                        return false;
+                    }
+                    *current = language;
                     true
                 });
             });
@@ -1251,6 +1291,14 @@ pub(crate) fn check_project_path(path: &Path, projects: &[Project]) -> Result<()
     ))
 }
 
+fn window_language(prefs: &Value) -> Option<String> {
+    prefs
+        .get("language")
+        .and_then(Value::as_str)
+        .filter(|lang| matches!(*lang, "en" | "zh" | "system"))
+        .map(str::to_owned)
+}
+
 fn window_theme(prefs: &Value) -> WindowTheme {
     WindowTheme {
         theme: prefs
@@ -1370,6 +1418,16 @@ mod tests {
         let home = Home::open(root.path().join(".vetro"), root.path().into()).unwrap();
         let core = Core::new(home, Registry::default());
         let mut notifications = core.notify_subscribe();
+        let mut badge = core.badge_watch();
+        let mut language = core.language_watch();
+        assert_eq!(*badge.borrow(), 0);
+        assert_eq!(*language.borrow(), None);
+        core.set_badge(3);
+        assert!(badge.has_changed().unwrap());
+        assert_eq!(*badge.borrow_and_update(), 3);
+        core.prefs_set("local", json!({"language": "zh"})).unwrap();
+        assert!(language.has_changed().unwrap());
+        assert_eq!(language.borrow_and_update().as_deref(), Some("zh"));
         let params = NotifyParams {
             title: "Finished".into(),
             body: "Done".into(),
@@ -1381,10 +1439,32 @@ mod tests {
             params.thread_id
         );
         core.update_settings(SettingsUpdateParams {
+            patch: json!({"notifications": {"mode": "sound"}}),
+        })
+        .await
+        .unwrap();
+        assert!(core.home.settings().notifications_enabled);
+        core.notify(params.clone());
+        assert!(matches!(
+            notifications.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+        core.update_settings(SettingsUpdateParams {
+            patch: json!({"notifications": {"mode": "notifications_and_sound"}}),
+        })
+        .await
+        .unwrap();
+        core.notify(params.clone());
+        assert!(notifications.try_recv().is_ok());
+        core.update_settings(SettingsUpdateParams {
             patch: json!({"notificationsEnabled": false}),
         })
         .await
         .unwrap();
+        assert_eq!(
+            core.home.settings().notifications.mode,
+            NotificationMode::Off
+        );
         core.notify(params);
         assert!(matches!(
             notifications.try_recv(),

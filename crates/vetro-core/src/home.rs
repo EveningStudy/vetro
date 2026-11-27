@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use vetro_agent_api::{AgentError, Result};
 use vetro_proto::{
-    rpc::{AgentOptionsResult, ErrorCode, RemoteDevice, Settings},
+    rpc::{AgentOptionsResult, ErrorCode, NotificationMode, RemoteDevice, Settings},
     RateLimit, RawEntry,
 };
 
@@ -108,8 +108,16 @@ impl Home {
         }
 
         let config = root.join("config.json");
-        let settings = match read(&config)? {
-            Some(settings) => settings,
+        let settings = match read::<serde_json::Value>(&config)? {
+            Some(raw) => {
+                let has_notifications = raw.get("notifications").is_some();
+                let mut settings: Settings = serde_json::from_value(raw)
+                    .map_err(|error| internal(format!("{}: {error}", config.display())))?;
+                if !has_notifications && !settings.notifications_enabled {
+                    settings.notifications.mode = NotificationMode::Off;
+                }
+                settings
+            }
             None => {
                 let settings = Settings::default();
                 write(&config, &settings)?;
@@ -266,9 +274,23 @@ impl Home {
     ) -> Result<(Settings, T)> {
         let mut settings = self.settings.lock().unwrap();
         let mut value = serde_json::to_value(&*settings).map_err(internal)?;
+        let patched_mode = patch
+            .get("notifications")
+            .and_then(|value| value.get("mode"))
+            .is_some();
+        let patched_legacy = patch.get("notificationsEnabled").is_some();
         merge(&mut value, patch);
-        let next: Settings = serde_json::from_value(value)
+        let mut next: Settings = serde_json::from_value(value)
             .map_err(|error| crate::bad_request(format!("Invalid settings: {error}")))?;
+        if patched_mode {
+            next.notifications_enabled = next.notifications.mode != NotificationMode::Off;
+        } else if patched_legacy {
+            if !next.notifications_enabled {
+                next.notifications.mode = NotificationMode::Off;
+            } else if next.notifications.mode == NotificationMode::Off {
+                next.notifications.mode = NotificationMode::Notifications;
+            }
+        }
         let validated = validate(&settings, &next)?;
         write(&self.root.join("config.json"), &next)?;
         *settings = next.clone();

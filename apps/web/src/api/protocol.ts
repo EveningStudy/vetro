@@ -4,6 +4,7 @@ import type { AgentsResult } from "./bindings/AgentsResult";
 import type { AppInfo } from "./bindings/AppInfo";
 import type { AuthenticateParams } from "./bindings/AuthenticateParams";
 import type { AuthenticateResult } from "./bindings/AuthenticateResult";
+import type { BadgeParams } from "./bindings/BadgeParams";
 import type { Empty } from "./bindings/Empty";
 import type { FsFindParams } from "./bindings/FsFindParams";
 import type { FsFindResult } from "./bindings/FsFindResult";
@@ -99,6 +100,7 @@ export interface Methods {
   "workspace.worktrees": [WorkspacePathParams, WorktreesResult];
   "workspace.openExternal": [OpenExternalParams, Empty];
   "app.notify": [NotifyParams, Empty];
+  "app.setBadge": [BadgeParams, Empty];
   "settings.get": [Empty, Settings];
   "settings.update": [SettingsUpdateParams, Settings];
   "prefs.get": [Empty, Prefs];
