@@ -170,9 +170,14 @@ jobs:
       - name: Configure updater signing (optional)
         if: steps.signing.outputs.updater == 'true'
         shell: pwsh
+        env:
+          VERRE_UPDATER_PUBKEY: ${{ secrets.VERRE_UPDATER_PUBKEY }}
         run: |
           $config = Join-Path $env:RUNNER_TEMP "verre-updater.json"
-          @{ bundle = @{ createUpdaterArtifacts = $true } } | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $config
+          @{
+            bundle = @{ createUpdaterArtifacts = $true }
+            plugins = @{ updater = @{ pubkey = $env:VERRE_UPDATER_PUBKEY.Trim() } }
+          } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $config
           "VERRE_UPDATER_CONFIG=$config" >> $env:GITHUB_ENV
 
       - name: Build desktop app

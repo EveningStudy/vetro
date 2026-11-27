@@ -46,7 +46,16 @@ pub fn run() -> Result<()> {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin({
+            let mut updater = tauri_plugin_updater::Builder::new();
+            if let Some(pubkey) = option_env!("VERRE_UPDATER_PUBKEY")
+                .map(str::trim)
+                .filter(|key| !key.is_empty())
+            {
+                updater = updater.pubkey(pubkey);
+            }
+            updater.build()
+        })
         .setup(move |app| {
             let tag = tag.as_deref();
             let handle_app = app.handle().clone();
