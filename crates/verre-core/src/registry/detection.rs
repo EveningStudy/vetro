@@ -18,6 +18,7 @@ fn binary_candidates(command: &str) -> Vec<String> {
     }
 }
 
+#[cfg(all(feature = "claude", any(windows, target_os = "macos")))]
 fn binary_name(command: &str) -> String {
     binary_candidates(command)
         .into_iter()

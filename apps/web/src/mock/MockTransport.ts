@@ -741,8 +741,8 @@ export class MockTransport implements Transport {
     "app.notify": () => ({}),
     "app.setBadge": () => ({}),
     "app.checkUpdate": () => ({
-      currentVersion: "0.3.0",
-      latestVersion: "0.3.0",
+      currentVersion: "0.4.0",
+      latestVersion: "0.4.0",
       available: false,
       canAutoInstall: false,
       releaseUrl: "https://github.com/EveningStudy/verre/releases/latest",

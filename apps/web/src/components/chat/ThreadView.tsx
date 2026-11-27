@@ -412,6 +412,7 @@ function ThreadHeader({ thread, threadId }: { thread: OpenThread | undefined; th
             </Badge>
           </Tip>
         ) : null}
+        {summary.archived ? <Badge variant="secondary">{t("sidebar.archived")}</Badge> : null}
         <SubSessionsPill summary={summary} />
         <ChangesPill threadId={threadId} cwd={cwd} />
         {local && cwd ? <OpenMenu cwd={cwd} /> : null}
