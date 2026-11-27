@@ -1,7 +1,7 @@
 import {
   ArchiveIcon,
   ArchiveRestoreIcon,
-  ChevronDownIcon,
+  ChevronRightIcon,
   CodeIcon,
   CopyIcon,
   CornerDownRightIcon,
@@ -215,8 +215,6 @@ function InlineTitle({ threadId, title, editing, onEditingChange }: { threadId: 
   );
 }
 
-const Dot = () => <span className="text-muted-foreground/50">·</span>;
-
 function useChildren(threadId: string) {
   const threads = useStore((s) => s.threads);
   return useMemo(() => Object.values(threads).filter((thread) => thread.parent?.threadId === threadId), [threads, threadId]);
@@ -288,11 +286,11 @@ function OpenMenu({ cwd }: { cwd: string }) {
   const t = useT();
   return (
     <Menu>
-      <MenuTrigger render={<Button size="xs" variant="ghost-muted" aria-label={t("open.menu")} />}>
-        <SquareArrowOutUpRightIcon />
-        <span className="max-sm:hidden">{t("open.menu")}</span>
-        <ChevronDownIcon className="size-3 opacity-70 max-sm:hidden" />
-      </MenuTrigger>
+      <Tip label={t("open.menu")}>
+        <MenuTrigger render={<Button size="icon-sm" variant="ghost" aria-label={t("open.menu")} />}>
+          <SquareArrowOutUpRightIcon />
+        </MenuTrigger>
+      </Tip>
       <MenuPopup align="end" className="w-52">
         <MenuItem onClick={() => void actions.openExternal(cwd, "editor")}>
           <CodeIcon />
@@ -335,6 +333,7 @@ function ThreadHeader({ thread, threadId }: { thread: OpenThread | undefined; th
   const modelOption = thread?.options.find((option) => option.category === "model");
   const model = (modelOption && prepare(modelOption).find((choice) => choice.value === modelOption.currentValue)?.label) ?? summary.model;
   const source = summary.source !== "verre" ? t("thread.from", { source: sourceLabel(summary, agent?.name, t) }) : null;
+  const projectLabel = cwd ? (quickChat ? t("sidebar.quickChats") : (projectName ?? basename(cwd))) : null;
 
   useEffect(() => {
     if (cwd && !quickChat && idle) {
@@ -344,8 +343,25 @@ function ThreadHeader({ thread, threadId }: { thread: OpenThread | undefined; th
   }, [cwd, quickChat, idle]);
 
   const where = (
-    <span className="flex flex-col gap-0.5">
-      {cwd ? <span className="font-mono text-[11px] break-all">{tildePath(cwd, home)}</span> : null}
+    <span className="flex flex-col gap-0.5 text-xs">
+      <span className="flex items-center gap-1.5 font-medium">
+        <span>{agent?.name ?? summary.agentId}</span>
+        {model ? <span className="text-muted-foreground">· {model}</span> : null}
+      </span>
+      {branch ? (
+        <span className="flex items-center gap-1 text-muted-foreground">
+          <GitBranchIcon className="size-3 shrink-0" />
+          <span className="font-mono text-[11px]">{branch}</span>
+          {currentWorktree ? <span>· {t("worktree.badge")}</span> : null}
+        </span>
+      ) : null}
+      {currentWorktree && worktrees ? (
+        <span className="flex items-center gap-1 text-muted-foreground">
+          <FolderGit2Icon className="size-3 shrink-0" />
+          <span>{t("worktree.mainRepo", { path: tildePath(worktrees.mainRoot, home) })}</span>
+        </span>
+      ) : null}
+      {cwd ? <span className="font-mono text-[11px] break-all text-muted-foreground">{tildePath(cwd, home)}</span> : null}
       {source ? <span className="text-muted-foreground">{source}</span> : null}
     </span>
   );
@@ -353,64 +369,38 @@ function ThreadHeader({ thread, threadId }: { thread: OpenThread | undefined; th
   return (
     <header {...drag} className={cn("flex h-(--workspace-topbar-height) shrink-0 items-center gap-2 px-(--workspace-gutter)", chromeClass)}>
       <MobileSidebarButton />
-      <div className="flex min-w-0 flex-1 flex-col justify-center">
-        <div className="flex min-w-0 items-center gap-2">
-          <InlineTitle threadId={threadId} title={summary.title} editing={editing} onEditingChange={setEditing} />
-          {summary.live && !editing ? (
-            <Tip label={t("thread.live")}>
+      <div className="flex min-w-0 flex-1 items-center gap-1.5">
+        <Tip label={where}>
+          <button
+            type="button"
+            aria-label={agent?.name ?? summary.agentId}
+            className="inline-flex min-w-0 shrink cursor-default items-center gap-1.5 rounded-sm text-sm text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <AgentIcon agentId={summary.agentId} className="size-3.5 shrink-0" />
+            {summary.live && !editing ? (
               <span className="size-1.5 shrink-0 rounded-full bg-success" aria-label={t("thread.live")} />
-            </Tip>
-          ) : null}
-          {summary.pinned && !editing ? <PinIcon className="size-3 shrink-0 text-muted-foreground/70" aria-label={t("thread.pinned")} /> : null}
-        </div>
-        <div className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
-          {summary.parent ? (
-            <>
-              <button
-                type="button"
-                onClick={() => actions.navigate({ view: "thread", threadId: summary.parent!.threadId })}
-                className="inline-flex min-w-0 max-w-48 shrink items-center gap-1 rounded-sm hover:text-foreground"
-                title={t("thread.openParent")}
-              >
-                <CornerLeftUpIcon className="size-3 shrink-0" />
-                {parent ? <AgentIcon agentId={parent.agentId} className="size-3" /> : null}
-                <span className="truncate">{parent?.title ?? t("thread.parent")}</span>
-              </button>
-              <Dot />
-            </>
-          ) : null}
-          <span className="inline-flex h-4.5 min-w-0 shrink-0 items-center gap-1 rounded-[5px] bg-foreground/[0.05] px-1.5 dark:bg-foreground/[0.07]">
-            <AgentIcon agentId={summary.agentId} className="size-3" />
-            <span className="shrink-0">{agent?.name ?? summary.agentId}</span>
-            {model ? (
-              <>
-                <span className="text-muted-foreground/50">·</span>
-                <span className="max-w-32 truncate">{model}</span>
-              </>
             ) : null}
-          </span>
-          {cwd || source ? (
-            <Tip label={where}>
-              <span className="inline-flex min-w-0 items-center gap-1.5 max-sm:hidden">
-                {cwd ? <span className="min-w-0 truncate">{quickChat ? t("sidebar.quickChats") : (projectName ?? basename(cwd))}</span> : null}
-                {!cwd && source ? <span className="truncate text-muted-foreground/80">{source}</span> : null}
-              </span>
-            </Tip>
-          ) : null}
-          {branch ? (
-            <span className="inline-flex min-w-0 shrink items-center gap-1 max-sm:hidden" title={branch}>
-              <GitBranchIcon className="size-3 shrink-0" />
-              <span className="truncate font-mono text-[11px]">{branch}</span>
-            </span>
-          ) : null}
-          {currentWorktree && worktrees ? (
-            <Tip label={t("worktree.mainRepo", { path: tildePath(worktrees.mainRoot, home) })}>
-              <span className="inline-flex h-4.5 shrink-0 items-center gap-1 rounded-[5px] bg-foreground/[0.05] px-1.5 text-[11px] dark:bg-foreground/[0.07] max-sm:hidden">
-                <FolderGit2Icon className="size-3 shrink-0" />
-                {t("worktree.badge")}
-              </span>
-            </Tip>
-          ) : null}
+            {projectLabel ? <span className="max-w-36 truncate">{projectLabel}</span> : null}
+          </button>
+        </Tip>
+        {projectLabel ? <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground/45" /> : null}
+        {summary.parent ? (
+          <>
+            <button
+              type="button"
+              onClick={() => actions.navigate({ view: "thread", threadId: summary.parent!.threadId })}
+              className="inline-flex min-w-0 max-w-44 shrink cursor-pointer items-center gap-1 rounded-sm text-sm text-muted-foreground hover:text-foreground"
+              title={t("thread.openParent")}
+            >
+              {parent ? <AgentIcon agentId={parent.agentId} className="size-3.5 shrink-0" /> : <CornerLeftUpIcon className="size-3.5 shrink-0" />}
+              <span className="truncate">{parent?.title ?? t("thread.parent")}</span>
+            </button>
+            <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground/45" />
+          </>
+        ) : null}
+        <div className="flex min-w-0 flex-1 items-center gap-1.5">
+          <InlineTitle threadId={threadId} title={summary.title} editing={editing} onEditingChange={setEditing} />
+          {summary.pinned && !editing ? <PinIcon className="size-3 shrink-0 text-muted-foreground/70" aria-label={t("thread.pinned")} /> : null}
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-1">
@@ -422,7 +412,6 @@ function ThreadHeader({ thread, threadId }: { thread: OpenThread | undefined; th
             </Badge>
           </Tip>
         ) : null}
-        {summary.archived ? <Badge variant="secondary">{t("sidebar.archived")}</Badge> : null}
         <SubSessionsPill summary={summary} />
         <ChangesPill threadId={threadId} cwd={cwd} />
         {local && cwd ? <OpenMenu cwd={cwd} /> : null}

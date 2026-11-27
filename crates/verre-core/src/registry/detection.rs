@@ -183,7 +183,51 @@ pub(super) fn acp(command: &str) -> Option<PathBuf> {
             on_path(command).or(installed)
         }
         "cursor-agent" => on_path(command).or_else(cursor_install),
+        "codebuddy" => on_path(command).or_else(codebuddy_install),
         _ => on_path(command),
+    }
+}
+
+#[cfg(feature = "acp")]
+fn codebuddy_install() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        let mut candidates = Vec::new();
+        if let Some(local) = env::var_os("LOCALAPPDATA").map(PathBuf::from) {
+            for name in ["codebuddy.exe", "codebuddy.cmd"] {
+                candidates.push(local.join("codebuddy/bin").join(name));
+                candidates.push(
+                    local
+                        .join("Programs/WorkBuddy/resources/app.asar.unpacked/cli/bin")
+                        .join(name),
+                );
+            }
+        }
+        if let Some(program_files) = env::var_os("ProgramFiles").map(PathBuf::from) {
+            for name in ["codebuddy.exe", "codebuddy.cmd"] {
+                candidates.push(
+                    program_files
+                        .join("WorkBuddy/resources/app.asar.unpacked/cli/bin")
+                        .join(name),
+                );
+            }
+        }
+        candidates.into_iter().find(|path| usable(path))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut candidates = vec![PathBuf::from(
+            "/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy",
+        )];
+        if let Some(home) = env::home_dir() {
+            candidates.push(home.join(".local/bin/codebuddy"));
+        }
+        candidates.into_iter().find(|path| usable(path))
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        let path = env::home_dir()?.join(".local/bin/codebuddy");
+        usable(&path).then_some(path)
     }
 }
 

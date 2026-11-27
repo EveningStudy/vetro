@@ -48,7 +48,6 @@ import {
   type FontStyle,
   type LanguagePref,
   type SidebarOrder,
-  type SidebarScope,
   type ThemePref,
   type UsageDisplay,
   setBypassMemoryScope,
@@ -62,7 +61,6 @@ import {
   setPaperGrain,
   setSidebarActivityDays,
   setSidebarOrder,
-  setSidebarScope,
   setTheme,
   setUsageDisplay,
   usePrefs,
@@ -164,17 +162,19 @@ function SectionTitle({ title, action }: { title: string; action?: ReactNode }) 
 }
 
 function Group({ children, className }: { children: ReactNode; className?: string }) {
-  return <div className={cn("divide-y overflow-hidden rounded-xl border bg-card/80", className)}>{children}</div>;
+  return <div className={cn("divide-y divide-border/50 overflow-hidden rounded-xl border border-border/60 bg-card/40 shadow-xs/5", className)}>{children}</div>;
 }
 
 function Row({ label, hint, children }: { label: ReactNode; hint?: ReactNode; children?: ReactNode }) {
   return (
-    <div className="flex items-center justify-between gap-4 px-4 py-3 sm:gap-6">
-      <div className="min-w-0">
-        <div className="text-sm text-foreground">{label}</div>
-        {hint ? <div className="mt-0.5 text-xs text-muted-foreground">{hint}</div> : null}
+    <div className="@container">
+      <div className="flex flex-col gap-3 px-4 py-3 @min-[32rem]:grid @min-[32rem]:grid-cols-[minmax(0,1fr)_auto] @min-[32rem]:items-center @min-[32rem]:gap-8">
+        <div className="min-w-0">
+          <div className="text-sm font-medium text-foreground">{label}</div>
+          {hint ? <div className="mt-0.5 max-w-2xl text-pretty text-xs text-muted-foreground">{hint}</div> : null}
+        </div>
+        {children ? <div className="flex shrink-0 items-center gap-2 @max-[32rem]:self-end">{children}</div> : null}
       </div>
-      {children ? <div className="flex shrink-0 items-center gap-2">{children}</div> : null}
     </div>
   );
 }
@@ -189,7 +189,6 @@ export function displayPath(path: string | null) {
 }
 
 function useSettings() {
-  const t = useT();
   const settings = useStore((s) => s.settings);
   useEffect(() => {
     client()
@@ -201,7 +200,6 @@ function useSettings() {
     try {
       const next = await client().request("settings.update", { patch: patch as never });
       actions.setSettings(next);
-      toast.success(t("settings.saved"));
       return next;
     } catch (error) {
       toast.error(errorMessage(error));
@@ -995,24 +993,25 @@ function ThreadsSection() {
   const showLimits = usePrefs((s) => s.composerShowLimits);
   const usageDisplay = usePrefs((s) => s.usageDisplay);
   const showContext = usePrefs((s) => s.composerShowContext);
-  const scope = usePrefs((s) => s.sidebarScope);
   const sidebarOrder = usePrefs((s) => s.sidebarOrder);
   const hideDisabled = usePrefs((s) => s.hideDisabledAgentHistory);
-  const showInternal = useStore((s) => s.filters.showInternal);
   const bypassMemoryScope = usePrefs((s) => s.bypassMemoryScope);
+  const limitsMode: "off" | UsageDisplay = showLimits ? usageDisplay : "off";
   return (
     <section>
       <SectionTitle title={t("settings.threads")} />
       <SubTitle first>{t("settings.usageLimits")}</SubTitle>
       <Group>
         <Row label={t("settings.composerShowLimits")} hint={t("settings.composerShowLimitsHint")}>
-          <Switch checked={showLimits} aria-label={t("settings.composerShowLimits")} onCheckedChange={setComposerShowLimits} />
-        </Row>
-        <Row label={t("settings.usageDisplay")}>
-          <Segmented<UsageDisplay>
-            value={usageDisplay}
-            onChange={setUsageDisplay}
+          <Segmented<"off" | UsageDisplay>
+            label={t("settings.composerShowLimits")}
+            value={limitsMode}
+            onChange={(value) => {
+              setComposerShowLimits(value !== "off");
+              if (value !== "off") setUsageDisplay(value);
+            }}
             options={[
+              { value: "off", label: t("settings.usageDisplay.off") },
               { value: "remaining", label: t("settings.usageDisplay.remaining") },
               { value: "used", label: t("settings.usageDisplay.used") },
             ]}
@@ -1024,16 +1023,6 @@ function ThreadsSection() {
       </Group>
       <SubTitle>{t("settings.sidebarHistory")}</SubTitle>
       <Group>
-        <Row label={t("settings.sidebarScope")} hint={t("settings.sidebarScopeHint")}>
-          <Segmented<SidebarScope>
-            value={scope}
-            onChange={setSidebarScope}
-            options={[
-              { value: "all", label: t("sidebar.scopeAll") },
-              { value: "verre", label: t("sidebar.scopeVerre") },
-            ]}
-          />
-        </Row>
         <Row label={t("settings.sidebarOrder")}>
           <Segmented<SidebarOrder>
             value={sidebarOrder}
@@ -1049,9 +1038,6 @@ function ThreadsSection() {
         </Row>
         <Row label={t("settings.hideDisabledHistory")} hint={t("settings.hideDisabledHistoryHint")}>
           <Switch checked={hideDisabled} aria-label={t("settings.hideDisabledHistory")} onCheckedChange={setHideDisabledAgentHistory} />
-        </Row>
-        <Row label={t("settings.showInternal")} hint={t("settings.showInternalHint")}>
-          <Switch checked={showInternal} aria-label={t("settings.showInternal")} onCheckedChange={(checked) => actions.setFilters({ showInternal: checked })} />
         </Row>
       </Group>
       <SubTitle>{t("settings.permissions")}</SubTitle>
@@ -1207,42 +1193,48 @@ function NotificationsSection() {
             </MenuPopup>
           </Menu>
         </Row>
-        <Row label={t("settings.notificationsBackgroundOnly")} hint={t("settings.notificationsBackgroundOnlyHint")}>
-          <Switch
-            checked={notif.backgroundOnly}
-            disabled={disabled || alertsOff}
-            aria-label={t("settings.notificationsBackgroundOnly")}
-            onCheckedChange={(backgroundOnly) => patchNotif({ backgroundOnly })}
-          />
-        </Row>
+        {!alertsOff ? (
+          <Row label={t("settings.notificationsBackgroundOnly")} hint={t("settings.notificationsBackgroundOnlyHint")}>
+            <Switch
+              checked={notif.backgroundOnly}
+              disabled={disabled}
+              aria-label={t("settings.notificationsBackgroundOnly")}
+              onCheckedChange={(backgroundOnly) => patchNotif({ backgroundOnly })}
+            />
+          </Row>
+        ) : null}
       </Group>
-      <SubTitle>{t("settings.notificationsEvents")}</SubTitle>
-      <Group>
-        <Row label={t("settings.notificationsOnComplete")}>
-          <Switch
-            checked={notif.onComplete}
-            disabled={disabled || alertsOff}
-            aria-label={t("settings.notificationsOnComplete")}
-            onCheckedChange={(onComplete) => patchNotif({ onComplete })}
-          />
-        </Row>
-        <Row label={t("settings.notificationsOnInput")}>
-          <Switch
-            checked={notif.onInput}
-            disabled={disabled || alertsOff}
-            aria-label={t("settings.notificationsOnInput")}
-            onCheckedChange={(onInput) => patchNotif({ onInput })}
-          />
-        </Row>
-        <Row label={t("settings.notificationsOnError")}>
-          <Switch
-            checked={notif.onError}
-            disabled={disabled || alertsOff}
-            aria-label={t("settings.notificationsOnError")}
-            onCheckedChange={(onError) => patchNotif({ onError })}
-          />
-        </Row>
-      </Group>
+      {!alertsOff ? (
+        <>
+          <SubTitle>{t("settings.notificationsEvents")}</SubTitle>
+          <Group>
+            <Row label={t("settings.notificationsOnComplete")}>
+              <Switch
+                checked={notif.onComplete}
+                disabled={disabled}
+                aria-label={t("settings.notificationsOnComplete")}
+                onCheckedChange={(onComplete) => patchNotif({ onComplete })}
+              />
+            </Row>
+            <Row label={t("settings.notificationsOnInput")}>
+              <Switch
+                checked={notif.onInput}
+                disabled={disabled}
+                aria-label={t("settings.notificationsOnInput")}
+                onCheckedChange={(onInput) => patchNotif({ onInput })}
+              />
+            </Row>
+            <Row label={t("settings.notificationsOnError")}>
+              <Switch
+                checked={notif.onError}
+                disabled={disabled}
+                aria-label={t("settings.notificationsOnError")}
+                onCheckedChange={(onError) => patchNotif({ onError })}
+              />
+            </Row>
+          </Group>
+        </>
+      ) : null}
       <SubTitle>{t("settings.notificationsBadgeGroup")}</SubTitle>
       <Group>
         <Row label={t("settings.notificationsBadge")} hint={t("settings.notificationsBadgeHint")}>
@@ -1253,28 +1245,32 @@ function NotificationsSection() {
             onCheckedChange={(badgeEnabled) => patchNotif({ badgeEnabled })}
           />
         </Row>
-        <Row label={t("settings.notificationsBadgeScope")}>
-          <Segmented<BadgeScope>
-            value={notif.badgeScope}
-            disabled={disabled || !notif.badgeEnabled}
-            onChange={(badgeScope) => patchNotif({ badgeScope })}
-            options={[
-              { value: "attention", label: t("settings.notificationsBadgeScope.attention") },
-              { value: "needs_input", label: t("settings.notificationsBadgeScope.needs_input") },
-            ]}
-          />
-        </Row>
-        <Row label={t("settings.notificationsBadgeClear")}>
-          <Segmented<BadgeClearMode>
-            value={notif.badgeClear}
-            disabled={disabled || !notif.badgeEnabled}
-            onChange={(badgeClear) => patchNotif({ badgeClear })}
-            options={[
-              { value: "on_thread_open", label: t("settings.notificationsBadgeClear.on_thread_open") },
-              { value: "on_window_focus", label: t("settings.notificationsBadgeClear.on_window_focus") },
-            ]}
-          />
-        </Row>
+        {notif.badgeEnabled ? (
+          <>
+            <Row label={t("settings.notificationsBadgeScope")}>
+              <Segmented<BadgeScope>
+                value={notif.badgeScope}
+                disabled={disabled}
+                onChange={(badgeScope) => patchNotif({ badgeScope })}
+                options={[
+                  { value: "attention", label: t("settings.notificationsBadgeScope.attention") },
+                  { value: "needs_input", label: t("settings.notificationsBadgeScope.needs_input") },
+                ]}
+              />
+            </Row>
+            <Row label={t("settings.notificationsBadgeClear")}>
+              <Segmented<BadgeClearMode>
+                value={notif.badgeClear}
+                disabled={disabled}
+                onChange={(badgeClear) => patchNotif({ badgeClear })}
+                options={[
+                  { value: "on_thread_open", label: t("settings.notificationsBadgeClear.on_thread_open") },
+                  { value: "on_window_focus", label: t("settings.notificationsBadgeClear.on_window_focus") },
+                ]}
+              />
+            </Row>
+          </>
+        ) : null}
       </Group>
     </section>
   );

@@ -28,10 +28,14 @@ function usable(agent: AgentInfo) {
 export function NewThread({ projectPath, agentId: routeAgent }: { projectPath: string | null; agentId: string | null }) {
   const t = useT();
   const agents = useStore((s) => s.agents);
+  const settings = useStore((s) => s.settings);
   const projects = useStore((s) => s.projects);
   const home = useStore((s) => s.app?.homeDir);
   const dataDir = useStore((s) => s.app?.dataDir);
   const [agentId, setAgentId] = useState<string | null>(routeAgent ?? getPrefs().lastAgent ?? null);
+  const isEnabled = (id: string) => settings?.agents[id]?.enabled !== false;
+  const enabledInstalled = agents.filter((a) => isEnabled(a.id) && a.installed);
+  const pickerAgents = enabledInstalled.length > 0 ? enabledInstalled : agents.filter((a) => isEnabled(a.id));
   const [cwd, setCwd] = useState<string | null>(projectPath);
   const [baseOptions, setBaseOptions] = useState<ConfigOption[]>([]);
   const [commands, setCommands] = useState<SlashCommand[]>([]);
@@ -50,7 +54,13 @@ export function NewThread({ projectPath, agentId: routeAgent }: { projectPath: s
     if (routeAgent) setAgentId(routeAgent);
   }, [routeAgent]);
 
-  const agent = agents.find((a) => a.id === agentId && usable(a)) ?? agents.find((a) => usable(a) && a.auth.state !== "required") ?? agents.find(usable);
+  const agent =
+    agents.find((a) => a.id === agentId && isEnabled(a.id) && usable(a)) ??
+    agents.find((a) => isEnabled(a.id) && usable(a) && a.auth.state !== "required") ??
+    agents.find((a) => isEnabled(a.id) && usable(a)) ??
+    agents.find((a) => a.id === agentId && usable(a)) ??
+    agents.find((a) => usable(a) && a.auth.state !== "required") ??
+    agents.find(usable);
   const lastProject = getPrefs().lastProject ?? null;
   const visibleProjects = useMemo(() => {
     const clean = projects.filter((p) => !p.hidden && !isScratchOrTempPath(p.path) && !isQuickChatPath(p.path, dataDir));
@@ -274,7 +284,7 @@ export function NewThread({ projectPath, agentId: routeAgent }: { projectPath: s
           autoFocus
           leading={
             <>
-              <AgentPicker agents={agents} current={agent} onChange={setAgentId} />
+              <AgentPicker agents={pickerAgents.length > 0 ? pickerAgents : agents} current={agent} onChange={setAgentId} />
               {loadingOptions ? <Spinner className="mx-1.5 size-3.5 text-muted-foreground" /> : null}
               {needsSession && !loadingOptions && agent ? (
                 <button

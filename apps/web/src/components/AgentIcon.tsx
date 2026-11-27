@@ -172,6 +172,24 @@ function GrokMark({ className, ...props }: IconProps) {
   );
 }
 
+function DeepSeekMark({ className, ...props }: IconProps) {
+  return (
+    <svg {...props} viewBox="0 0 24 24" className={cn("fill-none stroke-[#4d6bfe] dark:stroke-[#6b87ff]", className)} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4.5 14.5c2 3 5.5 4 9.5 3 3-.8 5-3 5.5-5.5-2.5-.5-4.2-2-4.8-4.5-3.2.8-5.7 2.5-7.7 5-1-.5-1.8-.3-2.5 2Z" />
+      <circle cx="13.5" cy="12.5" r="0.9" className="fill-[#4d6bfe] dark:fill-[#6b87ff] stroke-none" />
+    </svg>
+  );
+}
+
+function CodeBuddyMark({ className, ...props }: IconProps) {
+  return (
+    <svg {...props} viewBox="0 0 24 24" className={cn("fill-none stroke-[#10b981] dark:stroke-[#34d399]", className)} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="4" y="4.5" width="16" height="15" rx="4.5" />
+      <path d="M9.5 9.5 7.5 12l2 2.5M14.5 9.5l2 2.5-2 2.5M12.6 9l-1.2 6" />
+    </svg>
+  );
+}
+
 const marks: Record<string, (props: IconProps) => React.ReactElement> = {
   codex: OpenAIMark,
   claude: ClaudeMark,
@@ -192,6 +210,8 @@ const marks: Record<string, (props: IconProps) => React.ReactElement> = {
   vibe: VibeMark,
   kilo: KiloMark,
   grok: GrokMark,
+  deepseek: DeepSeekMark,
+  codebuddy: CodeBuddyMark,
 };
 
 export function AgentIcon({ agentId, className }: { agentId: string; className?: string }) {

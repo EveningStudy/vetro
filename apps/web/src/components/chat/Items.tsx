@@ -26,7 +26,7 @@ import {
   WrenchIcon,
   XIcon,
 } from "lucide-react";
-import { memo, useState } from "react";
+import { memo, useLayoutEffect, useRef, useState } from "react";
 import type { ItemOf, Question, ToolKind } from "~/api/types";
 import { type Translate, useT } from "~/i18n";
 import { clockTime, formatDuration, formatTokens } from "~/lib/format";
@@ -63,6 +63,52 @@ function Timestamp({ ts }: { ts: number | null }) {
   );
 }
 
+const COLLAPSE_HEIGHT_PX = 176;
+
+function CollapsibleUserText({ text }: { text: string }) {
+  const t = useT();
+  const innerRef = useRef<HTMLDivElement>(null);
+  const [overflowing, setOverflowing] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+
+  useLayoutEffect(() => {
+    const el = innerRef.current;
+    if (!el) return;
+    const measure = () => setOverflowing(el.scrollHeight > COLLAPSE_HEIGHT_PX + 12);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [text]);
+
+  return (
+    <>
+      <div
+        className={cn(
+          overflowing &&
+            !expanded &&
+            "max-h-44 overflow-hidden [mask-image:linear-gradient(to_bottom,black_calc(100%-1.75rem),transparent)]",
+        )}
+      >
+        <div ref={innerRef} className="chat-prose whitespace-pre-wrap break-words text-sm leading-relaxed">
+          {text}
+        </div>
+      </div>
+      {overflowing ? (
+        <Button
+          size="xs"
+          variant="ghost-muted"
+          aria-expanded={expanded}
+          className="mt-1 -ms-1.5 h-6 text-xs"
+          onClick={() => setExpanded((v) => !v)}
+        >
+          {expanded ? t("item.showLess") : t("item.showFull")}
+        </Button>
+      ) : null}
+    </>
+  );
+}
+
 export const UserMessage = memo(function UserMessage({
   item,
   onRollback,
@@ -95,7 +141,7 @@ export const UserMessage = memo(function UserMessage({
       ) : null}
       {text ? (
         <div className="min-w-0 max-w-[80%] rounded-2xl bg-message px-4 py-2.5 text-message-foreground">
-          <div className="chat-prose whitespace-pre-wrap break-words text-sm leading-relaxed">{text}</div>
+          <CollapsibleUserText text={text} />
           {files.length > 0 ? (
             <div className="mt-2 flex flex-wrap gap-1.5">
               {files.map((file, index) =>
@@ -110,12 +156,13 @@ export const UserMessage = memo(function UserMessage({
           ) : null}
         </div>
       ) : null}
-      <div className="flex items-center gap-2 pe-1 text-xs tabular-nums text-muted-foreground opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 pointer-coarse:opacity-100">
+      <div className="flex items-center gap-1.5 pe-1 text-xs tabular-nums text-muted-foreground opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 pointer-coarse:opacity-100">
         <span>{clockTime(item.ts)}</span>
-        <button
-          type="button"
+        <Button
+          size="icon-xs"
+          variant="ghost-muted"
+          className="size-5"
           aria-label={t("common.copy")}
-          className="inline-flex size-5 items-center justify-center rounded hover:bg-accent hover:text-foreground"
           onClick={() => {
             void copyText(text).then(() => {
               setCopied(true);
@@ -124,29 +171,19 @@ export const UserMessage = memo(function UserMessage({
           }}
         >
           {copied ? <CheckIcon className="size-3" /> : <CopyIcon className="size-3" />}
-        </button>
+        </Button>
         {onRewindFiles ? (
           <Tip label={t("history.rewindFiles")}>
-            <button
-              type="button"
-              aria-label={t("history.rewindFiles")}
-              className="inline-flex size-5 items-center justify-center rounded hover:bg-accent hover:text-foreground"
-              onClick={onRewindFiles}
-            >
+            <Button size="icon-xs" variant="ghost-muted" className="size-5" aria-label={t("history.rewindFiles")} onClick={onRewindFiles}>
               <HistoryIcon className="size-3" />
-            </button>
+            </Button>
           </Tip>
         ) : null}
         {onRollback ? (
           <Tip label={t("history.rollback")}>
-            <button
-              type="button"
-              aria-label={t("history.rollback")}
-              className="inline-flex size-5 items-center justify-center rounded hover:bg-accent hover:text-foreground"
-              onClick={onRollback}
-            >
+            <Button size="icon-xs" variant="ghost-muted" className="size-5" aria-label={t("history.rollback")} onClick={onRollback}>
               <Undo2Icon className="size-3" />
-            </button>
+            </Button>
           </Tip>
         ) : null}
       </div>
@@ -522,10 +559,10 @@ function CopyAnswerButton({ answerText }: { answerText: string }) {
   const [copied, setCopied] = useState(false);
   return (
     <Tip label={copied ? t("common.copied") : t("item.copyAnswer")}>
-      <button
-        type="button"
+      <Button
+        size="icon-xs"
+        variant="ghost-muted"
         aria-label={t("item.copyAnswer")}
-        className="inline-flex size-6 cursor-pointer items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
         onClick={() => {
           void copyText(answerText).then(() => {
             setCopied(true);
@@ -534,7 +571,7 @@ function CopyAnswerButton({ answerText }: { answerText: string }) {
         }}
       >
         {copied ? <CheckIcon className="size-3.5 text-success" /> : <CopyIcon className="size-3.5" />}
-      </button>
+      </Button>
     </Tip>
   );
 }
@@ -592,14 +629,9 @@ export const TurnEnd = memo(function TurnEnd({
           {hasCopy ? <CopyAnswerButton answerText={answerText!} /> : null}
           {onFork ? (
             <Tip label={forkText}>
-              <button
-                type="button"
-                aria-label={forkText}
-                className="inline-flex size-6 cursor-pointer items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
-                onClick={onFork}
-              >
+              <Button size="icon-xs" variant="ghost-muted" aria-label={forkText} onClick={onFork}>
                 <GitForkIcon className="size-3.5" />
-              </button>
+              </Button>
             </Tip>
           ) : null}
         </div>

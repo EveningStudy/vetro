@@ -110,6 +110,9 @@ export const zh: Record<MessageKey, string> = {
 
   "item.thinking": "思考中",
   "item.thought": "思考",
+  "item.working": "已运行 {duration}",
+  "item.showFull": "展开完整消息",
+  "item.showLess": "收起",
   "item.plan": "计划",
   "item.planProgress": "已完成 {done}/{total}",
   "item.input": "输入",
@@ -227,6 +230,7 @@ export const zh: Record<MessageKey, string> = {
   "settings.composerShowLimits": "输入框显示剩余额度",
   "settings.composerShowLimitsHint": "数据来自代理上报，仅反映本机登录的账号。",
   "settings.usageDisplay": "限额显示方式",
+  "settings.usageDisplay.off": "关闭",
   "settings.usageDisplay.remaining": "剩余 %",
   "settings.usageDisplay.used": "已用 %",
   "settings.composerShowContext": "输入框显示上下文占用",
@@ -585,4 +589,6 @@ export const zh: Record<MessageKey, string> = {
   "update.activeWorkTitle": "停止正在运行的任务并更新？",
   "update.activeWorkBody": "当前仍有会话或后台进程正在运行。继续安装更新将会停止这些任务并重启 Verre。",
   "update.activeWorkConfirm": "停止并更新",
+  "update.sidebarPill": "更新 {version}",
+  "update.sidebarUpdating": "正在更新…",
 };

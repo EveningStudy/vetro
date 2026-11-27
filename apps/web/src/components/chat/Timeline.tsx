@@ -2,8 +2,10 @@ import { ArrowDownIcon, LayersIcon } from "lucide-react";
 import { Fragment, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Item, ItemOf, RewindFilesResult } from "~/api/types";
 import { type MessageKey, type Translate, useT } from "~/i18n";
+import { formatDuration } from "~/lib/format";
 import { actions, isCatalogStub, useStore } from "~/state/store";
 import { errorMessage, toast } from "~/state/toast";
+import { useNow } from "../hooks";
 import { Button } from "../ui/button";
 import { Dialog, DialogDescription, DialogPopup, DialogTitle } from "../ui/overlay";
 import { Spinner } from "../ui/primitives";
@@ -18,6 +20,17 @@ const BOTTOM_SLACK = 48;
 
 /** Where the reader left each thread, so coming back does not jump to the bottom. */
 const scrollMemory = new Map<string, { top: number; atBottom: boolean; start: number | null }>();
+/** Preserves active-turn elapsed clock across WorkingRow hide/show within the same turn. */
+const activeRunStarts = new Map<string, { turnKey: string; startedAt: number }>();
+
+function resolveWorkingStart(threadId: string, turnKey: string, seedTs: number | null, remote: boolean) {
+  const existing = activeRunStarts.get(threadId);
+  if (existing && existing.turnKey === turnKey) return existing.startedAt;
+  const now = Date.now();
+  const startedAt = !remote && seedTs !== null && Math.abs(now - seedTs) < 3_600_000 ? Math.min(now, seedTs) : now;
+  activeRunStarts.set(threadId, { turnKey, startedAt });
+  return startedAt;
+}
 
 export function isPendingRequest(item: Item): item is ItemOf<"request"> {
   return item.type === "request" && item.resolution === null;
@@ -293,13 +306,28 @@ function WorkGroup({ items, live, threadId }: { items: Item[]; live: boolean; th
   );
 }
 
+function WorkingRow({ threadId, turnKey, seedTs }: { threadId: string; turnKey: string; seedTs: number | null }) {
+  const t = useT();
+  const remote = useStore((s) => !!s.app?.remoteClient);
+  const now = useNow(1000);
+  const [startedAt] = useState(() => resolveWorkingStart(threadId, turnKey, seedTs, remote));
+  const elapsed = formatDuration(Math.max(0, now - startedAt));
+  return (
+    <div className="mt-2">
+      <WorkLogRow
+        icon={<Spinner className="size-3.5" />}
+        label={<span className="live-tool-shine">{t("item.working", { duration: elapsed })}</span>}
+      />
+    </div>
+  );
+}
+
 function TimelineRows({ items, threadId, dockRequests }: { items: Item[]; threadId: string; dockRequests: boolean }) {
   const t = useT();
   const cwd = useStore((s) => s.open[threadId]?.summary.cwd ?? null);
-  const running = useStore((s) => {
-    const status = s.open[threadId]?.summary.status;
-    return status === "running" || status === "awaiting_input";
-  });
+  const threadStatus = useStore((s) => s.open[threadId]?.summary.status);
+  const running = threadStatus === "running" || threadStatus === "awaiting_input";
+  const working = threadStatus === "running";
   const forkCaps = useStore((s) => {
     const summary = s.threads[threadId] ?? s.open[threadId]?.summary;
     if (!summary?.resumable || summary.status === "running" || summary.status === "awaiting_input") return 0;
@@ -349,6 +377,25 @@ function TimelineRows({ items, threadId, dockRequests }: { items: Item[]; thread
     return {};
   };
 
+  const { turnKey, seedTs, hasVisibleLive } = useMemo(() => {
+    let lastEndIdx = -1;
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+      if (items[index]!.type === "turn_end") {
+        lastEndIdx = index;
+        break;
+      }
+    }
+    const tail = items.slice(lastEndIdx + 1);
+    const firstUser = tail.find((entry) => entry.type === "user_message");
+    return {
+      turnKey: lastEndIdx >= 0 ? items[lastEndIdx]!.id : "init",
+      seedTs: firstUser?.ts ?? null,
+      hasVisibleLive: tail.some(isUnsettled),
+    };
+  }, [items]);
+
+  const showWorkingRow = working && !hasVisibleLive;
+
   return (
     <ThreadCwdContext value={cwd}>
       {segments.map((current, index) => {
@@ -384,6 +431,7 @@ function TimelineRows({ items, threadId, dockRequests }: { items: Item[]; thread
           </div>
         );
       })}
+      {showWorkingRow ? <WorkingRow key={`${threadId}:${turnKey}`} threadId={threadId} turnKey={turnKey} seedTs={seedTs} /> : null}
       {historyEdit?.kind === "rollback" ? (
         <RollbackDialog threadId={threadId} turnId={historyEdit.turnId} onClose={() => setHistoryEdit(null)} />
       ) : historyEdit?.kind === "rewind" ? (
@@ -623,6 +671,12 @@ function ScrollingTimeline({ threadId, footer, dockRequests }: { threadId: strin
   }, [effectiveStart, items.length]);
 
   const loaded = !!thread;
+  const threadStatus = thread?.summary.status;
+  useEffect(() => {
+    if (threadStatus && threadStatus !== "running" && threadStatus !== "awaiting_input") {
+      activeRunStarts.delete(threadId);
+    }
+  }, [threadId, threadStatus]);
   useLayoutEffect(() => {
     const scroller = scrollerRef.current;
     if (!scroller || restoredRef.current) return;
@@ -718,18 +772,22 @@ function ScrollingTimeline({ threadId, footer, dockRequests }: { threadId: strin
               <Spinner className="text-muted-foreground" />
             </div>
           ) : visible.length === 0 ? (
-            <div className="mx-auto max-w-md py-16 text-center text-sm text-muted-foreground">
-              {isCatalogStub(thread.summary) ? (
-                <>
-                  <p>{thread.summary.origin === "Codex desktop catalog (remote)" ? t("thread.emptyCatalogRemote") : t("thread.emptyCatalogCloud")}</p>
-                  {thread.summary.preview ? (
-                    <p className="mt-2 break-all font-mono text-xs text-muted-foreground/80">{thread.summary.preview}</p>
-                  ) : null}
-                </>
-              ) : (
-                t("thread.empty")
-              )}
-            </div>
+            thread.summary.status === "running" ? (
+              <WorkingRow key={`${threadId}:empty`} threadId={threadId} turnKey="empty" seedTs={null} />
+            ) : (
+              <div className="mx-auto max-w-md py-16 text-center text-sm text-muted-foreground">
+                {isCatalogStub(thread.summary) ? (
+                  <>
+                    <p>{thread.summary.origin === "Codex desktop catalog (remote)" ? t("thread.emptyCatalogRemote") : t("thread.emptyCatalogCloud")}</p>
+                    {thread.summary.preview ? (
+                      <p className="mt-2 break-all font-mono text-xs text-muted-foreground/80">{thread.summary.preview}</p>
+                    ) : null}
+                  </>
+                ) : (
+                  t("thread.empty")
+                )}
+              </div>
+            )
           ) : (
             <Fragment>
               <TimelineRows items={visible} threadId={threadId} dockRequests={dockRequests} />

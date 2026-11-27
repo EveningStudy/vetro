@@ -1,6 +1,7 @@
 import {
   ArchiveIcon,
   ArchiveRestoreIcon,
+  ArrowUpCircleIcon,
   ChevronDownIcon,
   CircleAlertIcon,
   CodeIcon,
@@ -60,7 +61,7 @@ import {
   MenuTrigger,
   Tip,
 } from "../ui/overlay";
-import { Kbd } from "../ui/primitives";
+import { Kbd, Spinner } from "../ui/primitives";
 import { useHeaderChromeClass, useWindowDragProps } from "../WindowChrome";
 import { VerreMark } from "../VerreMark";
 
@@ -333,7 +334,10 @@ const ThreadRow = memo(function ThreadRow({
             title={`${t("sidebar.children", { n: thread.childCount })} · ${childrenOpen ? t("sidebar.hideChildren") : t("sidebar.showChildren")}`}
             onClick={toggle}
             onKeyDown={(event) => (event.key === "Enter" || event.key === " ") && toggle(event)}
-            className="inline-flex h-5 shrink-0 items-center gap-0.5 rounded px-1 text-[11px] tabular-nums text-sidebar-muted-foreground/80 outline-none hover:bg-sidebar-row-active hover:text-sidebar-foreground focus-visible:ring-1 focus-visible:ring-ring"
+            className={cn(
+              "inline-flex h-5 shrink-0 items-center gap-0.5 rounded px-1 text-[11px] tabular-nums text-sidebar-muted-foreground/80 outline-none transition-opacity hover:bg-sidebar-row-active hover:text-sidebar-foreground focus-visible:opacity-100 focus-visible:ring-1 focus-visible:ring-ring",
+              childrenOpen ? "opacity-100" : "opacity-0 group-focus-within/sidebar-row:opacity-100 group-hover/sidebar-row:opacity-100 pointer-coarse:opacity-100",
+            )}
           >
             <ChevronDownIcon className={cn("size-3 transition-transform", !childrenOpen && "-rotate-90")} />
             {thread.childCount}
@@ -347,7 +351,6 @@ const ThreadRow = memo(function ThreadRow({
             {thread.childCount}
           </span>
         ) : null}
-        {thread.archived ? <ArchiveIcon className="size-3 shrink-0 text-sidebar-muted-foreground" /> : null}
         <span className="ml-auto flex h-6 shrink-0 items-center justify-end gap-1.5 tabular-nums text-secondary-label text-xs">
           {busy ? (
             <StatusLabel thread={thread} iconOnly={!!context} />
@@ -445,7 +448,6 @@ const ProjectHeader = memo(function ProjectHeader({ row }: { row: Extract<Sideba
             {suffix ? <span className="ms-1.5 font-normal text-xs text-sidebar-muted-foreground">{suffix}</span> : null}
           </span>
           {project.pinned ? <PinIcon className="size-3 shrink-0 text-sidebar-muted-foreground/70" /> : null}
-          {project.hidden ? <EyeOffIcon className="size-3 shrink-0 text-sidebar-muted-foreground" /> : null}
           {attention ? <span className={cn("size-1.5 shrink-0 rounded-full", attention)} /> : null}
           {collapsed && count > 0 ? (
             <span className="shrink-0 text-xs tabular-nums text-sidebar-muted-foreground group-hover/project-folder:invisible pointer-coarse:invisible">{count}</span>
@@ -725,8 +727,21 @@ function FilterMenu() {
   const t = useT();
   const filters = useStore((s) => s.filters);
   const agents = useStore((s) => s.agents);
+  const settings = useStore((s) => s.settings);
+  const threads = useStore((s) => s.threads);
   const scope = usePrefs((s) => s.sidebarScope);
   const hiddenCount = useStore((s) => s.projects.filter((p) => p.hidden).length);
+  const threadAgents = useMemo(() => new Set(Object.values(threads).map((thread) => thread.agentId)), [threads]);
+  const visibleAgents = useMemo(
+    () =>
+      agents.filter(
+        (agent) =>
+          filters.agentIds.includes(agent.id) ||
+          threadAgents.has(agent.id) ||
+          (settings?.agents[agent.id]?.enabled !== false && agent.installed),
+      ),
+    [agents, settings, filters.agentIds, threadAgents],
+  );
   const active =
     (scope === "verre" ? 1 : 0) +
     filters.agentIds.length +
@@ -761,19 +776,23 @@ function FilterMenu() {
             {t("sidebar.scopeVerreFull")}
           </MenuRadioItem>
         </MenuRadioGroup>
-        <MenuSeparator />
-        <MenuGroupLabel>{t("sidebar.filterAgents")}</MenuGroupLabel>
-        {agents.map((agent) => (
-          <MenuCheckboxItem
-            key={agent.id}
-            checked={filters.agentIds.includes(agent.id)}
-            onCheckedChange={() => actions.setFilters({ agentIds: toggle(filters.agentIds, agent.id) })}
-            closeOnClick={false}
-          >
-            <AgentIcon agentId={agent.id} className="size-3.5" />
-            {agent.name}
-          </MenuCheckboxItem>
-        ))}
+        {visibleAgents.length > 0 ? (
+          <>
+            <MenuSeparator />
+            <MenuGroupLabel>{t("sidebar.filterAgents")}</MenuGroupLabel>
+            {visibleAgents.map((agent) => (
+              <MenuCheckboxItem
+                key={agent.id}
+                checked={filters.agentIds.includes(agent.id)}
+                onCheckedChange={() => actions.setFilters({ agentIds: toggle(filters.agentIds, agent.id) })}
+                closeOnClick={false}
+              >
+                <AgentIcon agentId={agent.id} className="size-3.5" />
+                {agent.name}
+              </MenuCheckboxItem>
+            ))}
+          </>
+        ) : null}
         <MenuSeparator />
         <MenuCheckboxItem
           checked={filters.showInternal}
@@ -842,6 +861,9 @@ export function SidebarContent() {
   const dataDir = useStore((s) => s.app?.dataDir);
   const route = useStore((s) => s.route);
   const connection = useStore((s) => s.connection);
+  const updateCheck = useStore((s) => s.updateCheck);
+  const updateInstalling = useStore((s) => s.updateInstalling);
+  const remoteClient = useStore((s) => s.app?.remoteClient ?? false);
   const activeId = route.view === "thread" ? route.threadId : null;
   const openSummary = useStore((s) => (activeId ? s.open[activeId]?.summary : undefined));
   const activityDays = usePrefs((s) => s.sidebarActivityDays);
@@ -1197,6 +1219,19 @@ export function SidebarContent() {
               <SettingsIcon className="size-4 shrink-0" />
             </button>
           </Tip>
+          {!remoteClient && (updateInstalling || (updateCheck?.available && updateCheck.latestVersion)) ? (
+            <button
+              type="button"
+              onClick={() => actions.navigate({ view: "settings", section: "about" })}
+              title={updateInstalling ? t("update.sidebarUpdating") : t("update.sidebarPill", { version: `v${updateCheck!.latestVersion}` })}
+              className="inline-flex h-7 min-w-0 flex-1 cursor-pointer items-center gap-1.5 rounded-full border border-sidebar-border/80 bg-sidebar-row-hover/80 px-2.5 text-xs font-medium text-sidebar-foreground transition-colors hover:bg-sidebar-row-active"
+            >
+              {updateInstalling ? <Spinner className="size-3 shrink-0" /> : <ArrowUpCircleIcon className="size-3.5 shrink-0 text-primary" />}
+              <span className="min-w-0 truncate">
+                {updateInstalling ? t("update.sidebarUpdating") : t("update.sidebarPill", { version: `v${updateCheck!.latestVersion}` })}
+              </span>
+            </button>
+          ) : null}
           {connection !== "open" ? (
             <Tip label={t("conn.lost")}>
               <span className="me-1 inline-flex items-center">

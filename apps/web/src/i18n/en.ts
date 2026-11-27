@@ -108,6 +108,9 @@ export const en = {
 
   "item.thinking": "Thinking",
   "item.thought": "Thought",
+  "item.working": "Working for {duration}",
+  "item.showFull": "Show full message",
+  "item.showLess": "Show less",
   "item.plan": "Plan",
   "item.planProgress": "{done} of {total} done",
   "item.input": "Input",
@@ -225,6 +228,7 @@ export const en = {
   "settings.composerShowLimits": "Show rate limits in composer",
   "settings.composerShowLimitsHint": "As reported by the agent for the account signed in on this machine.",
   "settings.usageDisplay": "Show usage as",
+  "settings.usageDisplay.off": "Off",
   "settings.usageDisplay.remaining": "Remaining",
   "settings.usageDisplay.used": "Used",
   "settings.composerShowContext": "Show context usage in composer",
@@ -583,6 +587,8 @@ export const en = {
   "update.activeWorkTitle": "Stop running work and update?",
   "update.activeWorkBody": "One or more sessions or background processes are still running. Installing the update will stop them and restart Verre.",
   "update.activeWorkConfirm": "Stop & update",
+  "update.sidebarPill": "Update {version}",
+  "update.sidebarUpdating": "Updating…",
 } as const;
 
 export type MessageKey = keyof typeof en;

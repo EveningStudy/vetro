@@ -26,6 +26,8 @@ export const BUILTIN_AGENT_IDS = [
   "vibe",
   "kilo",
   "grok",
+  "deepseek",
+  "codebuddy",
 ];
 
 const EMPTY: CustomAcpAgent = { id: "", name: "", command: "", args: [], env: {} };
@@ -114,16 +116,14 @@ export function CustomAgents({
               </div>
               {readOnly ? null : (
                 <>
-                  {BUILTIN_AGENT_IDS.includes(agent.id) ? null : (
-                    <Button
-                      size="icon-sm"
-                      variant="ghost"
-                      aria-label={t("thread.rename")}
-                      onClick={() => setEditing({ original: agent.id, draft: { ...agent }, args: agent.args.join("\n"), env: envText(agent.env) })}
-                    >
-                      <PencilIcon />
-                    </Button>
-                  )}
+                  <Button
+                    size="icon-sm"
+                    variant="ghost"
+                    aria-label={t("thread.rename")}
+                    onClick={() => setEditing({ original: agent.id, draft: { ...agent }, args: agent.args.join("\n"), env: envText(agent.env) })}
+                  >
+                    <PencilIcon />
+                  </Button>
                   <Button
                     size="icon-sm"
                     variant="ghost"

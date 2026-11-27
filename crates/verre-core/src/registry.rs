@@ -405,6 +405,20 @@ pub(crate) const ACP_BUILTINS: &[AcpBuiltin] = &[
         default_args: &["agent", "stdio"],
         default_env: &[],
     },
+    AcpBuiltin {
+        id: "deepseek",
+        name: "DeepSeek Harness",
+        commands: &["dsh"],
+        default_args: &["--profile", "acp"],
+        default_env: &[],
+    },
+    AcpBuiltin {
+        id: "codebuddy",
+        name: "CodeBuddy (WorkBuddy)",
+        commands: &["codebuddy"],
+        default_args: &["--acp"],
+        default_env: &[],
+    },
 ];
 
 fn built_ins(_settings: &Settings) -> Vec<Arc<dyn Agent>> {
@@ -436,14 +450,14 @@ fn built_ins(_settings: &Settings) -> Vec<Arc<dyn Agent>> {
         use verre_agent_acp::{AcpAgent, SpawnSpec};
         for builtin in ACP_BUILTINS {
             let config = _settings.agents.get(builtin.id);
-            let detected = binary_override(config)
-                .map(resolve_binary)
-                .or_else(|| builtin.commands.iter().find_map(|cmd| detection::acp(cmd)));
+            let explicit_override = config.is_some_and(|c| {
+                c.binary_path.is_some() || !c.extra_args.is_empty() || !c.env.is_empty()
+            });
             let legacy_custom = _settings
                 .custom_acp_agents
                 .iter()
                 .find(|custom| custom.id == builtin.id);
-            let spec = if let (None, Some(custom)) = (&detected, legacy_custom) {
+            let spec = if let (false, Some(custom)) = (explicit_override, legacy_custom) {
                 let mut custom_spec = SpawnSpec::new(resolve_command(&custom.command));
                 custom_spec.args.extend(custom.args.iter().map(Into::into));
                 custom_spec.env.extend(
@@ -455,7 +469,10 @@ fn built_ins(_settings: &Settings) -> Vec<Arc<dyn Agent>> {
                 apply_config(&mut custom_spec, config);
                 custom_spec
             } else {
-                let binary = detected.unwrap_or_else(|| PathBuf::from(builtin.commands[0]));
+                let binary = binary_override(config)
+                    .map(resolve_binary)
+                    .or_else(|| builtin.commands.iter().find_map(|cmd| detection::acp(cmd)))
+                    .unwrap_or_else(|| PathBuf::from(builtin.commands[0]));
                 let mut builtin_spec = launch_spec(binary, config);
                 acp_defaults(builtin, &mut builtin_spec);
                 builtin_spec
@@ -498,32 +515,53 @@ fn built_ins(_settings: &Settings) -> Vec<Arc<dyn Agent>> {
 }
 
 #[cfg(feature = "acp")]
+fn leading_options(args: &[std::ffi::OsString]) -> &[std::ffi::OsString] {
+    let end = args
+        .iter()
+        .position(|arg| arg == "--")
+        .unwrap_or(args.len());
+    &args[..end]
+}
+
+#[cfg(feature = "acp")]
 fn acp_defaults(builtin: &AcpBuiltin, spec: &mut verre_agent_api::process::SpawnSpec) {
     if builtin.id == "devin" {
-        if !spec.args.iter().any(|arg| {
+        let leading_len = leading_options(&spec.args).len();
+        if !spec.args[..leading_len].iter().any(|arg| {
             arg == "--process-model" || arg.to_string_lossy().starts_with("--process-model=")
         }) {
             spec.args
                 .splice(..0, ["--process-model".into(), "in-process".into()]);
         }
-        if let Some(index) = spec.args.iter().position(|arg| arg == "acp") {
+        let leading_len = leading_options(&spec.args).len();
+        if let Some(index) = spec.args[..leading_len].iter().position(|arg| arg == "acp") {
             let acp = spec.args.remove(index);
             spec.args.insert(0, acp);
         } else {
             spec.args.insert(0, "acp".into());
         }
+    } else if builtin.id == "deepseek" {
+        let leading = leading_options(&spec.args);
+        let has_profile = leading.iter().enumerate().any(|(index, arg)| {
+            arg.to_string_lossy().starts_with("--profile=")
+                || (arg == "--profile" && leading.get(index + 1).is_some())
+        });
+        if !has_profile {
+            spec.args.splice(..0, ["--profile".into(), "acp".into()]);
+        }
     } else if !builtin.default_args.is_empty() {
         let defaults: Vec<std::ffi::OsString> =
             builtin.default_args.iter().map(Into::into).collect();
+        let leading = leading_options(&spec.args);
         if builtin.default_args == ["acp"] {
-            if let Some(index) = spec.args.iter().position(|arg| arg == "acp") {
+            if let Some(index) = leading.iter().position(|arg| arg == "acp") {
                 let acp = spec.args.remove(index);
                 spec.args.insert(0, acp);
             } else {
                 spec.args.insert(0, "acp".into());
             }
-        } else if !spec.args.starts_with(&defaults)
-            && !defaults.iter().all(|flag| spec.args.contains(flag))
+        } else if !leading.starts_with(&defaults)
+            && !defaults.iter().all(|flag| leading.contains(flag))
         {
             spec.args.splice(..0, defaults);
         }
@@ -617,6 +655,33 @@ fn builtin_acp_presets_construct_idempotent_args_and_unique_ids() {
             .unwrap(),
         "false"
     );
+
+    let mut deepseek = SpawnSpec::new("dsh");
+    deepseek.args = vec!["--profile=acp".into(), "--verbose".into()];
+    acp_defaults(find_builtin("deepseek"), &mut deepseek);
+    assert_eq!(deepseek.args, ["--profile=acp", "--verbose"]);
+
+    let mut deepseek_after_sep = SpawnSpec::new("dsh");
+    deepseek_after_sep.args = vec!["--".into(), "--profile=acp".into()];
+    acp_defaults(find_builtin("deepseek"), &mut deepseek_after_sep);
+    assert_eq!(
+        deepseek_after_sep.args,
+        ["--profile", "acp", "--", "--profile=acp"]
+    );
+
+    let mut deepseek_dangling = SpawnSpec::new("dsh");
+    deepseek_dangling.args = vec!["--profile".into()];
+    acp_defaults(find_builtin("deepseek"), &mut deepseek_dangling);
+    assert_eq!(deepseek_dangling.args, ["--profile", "acp", "--profile"]);
+
+    let mut codebuddy = SpawnSpec::new("codebuddy");
+    acp_defaults(find_builtin("codebuddy"), &mut codebuddy);
+    assert_eq!(codebuddy.args, ["--acp"]);
+
+    let mut codebuddy_after_sep = SpawnSpec::new("codebuddy");
+    codebuddy_after_sep.args = vec!["--".into(), "--acp".into()];
+    acp_defaults(find_builtin("codebuddy"), &mut codebuddy_after_sep);
+    assert_eq!(codebuddy_after_sep.args, ["--acp", "--", "--acp"]);
 }
 
 #[cfg(all(test, feature = "acp"))]
@@ -679,11 +744,30 @@ async fn kiro_is_registered_once_and_uses_builtin_overrides() {
         args: vec!["--experimental-acp".into()],
         env: BTreeMap::new(),
     });
+    let custom_deepseek_path = std::env::current_exe()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    fallback_settings.custom_acp_agents.push(CustomAcpAgent {
+        id: "deepseek".into(),
+        name: "Custom DeepSeek".into(),
+        command: custom_deepseek_path,
+        args: vec!["--profile".into(), "acp".into()],
+        env: BTreeMap::new(),
+    });
     let fallback_registry = Registry::from_settings(&fallback_settings).unwrap();
     let gemini_info = fallback_registry.get("gemini").unwrap().info().await;
     if detection::acp("gemini").is_none() {
         assert!(gemini_info.installed);
     }
+    assert!(
+        fallback_registry
+            .get("deepseek")
+            .unwrap()
+            .info()
+            .await
+            .installed
+    );
 }
 
 #[cfg(feature = "claude")]
