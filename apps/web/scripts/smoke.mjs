@@ -147,8 +147,13 @@ try {
   const portFile = join(profile, "DevToolsActivePort");
   const [port, devtools] = await waitFor(() => {
     if (!existsSync(portFile)) return null;
-    const parts = readFileSync(portFile, "utf8").trim().split(/\r?\n/);
-    return parts.length === 2 ? parts : null;
+    try {
+      const parts = readFileSync(portFile, "utf8").trim().split(/\r?\n/);
+      return parts.length === 2 ? parts : null;
+    } catch (error) {
+      if (error.code === "EBUSY" || error.code === "ENOENT" || error.code === "EACCES") return null;
+      throw error;
+    }
   }, "Chromium");
   socket = new WebSocket(`ws://127.0.0.1:${port}${devtools}`);
   await once(socket, "open", { signal: AbortSignal.timeout(10_000) });
