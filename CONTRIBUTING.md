@@ -12,6 +12,7 @@ and pnpm 10. On Linux also install the Tauri system packages listed in
 
 ```sh
 pnpm --dir apps/web install --frozen-lockfile
+pnpm --dir apps/web check:i18n
 pnpm --dir apps/web typecheck
 pnpm --dir apps/web build
 cargo fmt --all --check

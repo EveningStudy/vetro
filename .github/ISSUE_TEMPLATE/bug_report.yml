@@ -25,6 +25,10 @@ body:
         - Codex
         - Antigravity
         - Devin
+        - Kiro
+        - DeepSeek Harness
+        - CodeBuddy (WorkBuddy)
+        - Other ACP agent
         - Multiple agents
         - None (UI or server issue)
     validations:

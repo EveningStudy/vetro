@@ -40,7 +40,7 @@ Every feature or UI change must protect the whole product from incremental bloat
 
 ## Conventions
 
-- English in code, comments, docs and commit messages. Chinese only in `README.zh-CN.md` and UI translations.
+- English in code, comments, docs and commit messages. Non-English only in localized READMEs (`docs/readme/`) and UI translations (`apps/web/src/i18n/`).
 - Promptly clean up unused build artifacts when doing so will not disrupt development. Keep active builds and binaries in use.
 - No comments unless the code cannot show why.
 - Handle errors at real boundaries; do not wrap every line.

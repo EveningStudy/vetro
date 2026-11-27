@@ -1,32 +1,31 @@
 # Remote access
 
-The computer running Verre hosts the agent sessions. Open **Settings → Remote access** there, then choose a connection method. A paired browser can send messages, steer a running agent when supported, and answer its approval requests. Give each device its own pairing and revoke it from the host when needed.
+The computer running Verre hosts every agent session. Open **Settings → Remote access** on the host and pick a connection method. Paired browsers can browse threads, send or steer prompts, answer approval requests, and view read-only diffs and files inside known project folders.
 
-If an agent needs sign-in, complete its sign-in on the host. Select **Check now** in the paired browser to refresh the agent's status.
+Host-only actions (adding or removing projects, changing settings, running agent sign-in, opening external apps, voice model setup, and managing pairings) stay restricted to the computer running Verre. See [SECURITY.md](../SECURITY.md) for the full boundary list.
 
-Leave **Remember this browser** selected to reconnect from a new tab or after reopening the browser. On a shared browser, clear it to keep the session in the pairing tab. Existing tabs paired with an earlier version can keep using their current session. Pair again with the setting selected to remember that browser.
+## Basics
 
-The pairing tab keeps draft text, file mentions, and pending send receipts when the browser rebuilds the page. Image attachments are kept in the current page. If a delivery receipt cannot be confirmed after a disconnect or host restart, Verre blocks automatic duplicates and offers **Send anyway** so you can explicitly resend verbatim after checking the thread history. Revoking a pairing clears its saved drafts when the browser detects the revocation.
-
-Paired devices can only browse and preview files inside known project folders; host-only actions (adding projects, changing settings, running agent sign-in, opening external apps, or managing remote pairing) remain restricted to the computer running Verre. See [SECURITY.md](../SECURITY.md) for details.
-
-In the desktop app, enable **Keep running when the window closes** to leave the host available after closing its window. Choose **Quit** from the tray or menu bar to stop the app.
+- **Host sign-in:** if an agent asks for sign-in, complete it on the host and click **Check now** in the remote browser.
+- **Persistent vs. one-tab pairing:** leave **Remember this browser** checked to reconnect from new tabs, or uncheck it on a shared device to keep the session in the current tab only. Give each device its own pairing so you can revoke one without affecting others.
+- **Disconnect resilience:** drafts, file mentions, and pending send receipts stay intact across page reloads; images remain in the current page. If a send cannot be confirmed after a host restart or drop, Verre avoids duplicate sends and offers **Send anyway**.
+- **Background host:** in the desktop app, enable **Keep running when the window closes** so closing the window keeps the core online for paired devices. Use **Quit** in the tray or menu bar to shut down.
 
 ## Tailscale Serve
 
-Install Tailscale on the host and client and connect both to a network that lets them reach each other. Enable MagicDNS and HTTPS in the tailnet. In Verre, select **Start Tailscale Serve**, then **Pair a device**. Scan the QR code or open the copied link on the client. You can also open the displayed address and type the code. The code works once and expires after ten minutes.
+1. Install Tailscale on both devices on the same tailnet, with MagicDNS and HTTPS enabled.
+2. In Verre, click **Start Tailscale Serve** → **Pair a device**.
+3. Scan the QR code, open the copied link, or visit the shown address and enter the one-time code (expires in 10 minutes).
 
-Verre uses HTTPS port 8443 and leaves an existing service on that port alone. Tailscale's network access rules still apply. The forwarding process stops when remote access is disabled or Verre exits.
+Verre serves over HTTPS port `8443` and leaves any existing service on that port untouched. Stopping remote access or quitting Verre tears down its Serve entry. Previously paired devices reconnect automatically once Serve is started again.
 
-If the Serve process exits unexpectedly, Verre closes its remote connections and clears the pending pairing code. Start Tailscale Serve again from Remote access. Devices that were already paired can reconnect with their existing sessions.
-
-If pairing times out, choose **Connect** again on the same page with the same code and device name. If the host already enrolled the device, the browser recovers that pairing.
+If pairing times out while the host already enrolled the device, click **Connect** again with the same code and device name to recover the session.
 
 ## Your own HTTPS reverse proxy
 
-Choose a hostname that resolves to your proxy from the devices on your private network, and configure a certificate those devices trust. Forward the whole origin, including WebSocket upgrades on `/api/ws`, to the loopback address displayed in Settings. Preserve the browser's `Host` header and let the proxy set `X-Forwarded-For` from the actual client address.
+Point a private DNS name with a trusted TLS certificate at your reverse proxy, and forward HTTP plus WebSocket upgrades (`/api/ws`) to the loopback address shown in Settings. Keep the browser's `Host` header intact and let the proxy set `X-Forwarded-For`.
 
-A minimal Caddy configuration, assuming a certificate is already available for your private DNS name:
+Minimal Caddy config:
 
 ```caddyfile
 verre.example.net {
@@ -35,18 +34,18 @@ verre.example.net {
 }
 ```
 
-In Verre, enter `https://verre.example.net` under **HTTPS reverse proxy**, select **Start**, and pair the client. The URL is an HTTPS origin with an optional port. Use the hostname and port the browser actually visits.
+Enter `https://verre.example.net` under **HTTPS reverse proxy**, click **Start**, and pair your client.
 
-For unattended startup, run:
+For unattended or headless use:
 
 ```sh
 verre serve --port 47600 --remote-url https://verre.example.net
 ```
 
-Open the local URL printed by that command on the host to manage pairing. For a proxy that targets the desktop app across restarts, set `"port": 47600` (or another free loopback port) in the Verre data directory's `config.json` before launching the app. A newly launched desktop instance starts with remote access off. Paired devices can reconnect after you reenable the same address.
+To keep the desktop app on a fixed loopback port across restarts, set `"port": 47600` in `~/.verre/config.json`. Desktop launches start with remote access turned off; once you click **Start** again with the same URL, already paired devices reconnect.
 
 ## Disconnecting devices
 
-**Stop remote access** closes remote connections and clears the active pairing code. Previously paired devices remain registered for the next start. **Revoke** deletes a device's session so it must pair again. A device can also revoke its own session. An independently managed proxy stays under its owner's control when Verre stops accepting remote traffic.
-
-Verre binds to `127.0.0.1`. Use a private network or VPN to make the HTTPS endpoint reachable, and restrict which devices can reach it with your network's access rules.
+- **Stop remote access** closes active remote sessions and invalidates the current pairing code, while keeping paired devices registered.
+- **Revoke** deletes a device's session token so it must pair again (a remote browser can also revoke itself).
+- Verre only ever binds `127.0.0.1`; network reachability stays bounded by your tailnet or private proxy ACLs.

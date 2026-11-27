@@ -9,13 +9,13 @@
                 +----------- verre-core --------+        one Rust process
                 |  server      (axum, embedded UI, auth, pairing)
                 |  sessions    (live threads, event log, subscriptions, idle release)
-                |  adapters    claude | codex | acp (antigravity, devin, custom)
+                |  adapters    claude | codex | acp (19 built-in presets + custom ACP)
                 |  history     read-only readers of each agent's own store
                 |  links       parent/child sessions across agents
                 |  index       ~/.verre/index.db (SQLite + FTS5)
                 +-------------------------------+
                      | stdio (JSON lines), one child process tree, job object / process group
-        claude -p (stream-json)   codex app-server   agy acp   devin acp
+        claude -p (stream-json)   codex app-server   agy/devin/kiro-cli/dsh/codebuddy/... (acp)
 ```
 
 The desktop app and `verre serve` are the same core. The Tauri shell only creates a window that loads the core's local URL, a tray icon and single-instance handling. The UI is identical in the window and in a remote browser.
@@ -63,9 +63,9 @@ This is the protocol the official Claude Agent SDK uses under the hood. One proc
 - Control protocol: `initialize`, `can_use_tool` (permission requests, including `AskUserQuestion`), `interrupt`, `set_permission_mode`, `set_model`. Reference: the `@anthropic-ai/claude-agent-sdk` package (types in `sdk.d.ts`) and the open-source Python SDK.
 - History: `~/.claude/projects/<encoded cwd>/<session>.jsonl`, read-only. Sidechain (sub-agent) records are shown under their `Task` tool call.
 
-### ACP agents: Antigravity (`agy acp`), Devin (`devin acp`), custom commands
+### ACP agents: built-in presets & custom commands
 
-One generic ACP v1 client (`agent-client-protocol` crate or a small hand-written JSON-RPC layer; pick whichever is lighter and more tolerant). One process per agent serves all of that agent's sessions.
+One generic ACP v1 client (`agent-client-protocol` crate or a small hand-written JSON-RPC layer; pick whichever is lighter and more tolerant). One process per agent serves all of that agent's sessions, covering 19 built-in presets (`antigravity`, `devin`, `kiro`, `gemini`, `opencode`, `cursor`, `copilot`, `goose`, `cline`, `kimi`, `qwen-code`, `droid`, `amp`, `auggie`, `vibe`, `kilo`, `grok`, `deepseek`, `codebuddy`) and any user-configured stdio ACP command.
 
 - `initialize` with `clientCapabilities { fs: { readTextFile: false, writeTextFile: false }, terminal: false }` so the agent uses its own tools and Verre adds nothing.
 - `session/new` with `cwd` and `mcpServers: []`. Prompts are forwarded as typed: text, images, resource links for mentioned files.
