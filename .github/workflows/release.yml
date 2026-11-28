@@ -298,40 +298,43 @@ jobs:
         run: |
           set -eu
           mkdir -p dist-release
+          VERSION="${RELEASE_TAG#v}"
           B="apps/desktop/src-tauri/target/desktop/release/bundle"
-          copy_bundle() {
+          copy_as() {
+            dest="$1"
+            shift
             if [ "$#" -ne 1 ] || [ ! -s "$1" ]; then
-              printf 'Expected one nonempty bundle, got: %s\n' "$*" >&2
+              printf 'Expected one nonempty bundle for %s, got: %s\n' "$dest" "$*" >&2
               return 1
             fi
-            cp -- "$1" dist-release/
+            cp -- "$1" "dist-release/$dest"
           }
           ext=""
           case "$RUNNER_OS" in
             Windows)
               ext=".exe"
-              copy_bundle "$B"/nsis/*.exe
+              copy_as "Verre-$VERSION-windows-x64-setup.exe" "$B"/nsis/*.exe
               set -- "$B"/nsis/*.exe.sig
               if [ "$#" -eq 1 ] && [ -s "$1" ]; then
-                copy_bundle "$1"
+                cp -- "$1" "dist-release/Verre-$VERSION-windows-x64-setup.exe.sig"
               fi
               ;;
             macOS)
-              copy_bundle "$B"/dmg/*.dmg
-              ditto -c -k --keepParent "$B/macos/Verre.app" "dist-release/Verre-$ASSET_TARGET.zip"
+              copy_as "Verre-$VERSION-$ASSET_TARGET.dmg" "$B"/dmg/*.dmg
+              ditto -c -k --keepParent "$B/macos/Verre.app" "dist-release/verre-portable-$ASSET_TARGET.zip"
               set -- "$B"/macos/*.app.tar.gz
               if [ "$#" -eq 1 ] && [ -s "$1" ] && [ -s "$1.sig" ]; then
-                cp -- "$1" "dist-release/Verre-$ASSET_TARGET.app.tar.gz"
-                cp -- "$1.sig" "dist-release/Verre-$ASSET_TARGET.app.tar.gz.sig"
+                cp -- "$1" "dist-release/verre-updater-$ASSET_TARGET.app.tar.gz"
+                cp -- "$1.sig" "dist-release/verre-updater-$ASSET_TARGET.app.tar.gz.sig"
               fi
               ;;
             Linux)
-              copy_bundle "$B"/appimage/*.AppImage
+              copy_as "Verre-$VERSION-linux-x64.AppImage" "$B"/appimage/*.AppImage
               set -- "$B"/appimage/*.AppImage.sig
               if [ "$#" -eq 1 ] && [ -s "$1" ]; then
-                copy_bundle "$1"
+                cp -- "$1" "dist-release/Verre-$VERSION-linux-x64.AppImage.sig"
               fi
-              copy_bundle "$B"/deb/*.deb
+              copy_as "Verre-$VERSION-linux-x64.deb" "$B"/deb/*.deb
               ;;
             *)
               printf 'Unexpected runner OS: %s\n' "$RUNNER_OS" >&2
@@ -339,7 +342,7 @@ jobs:
               ;;
           esac
           test -s "target/release/verre$ext"
-          cp "target/release/verre$ext" "dist-release/verre-$ASSET_TARGET$ext"
+          cp "target/release/verre$ext" "dist-release/verre-cli-$ASSET_TARGET$ext"
           ls -la dist-release
 
       - name: Upload platform release artifacts
@@ -373,7 +376,7 @@ jobs:
           UPDATER_EXPECTED: ${{ needs.build.outputs.updater }}
         run: |
           sigs=$(find dist-release -maxdepth 1 -name '*.sig' -type f -size +0c | wc -l)
-          count=$(find dist-release -maxdepth 1 -type f -size +0c | wc -l)
+          count=$(find dist-release -maxdepth 1 -name '*' -type f -size +0c | wc -l)
           if [ "$UPDATER_EXPECTED" = "true" ]; then
             if [ "$sigs" -ne 4 ] || [ "$count" -ne 17 ]; then
               printf 'Expected 17 signed release assets with 4 signatures, found count=%s sigs=%s\n' "$count" "$sigs" >&2
@@ -385,8 +388,7 @@ jobs:
               exit 1
             fi
           fi
-          if [ "$UPDATER_EXPECTED" = "true" ]; then
-            node - <<'EOF'
+          node - <<'EOF'
           const fs = require("fs");
           const path = require("path");
           const dir = "dist-release";
@@ -394,29 +396,62 @@ jobs:
           const version = tag.replace(/^v/i, "");
           const repo = process.env.GH_REPO;
           const files = fs.readdirSync(dir);
-          const pick = (re) => {
-            const match = files.find((name) => re.test(name));
-            if (!match) throw new Error(`Missing release asset matching ${re}`);
-            const sig = `${match}.sig`;
-            if (!files.includes(sig)) throw new Error(`Missing updater signature ${sig}`);
-            return {
-              signature: fs.readFileSync(path.join(dir, sig), "utf8").trim(),
-              url: `https://github.com/${repo}/releases/download/${tag}/${encodeURIComponent(match)}`,
+          const urlOf = (name) => `https://github.com/${repo}/releases/download/${tag}/${encodeURIComponent(name)}`;
+          if (process.env.UPDATER_EXPECTED === "true") {
+            const pick = (re) => {
+              const match = files.find((name) => re.test(name));
+              if (!match) throw new Error(`Missing release asset matching ${re}`);
+              const sig = `${match}.sig`;
+              if (!files.includes(sig)) throw new Error(`Missing updater signature ${sig}`);
+              return {
+                signature: fs.readFileSync(path.join(dir, sig), "utf8").trim(),
+                url: urlOf(match),
+              };
             };
-          };
-          const manifest = {
-            version,
-            pub_date: new Date().toISOString(),
-            platforms: {
-              "windows-x86_64": pick(/_x64-setup\.exe$/),
-              "darwin-aarch64": pick(/^Verre-macos-arm64\.app\.tar\.gz$/),
-              "darwin-x86_64": pick(/^Verre-macos-x64\.app\.tar\.gz$/),
-              "linux-x86_64": pick(/_amd64\.AppImage$/),
-            },
-          };
-          fs.writeFileSync(path.join(dir, "latest.json"), JSON.stringify(manifest, null, 2) + "\n");
+            const manifest = {
+              version,
+              pub_date: new Date().toISOString(),
+              platforms: {
+                "windows-x86_64": pick(/^Verre-.*-windows-x64-setup\.exe$/),
+                "darwin-aarch64": pick(/^verre-updater-macos-arm64\.app\.tar\.gz$/),
+                "darwin-x86_64": pick(/^verre-updater-macos-x64\.app\.tar\.gz$/),
+                "linux-x86_64": pick(/^Verre-.*-linux-x64\.AppImage$/),
+              },
+            };
+            fs.writeFileSync(path.join(dir, "latest.json"), JSON.stringify(manifest, null, 2) + "\n");
+            for (const name of files) {
+              if (name.endsWith(".sig")) fs.unlinkSync(path.join(dir, name));
+            }
+          }
+          const winExe = `Verre-${version}-windows-x64-setup.exe`;
+          const macArm = `Verre-${version}-macos-arm64.dmg`;
+          const macX64 = `Verre-${version}-macos-x64.dmg`;
+          const linDeb = `Verre-${version}-linux-x64.deb`;
+          const linApp = `Verre-${version}-linux-x64.AppImage`;
+          const body = [
+            "## Downloads",
+            "",
+            "| Platform | Download |",
+            "|---|---|",
+            `| **Windows (x64)** | [${winExe}](${urlOf(winExe)}) |`,
+            `| **macOS (Apple Silicon)** | [${macArm}](${urlOf(macArm)}) |`,
+            `| **macOS (Intel)** | [${macX64}](${urlOf(macX64)}) |`,
+            `| **Linux (Debian / Ubuntu)** | [${linDeb}](${urlOf(linDeb)}) |`,
+            `| **Linux (AppImage)** | [${linApp}](${urlOf(linApp)}) |`,
+            "",
+            "<details>",
+            "<summary>Headless CLI &amp; portable archives</summary>",
+            "",
+            `- **Windows CLI:** [verre-cli-windows-x64.exe](${urlOf("verre-cli-windows-x64.exe")})`,
+            `- **macOS CLI (Apple Silicon / Intel):** [verre-cli-macos-arm64](${urlOf("verre-cli-macos-arm64")}) · [verre-cli-macos-x64](${urlOf("verre-cli-macos-x64")})`,
+            `- **Linux CLI (x64):** [verre-cli-linux-x64](${urlOf("verre-cli-linux-x64")})`,
+            `- **macOS portable \`.app\` zips:** [verre-portable-macos-arm64.zip](${urlOf("verre-portable-macos-arm64.zip")}) · [verre-portable-macos-x64.zip](${urlOf("verre-portable-macos-x64.zip")})`,
+            "",
+            "</details>",
+            "",
+          ].join("\n");
+          fs.writeFileSync("release-body.md", body);
           EOF
-          fi
 
       - name: Attach artifacts to draft release
         uses: softprops/action-gh-release@v2
@@ -424,5 +459,6 @@ jobs:
           draft: true
           tag_name: ${{ env.RELEASE_TAG }}
           name: Verre ${{ env.RELEASE_TAG }}
+          body_path: release-body.md
           fail_on_unmatched_files: true
           files: dist-release/*
